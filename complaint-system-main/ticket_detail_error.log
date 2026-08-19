@@ -1,0 +1,10 @@
+[2026-07-02T15:08:25+02:00] PDOException: SQLSTATE[42S22]: Column not found: 1054 Unknown column 'resolved_at' in 'field list'
+#0 C:\xampp\htdocs\complaint-system-main\Ui-main\ticket_flow.php(216): PDO->prepare('SELECT status, ...')
+#1 C:\xampp\htdocs\complaint-system-main\Ui-main\student\ticket_detail.php(178): get_ticket_status_state(Object(PDO), 'complaint', 13)
+#2 {main}
+
+[2026-07-03T05:52:53+02:00] PDOException: SQLSTATE[42S22]: Column not found: 1054 Unknown column 'resolved_at' in 'field list'
+#0 C:\xampp\htdocs\complaint-system-main\Ui-main\ticket_flow.php(216): PDO->prepare('SELECT status, ...')
+#1 C:\xampp\htdocs\complaint-system-main\Ui-main\student\ticket_detail.php(178): get_ticket_status_state(Object(PDO), 'complaint', 13)
+#2 {main}
+
