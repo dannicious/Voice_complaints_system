@@ -353,8 +353,7 @@ try {
          LEFT JOIN complaint_categories cc ON cc.id = c.category_id
          LEFT JOIN colleges col ON col.id = c.college_id
          LEFT JOIN student_profiles sp ON sp.id = c.student_id
-                 WHERE 1=1
-                       AND c.ticket_no NOT LIKE 'VOX-C-2026-%'";
+                     WHERE 1=1";
 
     $params = [];
 

@@ -102,10 +102,10 @@ function log_admin_activity(PDO $pdo, int $userId, string $action, ?string $targ
     ]);
 }
 
-$activeTab = (string)($_GET['tab'] ?? 'chatbot');
-$allowedTabs = ['chatbot', 'categories', 'profile', 'logs'];
+$activeTab = (string)($_GET['tab'] ?? 'categories');
+$allowedTabs = ['categories', 'profile', 'logs'];
 if (!in_array($activeTab, $allowedTabs, true)) {
-    $activeTab = 'chatbot';
+    $activeTab = 'categories';
 }
 
 $flashStatus = (string)($_GET['status'] ?? '');
@@ -1028,7 +1028,6 @@ $profileImage = trim($profile['profile_pic']) !== '' ? '../' . ltrim($profile['p
 
         <div class="nav-header">
             <div class="nav-tabs">
-                <button class="tab-btn <?php echo $activeTab === 'chatbot' ? 'active' : ''; ?>" onclick="switchTab(event, 'chatbot')">VOICE Assistant Management</button>
                 <button class="tab-btn <?php echo $activeTab === 'categories' ? 'active' : ''; ?>" onclick="switchTab(event, 'categories')">Categories & Suggestions</button>
                 <button class="tab-btn <?php echo $activeTab === 'profile' ? 'active' : ''; ?>" onclick="switchTab(event, 'profile')">My Profile</button>
                 <button class="tab-btn <?php echo $activeTab === 'logs' ? 'active' : ''; ?>" onclick="switchTab(event, 'logs')">Activity Logs</button>

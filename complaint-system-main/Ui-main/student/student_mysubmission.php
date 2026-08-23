@@ -40,7 +40,6 @@ if (!isset($_SESSION['user_id']) || (string)($_SESSION['role'] ?? '') !== 'stude
                 FROM complaints c
                 LEFT JOIN complaint_categories cc ON cc.id = c.category_id
                                 WHERE c.student_id = :student_id_complaint
-                                      AND c.ticket_no NOT LIKE 'VOX-C-2026-%'
 
                 UNION ALL
 

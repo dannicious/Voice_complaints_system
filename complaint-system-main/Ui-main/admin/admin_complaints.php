@@ -108,7 +108,6 @@ LEFT JOIN student_profiles sp ON sp.id = c.student_id
  LEFT JOIN ticket_feedback tf ON tf.ticket_type = 'complaint' AND tf.ticket_id = c.id AND tf.student_id = sp.id
 LEFT JOIN colleges scol ON scol.id = sp.college_id
 WHERE COALESCE(cc.category_type, cc.route, 'general') = :category_type
-    AND c.ticket_no NOT LIKE 'VOX-C-2026-%'
 SQL;
 
     $params = [':category_type' => $categoryType];

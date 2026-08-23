@@ -222,7 +222,7 @@ if ($flashMessage === '') {
                  LEFT JOIN users u ON u.id = sp.user_id
                  LEFT JOIN colleges c ON c.id = sp.college_id
                  WHERE csl.complaint_id = :complaint_id
-                 ORDER BY csl.id ASC
+                 ORDER BY csl.created_at ASC, csl.student_id ASC
                  LIMIT 1'
             );
             $reportedStudentStmt->execute([':complaint_id' => $ticketId]);
@@ -748,7 +748,7 @@ body { background: #f4f6fb; }
                     <div class="call-slip-header">
                         <div class="call-slip-company-block">
                             <div class="call-slip-bisu-mark">
-                                <img src="../../Screenshot 2026-08-17 061756-Photoroom.png" alt="BISU Balilihan Logo">
+                                <img src="../assets/images/bisulogo.png" alt="BISU Balilihan Logo">
                             </div>
                             <div class="call-slip-company-copy">
                                 <div class="call-slip-company-title">Republic of the Philippines</div>

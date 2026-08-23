@@ -35,17 +35,25 @@ function require_admin_session($pdo) {
 require_admin_session($pdo);
 
 // Get dashboard statistics
-$stats = ['complaints' => 0, 'suggestions' => 0, 'students' => 0];
+$stats = ['complaints' => 0, 'suggestions' => 0, 'students' => 0, 'pending_complaints' => 0, 'pending_suggestions' => 0];
 
 // Total complaints
-$stmt = $pdo->prepare("SELECT COUNT(*) as count FROM complaints WHERE ticket_no NOT LIKE 'VOX-C-2026-%'");
+$stmt = $pdo->prepare("SELECT COUNT(*) as count FROM complaints");
 $stmt->execute();
 $stats['complaints'] = $stmt->fetch(PDO::FETCH_ASSOC)['count'];
+
+$stmt = $pdo->prepare("SELECT COUNT(*) as count FROM complaints WHERE COALESCE(status, 'new') <> 'resolved' AND COALESCE(approval_status, 'pending') <> 'rejected'");
+$stmt->execute();
+$stats['pending_complaints'] = $stmt->fetch(PDO::FETCH_ASSOC)['count'];
 
 // Total suggestions
 $stmt = $pdo->prepare('SELECT COUNT(*) as count FROM suggestions');
 $stmt->execute();
 $stats['suggestions'] = $stmt->fetch(PDO::FETCH_ASSOC)['count'];
+
+$stmt = $pdo->prepare("SELECT COUNT(*) as count FROM suggestions WHERE COALESCE(status, 'pending') NOT IN ('reviewed', 'resolved', 'rejected', 'declined')");
+$stmt->execute();
+$stats['pending_suggestions'] = $stmt->fetch(PDO::FETCH_ASSOC)['count'];
 
 // Registered students
 $stmt = $pdo->prepare('SELECT COUNT(*) as count FROM users WHERE role = "student"');
@@ -58,7 +66,7 @@ $collegeSql = $pdo->prepare('
            COUNT(DISTINCT comp.id) as complaint_count,
            COUNT(DISTINCT sug.id) as suggestion_count
     FROM colleges c
-    LEFT JOIN complaints comp ON c.id = comp.college_id AND comp.ticket_no NOT LIKE "VOX-C-2026-%"
+    LEFT JOIN complaints comp ON c.id = comp.college_id
     LEFT JOIN suggestions sug ON c.id = sug.college_id
     GROUP BY c.id, c.code
     ORDER BY c.code
@@ -83,7 +91,7 @@ $recentSql = $pdo->prepare('
      FROM complaints c
      LEFT JOIN student_profiles sp ON c.student_id = sp.id
      LEFT JOIN complaint_categories cc ON c.category_id = cc.id
-    WHERE c.ticket_no NOT LIKE "VOX-C-2026-%"
+    WHERE 1 = 1
      ORDER BY c.created_at DESC LIMIT 3)
     UNION ALL
     (SELECT s.ticket_no as ticket_number, sp.first_name, sp.last_name, "suggestion" as type,
@@ -103,7 +111,7 @@ $overdueCollegeSql = $pdo->prepare('
     SELECT c.code as college_name, COUNT(comp.id) as overdue_count
     FROM colleges c
     LEFT JOIN complaints comp ON c.id = comp.college_id
-    WHERE comp.ticket_no NOT LIKE "VOX-C-2026-%" AND comp.created_at < DATE_SUB(NOW(), INTERVAL 48 HOUR) AND (comp.status = "new" OR comp.status = "pending")
+    WHERE comp.created_at < DATE_SUB(NOW(), INTERVAL 48 HOUR) AND (comp.status = "new" OR comp.status = "pending")
     GROUP BY c.id, c.code
     ORDER BY overdue_count DESC
     LIMIT 3
@@ -193,10 +201,29 @@ body {
     background: #fff;
     padding: 20px;
     border-radius: 12px;
+    position: relative;
     display: flex;
     align-items: center;
     gap: 15px;
     box-shadow: 0 4px 15px rgba(0,0,0,0.03);
+}
+
+.dashboard-badge {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    min-width: 22px;
+    height: 22px;
+    padding: 0 6px;
+    border-radius: 11px;
+    background: #dc2626;
+    color: #fff;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 1;
 }
 
 .stat-icon {
@@ -388,10 +415,12 @@ td {
         <div class="stat-card">
             <div class="stat-icon bg-blue"><i class='bx bx-file'></i></div>
             <div class="stat-info"><h3><?php echo $stats['complaints']; ?></h3><p>Total Complaints</p></div>
+            <span class="dashboard-badge" aria-label="<?php echo $stats['pending_complaints']; ?> pending complaints"><?php echo $stats['pending_complaints']; ?></span>
         </div>
         <div class="stat-card">
             <div class="stat-icon bg-green"><i class='bx bx-bulb'></i></div>
             <div class="stat-info"><h3><?php echo $stats['suggestions']; ?></h3><p>Total Suggestions</p></div>
+            <span class="dashboard-badge" aria-label="<?php echo $stats['pending_suggestions']; ?> pending suggestions"><?php echo $stats['pending_suggestions']; ?></span>
         </div>
         <div class="stat-card">
             <div class="stat-icon bg-purple"><i class='bx bx-group'></i></div>

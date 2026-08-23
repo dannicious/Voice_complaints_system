@@ -55,6 +55,22 @@
     color: #fff;
 }
 
+.complaint-badge {
+    margin-left: auto;
+    min-width: 22px;
+    height: 22px;
+    padding: 0 6px;
+    border-radius: 11px;
+    background: #dc2626;
+    color: #fff;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 1;
+}
+
 .mobile-sidebar-overlay {
     display: none;
 }
@@ -97,7 +113,20 @@
 }
 </style>
 
-<?php $current = basename($_SERVER['PHP_SELF']); ?>
+<?php
+$current = basename($_SERVER['PHP_SELF']);
+$pendingComplaintCount = 0;
+
+try {
+    $pendingComplaintStmt = $pdo->query(
+        "SELECT COUNT(*) FROM complaints
+         WHERE COALESCE(status, 'new') <> 'resolved'
+           AND COALESCE(approval_status, 'pending') <> 'rejected'"
+    );
+    $pendingComplaintCount = (int)$pendingComplaintStmt->fetchColumn();
+} catch (PDOException $e) {
+}
+?>
 
 <div class="sidebar">
 
@@ -112,6 +141,7 @@
         <li>
             <a href="admin_complaints.php" class="<?= $current === 'admin_complaints.php' ? 'active' : '' ?>">
                 <i class='bx bx-file'></i> Complaints
+                <span class="complaint-badge" aria-label="<?= $pendingComplaintCount ?> unresolved complaints"><?= $pendingComplaintCount ?></span>
             </a>
         </li>
         <li>

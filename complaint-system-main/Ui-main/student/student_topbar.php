@@ -482,7 +482,6 @@ if (isset($_SESSION['user_id']) && isset($pdo)) {
 
         <div class="topbar-bell" id="bellIcon">
             <i class='bx bx-bell'></i>
-            <span class="notification-badge" id="notificationBadge" style="<?php echo $topbarUnreadCount > 0 ? '' : 'display:none;'; ?>"><?php echo $topbarUnreadCount; ?></span>
             
             <div class="notification-dropdown" id="notificationDropdown">
                 
@@ -599,11 +598,6 @@ function markAllNotificationsRead() {
         body: 'scope=all'
     }).then(() => {
         unreadItems.forEach(item => item.classList.remove('unread'));
-        const badge = document.getElementById('notificationBadge');
-        if (badge) {
-            badge.style.display = 'none';
-            badge.textContent = '0';
-        }
     }).catch(() => {});
 }
 

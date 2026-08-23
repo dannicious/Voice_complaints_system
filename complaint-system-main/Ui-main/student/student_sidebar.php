@@ -41,6 +41,7 @@
     align-items: center;
     gap: 10px;
     padding: 12px;
+    position: relative;
     border-radius: 10px;
     text-decoration: none;
     color: #374151;
@@ -126,11 +127,6 @@ $pageMode = (string)($_GET['mode'] ?? '');
         <li>
             <a href="student_mysubmission.php" class="<?= $current === 'student_mysubmission.php' ? 'active' : '' ?>">
                 <i class='bx bx-list-ul'></i> My Submissions
-            </a>
-        </li>
-        <li>
-            <a href="student_chatbott.php" class="<?= $current === 'student_chatbott.php' ? 'active' : '' ?>">
-                <i class='bx bx-bot'></i> VOICE Assistant
             </a>
         </li>
         <li>

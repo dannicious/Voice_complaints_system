@@ -86,7 +86,7 @@ $baseSql = 'SELECT
         sp.year_level,
         sp.status,
         (SELECT COUNT(*) FROM complaint_student_links csl WHERE csl.student_id = sp.id) AS times_reported,
-        (SELECT COUNT(*) FROM complaints c WHERE c.student_id = sp.id AND c.ticket_no NOT LIKE "VOX-C-2026-%") AS complaints_filed
+        (SELECT COUNT(*) FROM complaints c WHERE c.student_id = sp.id) AS complaints_filed
     FROM student_profiles sp
     LEFT JOIN users u ON sp.user_id = u.id
     LEFT JOIN programs prog ON sp.program_id = prog.id
@@ -116,8 +116,8 @@ if ((string)($_GET['ajax'] ?? '') === '1') {
         echo "<td>{$name}</td>";
         echo "<td>{$program}</td>";
         echo "<td>{$year}</td>";
-        echo "<td>{$reported}</td>";
-        echo "<td>{$complaints}</td>";
+        echo '<td><a class="complaint-count-badge" href="../reported_complaints.php?student_id=' . (int)$student['sp_id'] . '" title="View reported complaints">' . $reported . '</a></td>';
+        echo '<td><a class="complaint-count-badge" href="../reported_complaints.php?student_id=' . (int)$student['sp_id'] . '&view=complaints" title="View student complaints">' . $complaints . '</a></td>';
         echo "<td><span class=\"{$statusClass}\">{$status}</span></td>";
         echo "</tr>";
     }
@@ -146,6 +146,7 @@ body { background: #f9fafb; }
 .search-box i{color:#888;margin-right:8px}
 .search-box input{border:none;background:transparent;outline:none;width:100%}
 table{width:100%;border-collapse:collapse;min-width:800px}
+.complaint-count-badge { display: inline-flex; align-items: center; justify-content: center; min-width: 36px; padding: 6px 10px; border-radius: 999px; background: #eef2ff; color: #4338ca; font-weight: 600; text-decoration: none; }
 th{ text-align:left; font-size:12px; color:#888; padding:15px 10px; border-bottom:2px solid #f0f0f0; font-weight:600; text-transform:uppercase }
 td{ padding:15px 10px; font-size:14px; color:#444; border-bottom:1px solid #f9f9f9; vertical-align:middle }
 .status-active{ background:#dcfce7; color:#16a34a; padding:5px 10px; border-radius:6px; font-size:12px; font-weight:500 }
@@ -220,8 +221,8 @@ td{ padding:15px 10px; font-size:14px; color:#444; border-bottom:1px solid #f9f9
                             <td><?php echo htmlspecialchars(trim(($student['first_name'] ?? '') . ' ' . ($student['last_name'] ?? ''))); ?></td>
                             <td><?php echo htmlspecialchars($student['program'] ?? 'N/A'); ?></td>
                             <td><?php echo htmlspecialchars($student['year_level'] ?? 'N/A'); ?></td>
-                            <td><?php echo (int)($student['times_reported'] ?? 0); ?></td>
-                            <td><?php echo (int)($student['complaints_filed'] ?? 0); ?></td>
+                            <td><a class="complaint-count-badge" href="../reported_complaints.php?student_id=<?php echo (int)$student['sp_id']; ?>" title="View reported complaints"><?php echo (int)($student['times_reported'] ?? 0); ?></a></td>
+                            <td><a class="complaint-count-badge" href="../reported_complaints.php?student_id=<?php echo (int)$student['sp_id']; ?>&view=complaints" title="View student complaints"><?php echo (int)($student['complaints_filed'] ?? 0); ?></a></td>
                             <td><span class="status-<?php echo strtolower($student['status'] ?? 'active'); ?>"><?php echo ucfirst($student['status'] ?? 'active'); ?></span></td>
                         </tr>
                         <?php endforeach; ?>

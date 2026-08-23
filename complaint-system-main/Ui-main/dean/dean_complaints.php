@@ -175,7 +175,7 @@ try {
          LEFT JOIN complaint_categories cc ON cc.id = c.category_id
          LEFT JOIN student_profiles sp ON sp.id = c.student_id
          LEFT JOIN ticket_feedback tf ON tf.ticket_type = 'complaint' AND tf.ticket_id = c.id AND tf.student_id = sp.id
-         WHERE c.approval_status = 'approved' AND c.ticket_no NOT LIKE 'VOX-C-2026-%'";
+         WHERE c.approval_status = 'approved'";
 
     $sql .= ' AND c.college_id = :college_id';
     $params[':college_id'] = $deanCollegeId;

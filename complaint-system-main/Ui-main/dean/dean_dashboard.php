@@ -30,7 +30,7 @@ $collegeName = $collegeInfo['name'] ?? 'Unknown College';
 // New complaints (admin approved, dean hasn't started)
 $newComplaintsStmt = $pdo->prepare('
     SELECT COUNT(*) as count FROM complaints 
-    WHERE college_id = ? AND approval_status = "approved" AND status = "new" AND ticket_no NOT LIKE "VOX-C-2026-%"
+    WHERE college_id = ? AND approval_status = "approved" AND status = "new"
 ');
 $newComplaintsStmt->execute([$collegeId]);
 $metrics['new_complaints'] = $newComplaintsStmt->fetch(PDO::FETCH_ASSOC)['count'];
@@ -54,7 +54,7 @@ $metrics['reviewed_suggestions'] = $implementedStmt->fetch(PDO::FETCH_ASSOC)['co
 // Resolved this month
 $monthStartStmt = $pdo->prepare('
     SELECT COUNT(*) as count FROM (
-        SELECT id FROM complaints WHERE college_id = ? AND approval_status = "approved" AND status = "resolved" AND ticket_no NOT LIKE "VOX-C-2026-%" AND MONTH(created_at) = MONTH(NOW()) AND YEAR(created_at) = YEAR(NOW())
+        SELECT id FROM complaints WHERE college_id = ? AND approval_status = "approved" AND status = "resolved" AND MONTH(created_at) = MONTH(NOW()) AND YEAR(created_at) = YEAR(NOW())
         UNION ALL
         SELECT id FROM suggestions WHERE college_id = ? AND status IN ("approved", "reviewed") AND MONTH(created_at) = MONTH(NOW()) AND YEAR(created_at) = YEAR(NOW())
     ) as resolved_items
@@ -70,7 +70,7 @@ $recentStmt = $pdo->prepare('
      FROM complaints c
      LEFT JOIN student_profiles sp ON c.student_id = sp.id
      LEFT JOIN complaint_categories cc ON c.category_id = cc.id
-    WHERE c.college_id = ? AND c.approval_status = "approved" AND c.ticket_no NOT LIKE "VOX-C-2026-%"
+    WHERE c.college_id = ? AND c.approval_status = "approved"
      ORDER BY c.created_at DESC LIMIT 3)
     UNION ALL
     (SELECT s.ticket_no as ticket_number, sp.first_name, sp.last_name, "suggestion" as type,
@@ -198,10 +198,29 @@ body {
     border-radius: 12px;
     border: 1px solid #e5e7eb;
     box-shadow: 0 2px 10px rgba(0,0,0,0.02);
+    position: relative;
     display: flex;
     align-items: center;
     gap: 20px;
     transition: transform 0.2s ease;
+}
+
+.dashboard-badge {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    min-width: 22px;
+    height: 22px;
+    padding: 0 6px;
+    border-radius: 11px;
+    background: #dc2626;
+    color: #fff;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 1;
 }
 
 .metric-card:hover {
@@ -377,6 +396,7 @@ td { padding: 15px 0; font-size: 14px; color: #444; border-bottom: 1px solid #f9
                 <h4>New Complaints</h4>
                 <div class="value"><?php echo $metrics['new_complaints']; ?></div>
             </div>
+            <span class="dashboard-badge" aria-label="<?php echo (int)$metrics['new_complaints']; ?> new complaints"><?php echo (int)$metrics['new_complaints']; ?></span>
         </div>
         <div class="metric-card">
             <div class="metric-icon icon-purple"><i class='bx bx-bulb'></i></div>
@@ -384,6 +404,7 @@ td { padding: 15px 0; font-size: 14px; color: #444; border-bottom: 1px solid #f9
                 <h4>New Suggestions</h4>
                 <div class="value"><?php echo $metrics['new_suggestions']; ?></div>
             </div>
+            <span class="dashboard-badge" aria-label="<?php echo (int)$metrics['new_suggestions']; ?> new suggestions"><?php echo (int)$metrics['new_suggestions']; ?></span>
         </div>
         <div class="metric-card">
             <div class="metric-icon icon-yellow"><i class='bx bx-rocket'></i></div>

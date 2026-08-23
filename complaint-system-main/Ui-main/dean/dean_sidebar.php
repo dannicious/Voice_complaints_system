@@ -56,6 +56,22 @@
     color: #fff;
 }
 
+.complaint-badge {
+    margin-left: auto;
+    min-width: 22px;
+    height: 22px;
+    padding: 0 6px;
+    border-radius: 11px;
+    background: #dc2626;
+    color: #fff;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 1;
+}
+
 .mobile-sidebar-overlay {
     display: none;
 }
@@ -98,7 +114,24 @@
 }
 </style>
 
-<?php $current = basename($_SERVER['PHP_SELF']); ?>
+<?php
+$current = basename($_SERVER['PHP_SELF']);
+$pendingComplaintCount = 0;
+$deanUserId = (int)($_SESSION['user_id'] ?? 0);
+
+try {
+    $pendingComplaintStmt = $pdo->prepare(
+        "SELECT COUNT(*) FROM complaints c
+         INNER JOIN dean_profiles dp ON dp.college_id = c.college_id
+         WHERE dp.user_id = :user_id
+           AND c.approval_status = 'approved'
+           AND COALESCE(c.status, 'new') <> 'resolved'"
+    );
+    $pendingComplaintStmt->execute([':user_id' => $deanUserId]);
+    $pendingComplaintCount = (int)$pendingComplaintStmt->fetchColumn();
+} catch (PDOException $e) {
+}
+?>
 
 <div class="sidebar">
     <div class="sidebar-separator"></div>
@@ -112,6 +145,7 @@
         <li>
             <a href="dean_complaints.php" class="<?= $current === 'dean_complaints.php' ? 'active' : '' ?>">
                 <i class='bx bx-error-circle'></i> Complaints
+                <span class="complaint-badge" aria-label="<?= $pendingComplaintCount ?> unresolved complaints"><?= $pendingComplaintCount ?></span>
             </a>
         </li>
         <li>
