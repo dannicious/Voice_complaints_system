@@ -1,0 +1,3 @@
+# Real SMTP credentials — copy smtp_config.example.php to smtp_config.php
+# and fill in your own values. Never commit smtp_config.php.
+complaint-system-main/Ui-main/smtp_config.php
