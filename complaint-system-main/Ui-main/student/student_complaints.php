@@ -3,6 +3,7 @@ if (session_status() === PHP_SESSION_NONE) {
     session_start();
 }
 require_once __DIR__ . '/../db_connection.php';
+require_once __DIR__ . '/../faculty_helpers.php';
 
 $pageMode = (string)($_GET['mode'] ?? 'complaint');
 $flashStatus = (string)($_GET['status'] ?? '');
@@ -31,6 +32,7 @@ $complaintCategories = [
     ['value' => 'dean', 'label' => 'Dean'],
     ['value' => 'admin', 'label' => 'Admin'],
 ];
+$placeOfIncidentOptions = ['CTAS Building', 'CCJ Building', 'CCIS Building', 'GYM', 'BACK ADMIN'];
 $reportedStudentOptions = [];
 $selectedReportedStudentIds = [];
 $draftKey = $pageMode === 'suggestion' ? 'suggestion' : 'complaint';
@@ -47,6 +49,8 @@ if ($flashStatus === 'success') {
 } else {
     $submissionDraft = $_SESSION['submission_drafts'][$draftKey] ?? [];
 }
+$placeOfIncidentDraftValue = (string)($submissionDraft['place_of_incident'] ?? '');
+$placeOfIncidentIsOther = $placeOfIncidentDraftValue !== '' && !in_array($placeOfIncidentDraftValue, $placeOfIncidentOptions, true);
 
 if ($pageMode !== 'suggestion') {
     try {
@@ -68,6 +72,23 @@ if ($pageMode !== 'suggestion') {
         $reportedStudentOptions = $studentOptionsStmt->fetchAll(PDO::FETCH_ASSOC);
     } catch (PDOException $e) {
         $reportedStudentOptions = [];
+    }
+
+    $reportedFacultyOptions = faculty_staff_options($pdo);
+
+    $reportedTypeDraft = (string)($submissionDraft['reported_type'] ?? 'student');
+    if (!in_array($reportedTypeDraft, ['student', 'faculty'], true)) {
+        $reportedTypeDraft = 'student';
+    }
+
+    $selectedReportedFacultyIds = [];
+    if (!empty($submissionDraft['reported_faculty_ids']) && is_array($submissionDraft['reported_faculty_ids'])) {
+        foreach ($submissionDraft['reported_faculty_ids'] as $facultyId) {
+            $facultyId = (int)$facultyId;
+            if ($facultyId > 0) {
+                $selectedReportedFacultyIds[] = $facultyId;
+            }
+        }
     }
 
     $selectedReportedStudentIds = [];
@@ -314,6 +335,11 @@ body {
 .input-field { width: 100%; padding: 12px 15px; border: 1px solid #e5e7eb; border-radius: 8px; background: #f9fafb; font-size: 14px; outline: none; transition: 0.2s; }
 .input-field:focus { border-color: #6d28d9; background: #fff; box-shadow: 0 0 0 3px rgba(109,40,217,0.1); }
 .help-text { margin-top: 8px; font-size: 12px; color: #6b7280; line-height: 1.5; }
+.reported-type-switch { display: flex; gap: 10px; flex-wrap: wrap; }
+.reported-type-option { display: inline-flex; align-items: center; gap: 8px; padding: 10px 16px; border: 1px solid #e5e7eb; border-radius: 8px; cursor: pointer; font-size: 14px; font-weight: 500; color: #374151; background: #fff; }
+.reported-type-option:hover { border-color: #c4b5fd; }
+.reported-type-option:has(input:checked) { border-color: #7c3aed; background: #f5f3ff; color: #5b21b6; }
+.reported-type-option input { accent-color: #7c3aed; margin: 0; }
 .student-picker { position: relative; }
 .student-picker-input { width: 100%; padding: 12px 15px; border: 1px solid #e5e7eb; border-radius: 8px; background: #f9fafb; font-size: 14px; outline: none; transition: 0.2s; }
 .student-picker-input:focus { border-color: #6d28d9; background: #fff; box-shadow: 0 0 0 3px rgba(109,40,217,0.1); }
@@ -442,6 +468,21 @@ body {
                     <legend style="font-weight: 600; color: #333; padding: 0 10px;">Person/Office Complained Of <span style="color: red;">*</span></legend>
                     
                     <div class="form-group">
+                        <label>Who are you reporting? <span style="color: red;">*</span></label>
+                        <div class="reported-type-switch">
+                            <label class="reported-type-option">
+                                <input type="radio" name="reported_type" value="student" <?php echo $reportedTypeDraft === 'student' ? 'checked' : ''; ?>>
+                                <span>Student</span>
+                            </label>
+                            <label class="reported-type-option">
+                                <input type="radio" name="reported_type" value="faculty" <?php echo $reportedTypeDraft === 'faculty' ? 'checked' : ''; ?>>
+                                <span>Faculty/Staff</span>
+                            </label>
+                        </div>
+                        <div class="help-text" id="routingHint"></div>
+                    </div>
+
+                    <div class="form-group" id="studentPickerGroup">
                         <label>Search and select the student(s) involved <span style="color: red;">*</span></label>
                         <div class="student-picker" id="studentPicker">
                             <div class="student-chips" id="studentPickerChips"></div>
@@ -467,9 +508,41 @@ body {
                         <?php foreach ($selectedReportedStudentIds as $selectedId): ?>
                             <input type="hidden" name="reported_student_ids[]" value="<?php echo e((string)(int)$selectedId); ?>">
                         <?php endforeach; ?>
-                        <input type="hidden" name="person_complained_of" id="personComplainedOfInput" value="<?php echo draft_value($submissionDraft, 'person_complained_of'); ?>">
                         <div class="help-text">Click the box to view the list, type to filter names, and choose one or more students.</div>
                     </div>
+
+                    <div class="form-group" id="facultyPickerGroup">
+                        <label>Search and select the faculty or staff involved <span style="color: red;">*</span></label>
+                        <?php if ($reportedFacultyOptions === []): ?>
+                            <div class="help-text" style="color:#b45309;">No faculty or staff records have been added yet. Please contact the SAS Office.</div>
+                        <?php endif; ?>
+                        <div class="student-picker" id="facultyPicker">
+                            <div class="student-chips" id="facultyPickerChips"></div>
+                            <input type="text" id="facultySearchInput" class="student-picker-input" placeholder="Click to search faculty or staff names..." autocomplete="off">
+                            <div class="student-picker-options" id="facultyPickerOptions">
+                                <?php foreach ($reportedFacultyOptions as $facultyOption): ?>
+                                    <?php $facultyId = (int)$facultyOption['id']; ?>
+                                    <?php $facultyName = trim((string)($facultyOption['first_name'] ?? '')) . ' ' . trim((string)($facultyOption['last_name'] ?? '')); ?>
+                                    <?php $facultyPosition = trim((string)($facultyOption['position'] ?? '')); ?>
+                                    <?php $facultyDepartment = trim((string)($facultyOption['department'] ?? '')); ?>
+                                    <?php $facultyCollege = trim((string)($facultyOption['college_name'] ?? '')); ?>
+                                    <?php $facultyDetail = trim(implode(' • ', array_filter([$facultyPosition, $facultyDepartment, $facultyCollege]))); ?>
+                                    <button type="button" class="student-option" data-id="<?php echo e((string)$facultyId); ?>" data-label="<?php echo e($facultyName); ?>" data-search="<?php echo e(strtolower(trim($facultyName . ' ' . $facultyPosition . ' ' . $facultyDepartment . ' ' . $facultyCollege))); ?>">
+                                        <span class="student-option-name"><?php echo e($facultyName); ?></span>
+                                        <?php if ($facultyDetail !== ''): ?>
+                                            <span class="student-option-details"><?php echo e($facultyDetail); ?></span>
+                                        <?php endif; ?>
+                                    </button>
+                                <?php endforeach; ?>
+                            </div>
+                        </div>
+                        <?php foreach ($selectedReportedFacultyIds as $selectedFacultyId): ?>
+                            <input type="hidden" name="reported_faculty_ids[]" value="<?php echo e((string)(int)$selectedFacultyId); ?>">
+                        <?php endforeach; ?>
+                        <div class="help-text">Click the box to view the list, type to filter names, and choose one or more.</div>
+                    </div>
+
+                    <input type="hidden" name="person_complained_of" id="personComplainedOfInput" value="<?php echo draft_value($submissionDraft, 'person_complained_of'); ?>">
                 </fieldset>
 
                 <!-- INCIDENT DETAILS SECTION -->
@@ -489,18 +562,16 @@ body {
 
                         <div class="form-group">
                             <label>Place of Incident <span style="color: red;">*</span></label>
-                            <input type="text" name="place_of_incident" class="input-field" placeholder="e.g., Library, Classroom 201" value="<?php echo draft_value($submissionDraft, 'place_of_incident'); ?>" required>
+                            <select id="placeOfIncidentSelect" class="input-field" required onchange="syncPlaceOfIncident()">
+                                <option value="" disabled <?php echo $placeOfIncidentDraftValue === '' ? 'selected' : ''; ?>>Select a place...</option>
+                                <?php foreach ($placeOfIncidentOptions as $place): ?>
+                                    <option value="<?php echo e($place); ?>" <?php echo draft_selected($submissionDraft, 'place_of_incident', $place); ?>><?php echo e($place); ?></option>
+                                <?php endforeach; ?>
+                                <option value="Others" <?php echo $placeOfIncidentIsOther ? 'selected' : ''; ?>>Others</option>
+                            </select>
+                            <input type="text" id="placeOfIncidentOther" class="input-field" placeholder="Please specify the place" style="margin-top:8px; <?php echo $placeOfIncidentIsOther ? '' : 'display:none;'; ?>" value="<?php echo $placeOfIncidentIsOther ? e($placeOfIncidentDraftValue) : ''; ?>" <?php echo $placeOfIncidentIsOther ? 'required' : ''; ?> oninput="syncPlaceOfIncident()">
+                            <input type="hidden" name="place_of_incident" id="placeOfIncidentHidden" value="<?php echo draft_value($submissionDraft, 'place_of_incident'); ?>">
                         </div>
-                    </div>
-
-                    <div class="form-group">
-                        <label>Complaint Category <span style="color: red;">*</span></label>
-                        <select name="category" class="input-field" required>
-                            <option value="" disabled <?php echo empty($submissionDraft['category']) ? 'selected' : ''; ?>>Select a recipient...</option>
-                            <?php foreach ($complaintCategories as $cat): ?>
-                                <option value="<?php echo htmlspecialchars((string)$cat['value'], ENT_QUOTES, 'UTF-8'); ?>" <?php echo draft_selected($submissionDraft, 'category', (string)$cat['value']); ?>><?php echo htmlspecialchars((string)$cat['label'], ENT_QUOTES, 'UTF-8'); ?></option>
-                            <?php endforeach; ?>
-                        </select>
                     </div>
 
                     <div class="form-group">
@@ -562,6 +633,25 @@ body {
 </div>
 
 <script>
+function syncPlaceOfIncident() {
+    const select = document.getElementById('placeOfIncidentSelect');
+    const other = document.getElementById('placeOfIncidentOther');
+    const hidden = document.getElementById('placeOfIncidentHidden');
+    if (!select || !other || !hidden) {
+        return;
+    }
+    if (select.value === 'Others') {
+        other.style.display = 'block';
+        other.required = true;
+        hidden.value = other.value.trim();
+    } else {
+        other.style.display = 'none';
+        other.required = false;
+        other.value = '';
+        hidden.value = select.value;
+    }
+}
+
 function resetComplaintForm() {
     // Find and reset the form
     const form = document.querySelector('form[action*="student_submission_preview.php"]');
@@ -573,7 +663,7 @@ function resetComplaintForm() {
         inputs.forEach(function(input) {
             if (input.type === 'checkbox' || input.type === 'radio') {
                 input.checked = false;
-            } else if (input.type === 'hidden' && input.name === 'reported_student_ids[]') {
+            } else if (input.type === 'hidden' && (input.name === 'reported_student_ids[]' || input.name === 'reported_faculty_ids[]')) {
                 input.remove();
             } else {
                 input.value = '';
@@ -581,13 +671,15 @@ function resetComplaintForm() {
         });
     }
 
-    // Clear student picker
-    const chipsContainer = document.getElementById('studentPickerChips');
-    if (chipsContainer) {
-        chipsContainer.innerHTML = '';
-    }
+    // Clear the student and faculty pickers
+    ['studentPickerChips', 'facultyPickerChips'].forEach(function (id) {
+        const chipsContainer = document.getElementById(id);
+        if (chipsContainer) {
+            chipsContainer.innerHTML = '';
+        }
+    });
 
-    const hiddenInputs = document.querySelectorAll('input[name="reported_student_ids[]"]');
+    const hiddenInputs = document.querySelectorAll('input[name="reported_student_ids[]"], input[name="reported_faculty_ids[]"]');
     hiddenInputs.forEach(function (input) {
         input.remove();
     });
@@ -647,40 +739,57 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 
-    const searchInput = document.getElementById('studentSearchInput');
-    const studentPicker = document.getElementById('studentPicker');
-    const studentOptions = document.getElementById('studentPickerOptions');
-    const chipsContainer = document.getElementById('studentPickerChips');
     const personComplainedOfInput = document.getElementById('personComplainedOfInput');
-    const selectedValues = new Map();
 
-    if (searchInput && studentPicker && studentOptions && chipsContainer && personComplainedOfInput) {
-        const allOptions = Array.from(studentOptions.querySelectorAll('.student-option'));
+    // One picker implementation, used for both the student list and the
+    // faculty/staff list. Only the picker matching the selected "Who are you
+    // reporting?" option contributes to person_complained_of.
+    function createPicker(config) {
+        const picker = document.getElementById(config.pickerId);
+        const options = document.getElementById(config.optionsId);
+        const chipsContainer = document.getElementById(config.chipsId);
+        const searchInput = document.getElementById(config.searchId);
 
-        function renderSelection() {
+        if (!picker || !options || !chipsContainer || !searchInput || !personComplainedOfInput) {
+            return null;
+        }
+
+        const allOptions = Array.from(options.querySelectorAll('.student-option'));
+        const selectedValues = new Map();
+        let onChange = function () {};
+
+        function render() {
             chipsContainer.innerHTML = '';
-            const hiddenInputs = studentPicker.querySelectorAll('input[name="reported_student_ids[]"]');
-            hiddenInputs.forEach(function (input) { input.remove(); });
+            picker.querySelectorAll('input[name="' + config.fieldName + '"]').forEach(function (input) {
+                input.remove();
+            });
 
-            const selectedItems = Array.from(selectedValues.values());
-            selectedItems.forEach(function (item) {
+            Array.from(selectedValues.values()).forEach(function (item) {
                 const chip = document.createElement('div');
                 chip.className = 'student-chip';
-                chip.innerHTML = '<span>' + item.label + '</span><button type="button" data-id="' + item.id + '" aria-label="Remove">×</button>';
+                const label = document.createElement('span');
+                label.textContent = item.label;
+                const removeBtn = document.createElement('button');
+                removeBtn.type = 'button';
+                removeBtn.setAttribute('data-id', item.id);
+                removeBtn.setAttribute('aria-label', 'Remove');
+                removeBtn.textContent = '×';
+                chip.appendChild(label);
+                chip.appendChild(removeBtn);
                 chipsContainer.appendChild(chip);
 
                 const hiddenInput = document.createElement('input');
                 hiddenInput.type = 'hidden';
-                hiddenInput.name = 'reported_student_ids[]';
+                hiddenInput.name = config.fieldName;
                 hiddenInput.value = item.id;
-                studentPicker.appendChild(hiddenInput);
+                picker.appendChild(hiddenInput);
             });
 
-            personComplainedOfInput.value = selectedItems.map(function (item) { return item.label; }).join(', ');
             allOptions.forEach(function (option) {
-                const isSelected = selectedValues.has(option.getAttribute('data-id'));
-                option.classList.toggle('selected', isSelected);
+                option.classList.toggle('selected', selectedValues.has(option.getAttribute('data-id')));
             });
+
+            onChange();
         }
 
         function filterOptions() {
@@ -703,7 +812,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 } else {
                     selectedValues.set(id, { id: id, label: label });
                 }
-                renderSelection();
+                render();
             });
         });
 
@@ -715,40 +824,110 @@ document.addEventListener('DOMContentLoaded', function() {
             const id = button.getAttribute('data-id');
             if (id) {
                 selectedValues.delete(id);
-                renderSelection();
+                render();
             }
         });
 
-        searchInput.addEventListener('focus', function () {
-            studentOptions.style.display = 'block';
-            filterOptions();
-        });
-        searchInput.addEventListener('click', function () {
-            studentOptions.style.display = 'block';
-            filterOptions();
-        });
-        searchInput.addEventListener('input', function () {
-            studentOptions.style.display = 'block';
-            filterOptions();
+        ['focus', 'click', 'input'].forEach(function (evt) {
+            searchInput.addEventListener(evt, function () {
+                options.style.display = 'block';
+                filterOptions();
+            });
         });
 
         document.addEventListener('click', function (event) {
-            if (!studentPicker.contains(event.target)) {
-                studentOptions.style.display = 'none';
+            if (!picker.contains(event.target)) {
+                options.style.display = 'none';
             }
         });
 
-        const initialValues = Array.from(studentPicker.querySelectorAll('input[name="reported_student_ids[]"]'));
-        initialValues.forEach(function (input) {
+        // Restore anything already chosen before a back-navigation.
+        Array.from(picker.querySelectorAll('input[name="' + config.fieldName + '"]')).forEach(function (input) {
             const id = input.value;
             const option = allOptions.find(function (item) { return item.getAttribute('data-id') === id; });
             if (option) {
                 selectedValues.set(id, { id: id, label: option.getAttribute('data-label') || '' });
             }
         });
-        renderSelection();
-        filterOptions();
+
+        return {
+            render: render,
+            filterOptions: filterOptions,
+            setOnChange: function (fn) { onChange = fn; },
+            clear: function () { selectedValues.clear(); render(); },
+            labels: function () {
+                return Array.from(selectedValues.values()).map(function (item) { return item.label; });
+            }
+        };
     }
+
+    const studentPickerApi = createPicker({
+        pickerId: 'studentPicker',
+        optionsId: 'studentPickerOptions',
+        chipsId: 'studentPickerChips',
+        searchId: 'studentSearchInput',
+        fieldName: 'reported_student_ids[]'
+    });
+
+    const facultyPickerApi = createPicker({
+        pickerId: 'facultyPicker',
+        optionsId: 'facultyPickerOptions',
+        chipsId: 'facultyPickerChips',
+        searchId: 'facultySearchInput',
+        fieldName: 'reported_faculty_ids[]'
+    });
+
+    const typeRadios = Array.from(document.querySelectorAll('input[name="reported_type"]'));
+    const studentGroup = document.getElementById('studentPickerGroup');
+    const facultyGroup = document.getElementById('facultyPickerGroup');
+    const routingHint = document.getElementById('routingHint');
+
+    function currentType() {
+        const checked = typeRadios.find(function (radio) { return radio.checked; });
+        return checked ? checked.value : 'student';
+    }
+
+    function syncPersonComplainedOf() {
+        if (!personComplainedOfInput) {
+            return;
+        }
+        const api = currentType() === 'faculty' ? facultyPickerApi : studentPickerApi;
+        personComplainedOfInput.value = api ? api.labels().join(', ') : '';
+    }
+
+    if (studentPickerApi) { studentPickerApi.setOnChange(syncPersonComplainedOf); }
+    if (facultyPickerApi) { facultyPickerApi.setOnChange(syncPersonComplainedOf); }
+
+    function applyType(clearOther) {
+        const type = currentType();
+        const isFaculty = type === 'faculty';
+
+        if (studentGroup) { studentGroup.style.display = isFaculty ? 'none' : ''; }
+        if (facultyGroup) { facultyGroup.style.display = isFaculty ? '' : 'none'; }
+
+        // Only one kind of person can be reported per complaint, so switching
+        // clears whatever was picked in the other list.
+        if (clearOther) {
+            if (isFaculty && studentPickerApi) { studentPickerApi.clear(); }
+            if (!isFaculty && facultyPickerApi) { facultyPickerApi.clear(); }
+        }
+
+        if (routingHint) {
+            routingHint.textContent = isFaculty
+                ? 'This complaint will be sent automatically to the SAS Director.'
+                : "This complaint will be sent automatically to the dean of the reported student's college.";
+        }
+
+        syncPersonComplainedOf();
+    }
+
+    typeRadios.forEach(function (radio) {
+        radio.addEventListener('change', function () { applyType(true); });
+    });
+
+    if (studentPickerApi) { studentPickerApi.render(); studentPickerApi.filterOptions(); }
+    if (facultyPickerApi) { facultyPickerApi.render(); facultyPickerApi.filterOptions(); }
+    applyType(false);
 });
 
 <?php if ($pageMode !== 'suggestion' && $flashStatus === 'success' && $flashMessage !== ''): ?>

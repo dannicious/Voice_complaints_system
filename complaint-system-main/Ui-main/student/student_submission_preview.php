@@ -150,6 +150,11 @@ $flashType = 'error';
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     try {
         if ($mode === 'complaint') {
+            $reportedType = trim((string)($_POST['reported_type'] ?? 'student'));
+            if (!in_array($reportedType, ['student', 'faculty'], true)) {
+                $reportedType = 'student';
+            }
+
             $draft = [
                 'complainant_name' => trim((string)($_POST['complainant_name'] ?? '')),
                 'complainant_address' => trim((string)($_POST['complainant_address'] ?? '')),
@@ -157,12 +162,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'complainant_age' => trim((string)($_POST['complainant_age'] ?? '')),
                 'complainant_civil_status' => trim((string)($_POST['complainant_civil_status'] ?? '')),
                 'complainant_contact_details' => trim((string)($_POST['complainant_contact_details'] ?? '')),
-                'reported_student_ids' => array_values(array_filter(array_map('intval', (array)($_POST['reported_student_ids'] ?? [])))),
+                'reported_type' => $reportedType,
+                'reported_student_ids' => $reportedType === 'student'
+                    ? array_values(array_filter(array_map('intval', (array)($_POST['reported_student_ids'] ?? []))))
+                    : [],
+                'reported_faculty_ids' => $reportedType === 'faculty'
+                    ? array_values(array_filter(array_map('intval', (array)($_POST['reported_faculty_ids'] ?? []))))
+                    : [],
                 'person_complained_of' => trim((string)($_POST['person_complained_of'] ?? '')),
                 'date_of_incident' => trim((string)($_POST['date_of_incident'] ?? '')),
                 'time_of_incident' => trim((string)($_POST['time_of_incident'] ?? '')),
                 'place_of_incident' => trim((string)($_POST['place_of_incident'] ?? '')),
-                'category' => trim((string)($_POST['category'] ?? '')),
+                // The recipient is decided by who is being reported, not by the
+                // student: reported students go to their dean, reported
+                // faculty/staff go to the SAS Director.
+                'category' => $reportedType === 'faculty' ? 'admin' : 'dean',
                 'act_complained_of' => trim((string)($_POST['act_complained_of'] ?? '')),
                 'desired_outcome' => trim((string)($_POST['desired_outcome'] ?? '')),
                 'terms_agreement_accepted' => isset($_POST['terms_agreement_accepted']) ? '1' : '',
@@ -188,6 +202,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
             if (!empty($missing)) {
                 $flashMessage = 'Please complete all required fields before proceeding.';
+                $flashType = 'error';
+            } elseif ($reportedType === 'faculty' && $draft['reported_faculty_ids'] === []) {
+                $flashMessage = 'Please select the faculty or staff member being reported.';
+                $flashType = 'error';
+            } elseif ($reportedType === 'student' && $draft['reported_student_ids'] === []) {
+                $flashMessage = 'Please select the student being reported.';
                 $flashType = 'error';
             }
         } else {
@@ -309,32 +329,43 @@ body { background: #f4f6fb; color: #1f2937; }
                 </div>
 
                 <?php if ($mode === 'complaint'): ?>
-                    <div class="field full"><div class="field-label">Students Involved</div><div class="field-value"><?php
+                    <?php $previewReportedType = (string)($draft['reported_type'] ?? 'student'); ?>
+                    <div class="field full"><div class="field-label"><?php echo $previewReportedType === 'faculty' ? 'Faculty/Staff Involved' : 'Students Involved'; ?></div><div class="field-value"><?php
                         $selectedNames = [];
-                        if (!empty($draft['reported_student_ids']) && is_array($draft['reported_student_ids'])) {
-                            $reportedIds = array_map('intval', $draft['reported_student_ids']);
+                        $draftIdsKey = $previewReportedType === 'faculty' ? 'reported_faculty_ids' : 'reported_student_ids';
+                        if (!empty($draft[$draftIdsKey]) && is_array($draft[$draftIdsKey])) {
+                            $reportedIds = array_filter(array_map('intval', $draft[$draftIdsKey]));
                             if (!empty($reportedIds)) {
-                                $reportedIdList = implode(',', array_filter($reportedIds));
-                                if ($reportedIdList !== '') {
-                                    try {
-                                        $nameStmt = $pdo->prepare('SELECT id, first_name, last_name, student_number FROM student_profiles WHERE id IN (' . $reportedIdList . ') ORDER BY first_name ASC, last_name ASC');
+                                $reportedIdList = implode(',', $reportedIds);
+                                try {
+                                    if ($previewReportedType === 'faculty') {
+                                        $nameStmt = $pdo->prepare('SELECT first_name, last_name, position FROM faculty_staff WHERE id IN (' . $reportedIdList . ') ORDER BY first_name ASC, last_name ASC');
+                                        $nameStmt->execute();
+                                        foreach ($nameStmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+                                            $position = trim((string)($row['position'] ?? ''));
+                                            $selectedNames[] = trim((string)($row['first_name'] ?? '')) . ' ' . trim((string)($row['last_name'] ?? ''))
+                                                . ($position !== '' ? ' (' . $position . ')' : '');
+                                        }
+                                    } else {
+                                        $nameStmt = $pdo->prepare('SELECT first_name, last_name, student_number FROM student_profiles WHERE id IN (' . $reportedIdList . ') ORDER BY first_name ASC, last_name ASC');
                                         $nameStmt->execute();
                                         foreach ($nameStmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
                                             $selectedNames[] = trim((string)($row['first_name'] ?? '')) . ' ' . trim((string)($row['last_name'] ?? '')) . ' (' . (string)($row['student_number'] ?? '') . ')';
                                         }
-                                    } catch (PDOException $e) {
-                                        $selectedNames = [];
                                     }
+                                } catch (PDOException $e) {
+                                    $selectedNames = [];
                                 }
                             }
                         }
-                        echo field(!empty($selectedNames) ? implode(', ', $selectedNames) : 'No students selected');
+                        echo field(!empty($selectedNames) ? implode(', ', $selectedNames) : ($previewReportedType === 'faculty' ? 'No faculty/staff selected' : 'No students selected'));
                     ?></div></div>
                     <div class="field full"><div class="field-label">Person/Office Complained Of</div><div class="field-value"><?php echo field((string)($draft['person_complained_of'] ?? '')); ?></div></div>
                     <div class="field"><div class="field-label">Date of Incident</div><div class="field-value"><?php echo field((string)($draft['date_of_incident'] ?? '')); ?></div></div>
                     <div class="field"><div class="field-label">Time of Incident</div><div class="field-value"><?php echo field((string)($draft['time_of_incident'] ?? '')); ?></div></div>
                     <div class="field full"><div class="field-label">Place of Incident</div><div class="field-value"><?php echo field((string)($draft['place_of_incident'] ?? '')); ?></div></div>
-                    <div class="field full"><div class="field-label">Category</div><div class="field-value"><?php echo field((string)($draft['category'] ?? '')); ?></div></div>
+                    <div class="field"><div class="field-label">Reported</div><div class="field-value"><?php echo field(((string)($draft['reported_type'] ?? 'student')) === 'faculty' ? 'Faculty/Staff' : 'Student'); ?></div></div>
+                    <div class="field"><div class="field-label">Will be sent to</div><div class="field-value"><?php echo field(((string)($draft['category'] ?? '')) === 'admin' ? 'SAS Director' : 'College Dean'); ?></div></div>
                     <div class="field full"><div class="field-label">Act/s Complained Of</div><div class="field-value"><?php echo field((string)($draft['act_complained_of'] ?? '')); ?></div></div>
                     <div class="field full"><div class="field-label">Desired Outcome</div><div class="field-value"><?php echo field((string)($draft['desired_outcome'] ?? '')); ?></div></div>
                     <div class="field full"><div class="field-label">Supporting File</div><div class="field-value"><?php echo !empty($draft['attachment_name']) ? field((string)$draft['attachment_name']) : 'No file attached'; ?></div></div>

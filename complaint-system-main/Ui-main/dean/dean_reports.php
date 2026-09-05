@@ -27,6 +27,7 @@ function require_dean_session($pdo) {
 }
 
 require_dean_session($pdo);
+require_once __DIR__ . '/../report_period_helpers.php';
 
 // Get dean's college
 $deanProfileStmt = $pdo->prepare('SELECT college_id FROM dean_profiles WHERE user_id = ?');
@@ -62,6 +63,8 @@ if ($q !== '') {
     $searchWhere = ' AND (sp.student_number LIKE ? OR sp.first_name LIKE ? OR sp.last_name LIKE ? OR u.username LIKE ? OR prog.name LIKE ?)';
     $searchParams = [$like, $like, $like, $like, $like];
 }
+
+$reportRange = trim((string)($_GET['range'] ?? 'month'));
 
 // Sorting
 $sort = trim((string)($_GET['sort'] ?? ''));
@@ -178,6 +181,8 @@ td{ padding:15px 10px; font-size:14px; color:#444; border-bottom:1px solid #f9f9
                 <div class="value"><?php echo number_format($totalStudents); ?></div>
             </div>
         </div>
+
+        <?php render_report_period_widget($pdo, (int)$collegeId, $reportRange, 'dean_reports.php', array_filter(['q' => $q, 'sort' => $sort])); ?>
 
         <div class="data-card">
             <div class="card-header" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">

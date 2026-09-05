@@ -85,6 +85,10 @@ if (!isset($_SESSION['user_id']) || (string)($_SESSION['role'] ?? '') !== 'stude
                     $statusClass = 'status-resolved';
                     $statusIcon = 'bx-check-circle';
                     $statusLabel = 'Resolved';
+                } elseif (in_array($status, ['dismissed'], true)) {
+                    $statusClass = 'status-dismissed';
+                    $statusIcon = 'bx-x-circle';
+                    $statusLabel = 'Dismissed';
                 } elseif (in_array($status, ['approved'], true)) {
                     $statusClass = 'status-approved';
                     $statusIcon = 'bx-check-circle';
@@ -218,6 +222,7 @@ tr:hover td {
 .status-pending { color: #f59e0b; font-weight: 600; display: flex; align-items: center; gap: 5px; }
 .status-review { color: #3b82f6; font-weight: 600; display: flex; align-items: center; gap: 5px; }
 .status-resolved { color: #10b981; font-weight: 600; display: flex; align-items: center; gap: 5px; }
+.status-dismissed { color: #6b7280; font-weight: 600; display: flex; align-items: center; gap: 5px; }
 .status-approved { color: #0f766e; font-weight: 600; display: flex; align-items: center; gap: 5px; }
 .status-reviewed { color: #047857; font-weight: 600; display: flex; align-items: center; gap: 5px; }
 .status-closed { color: #6b7280; font-weight: 600; display: flex; align-items: center; gap: 5px; }

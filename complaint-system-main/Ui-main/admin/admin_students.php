@@ -34,6 +34,8 @@ function require_admin_session(PDO $pdo): void
 }
 
 require_admin_session($pdo);
+require_once __DIR__ . '/../report_period_helpers.php';
+$reportRange = trim((string)($_GET['range'] ?? 'month'));
 
 if (!isset($_SESSION['csrf_token'])) {
     $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
@@ -587,6 +589,8 @@ tbody tr:hover { background-color: #fcfcfc; }
         <?php if ($flashMessage !== ''): ?>
             <div class="flash-msg <?php echo e($flashType); ?>"><?php echo e($flashMessage); ?></div>
         <?php endif; ?>
+
+        <?php render_report_period_widget($pdo, null, $reportRange, 'admin_students.php', array_filter(['q' => (string)($_GET['q'] ?? ''), 'sort' => (string)($_GET['sort'] ?? '')])); ?>
 
         <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px;">
             <div style="flex:1;min-width:220px;">

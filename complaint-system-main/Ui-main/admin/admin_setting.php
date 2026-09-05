@@ -2,6 +2,8 @@
 session_start();
 require_once __DIR__ . '/../db_connection.php';
 require_once __DIR__ . '/../ticket_flow.php';
+require_once __DIR__ . '/../student_bulk_upload.php';
+require_once __DIR__ . '/../faculty_helpers.php';
 
 if (!isset($_SESSION['csrf_token'])) {
     $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
@@ -103,7 +105,7 @@ function log_admin_activity(PDO $pdo, int $userId, string $action, ?string $targ
 }
 
 $activeTab = (string)($_GET['tab'] ?? 'categories');
-$allowedTabs = ['categories', 'profile', 'logs'];
+$allowedTabs = ['categories', 'bulk_upload', 'profile', 'logs'];
 if (!in_array($activeTab, $allowedTabs, true)) {
     $activeTab = 'categories';
 }
@@ -146,6 +148,28 @@ try {
 
 ensure_category_route_columns($pdo);
 
+// Downloadable CSV template for the Bulk Upload section. Sent before any page
+// output, so it must stay above the HTML below.
+$downloadTemplate = (string)($_GET['download'] ?? '');
+if ($downloadTemplate === 'student_template' || $downloadTemplate === 'faculty_template') {
+    $isFacultyTemplate = $downloadTemplate === 'faculty_template';
+    $csv = $isFacultyTemplate ? faculty_bulk_upload_template_csv() : student_bulk_upload_template_csv();
+    $filename = $isFacultyTemplate ? 'faculty_bulk_upload_template.csv' : 'student_bulk_upload_template.csv';
+    header('Content-Type: text/csv; charset=UTF-8');
+    header('Content-Disposition: attachment; filename="' . $filename . '"');
+    header('Content-Length: ' . strlen($csv));
+    echo $csv;
+    exit;
+}
+
+// Per-row results of the last bulk upload are too long for the flash query
+// string, so they ride in the session across the redirect instead.
+$bulkUploadNotes = [];
+if (!empty($_SESSION['bulk_upload_notes']) && is_array($_SESSION['bulk_upload_notes'])) {
+    $bulkUploadNotes = $_SESSION['bulk_upload_notes'];
+    unset($_SESSION['bulk_upload_notes']);
+}
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = trim((string)($_POST['action'] ?? ''));
     $token = (string)($_POST['csrf_token'] ?? '');
@@ -155,6 +179,38 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     try {
+        if ($action === 'bulk_upload_faculty') {
+            $result = faculty_bulk_upload_import($pdo, $_FILES['faculty_csv'] ?? []);
+            $_SESSION['bulk_upload_notes'] = $result['notes'];
+
+            if ($result['imported'] > 0) {
+                log_admin_activity(
+                    $pdo,
+                    $adminUserId,
+                    'Bulk uploaded ' . $result['imported'] . ' faculty/staff record(s)',
+                    'faculty'
+                );
+            }
+
+            redirect_settings('bulk_upload', $result['ok'] ? 'success' : 'error', $result['message']);
+        }
+
+        if ($action === 'bulk_upload_students') {
+            $result = student_bulk_upload_import($pdo, $_FILES['students_csv'] ?? []);
+            $_SESSION['bulk_upload_notes'] = $result['notes'];
+
+            if ($result['imported'] > 0) {
+                log_admin_activity(
+                    $pdo,
+                    $adminUserId,
+                    'Bulk uploaded ' . $result['imported'] . ' student record(s)',
+                    'student'
+                );
+            }
+
+            redirect_settings('bulk_upload', $result['ok'] ? 'success' : 'error', $result['message']);
+        }
+
         if ($action === 'update_chatbot_identity') {
             $botName = trim((string)($_POST['bot_name'] ?? ''));
             $welcomeMessage = trim((string)($_POST['welcome_message'] ?? ''));
@@ -1029,6 +1085,7 @@ $profileImage = trim($profile['profile_pic']) !== '' ? '../' . ltrim($profile['p
         <div class="nav-header">
             <div class="nav-tabs">
                 <button class="tab-btn <?php echo $activeTab === 'categories' ? 'active' : ''; ?>" onclick="switchTab(event, 'categories')">Categories & Suggestions</button>
+                <button class="tab-btn <?php echo $activeTab === 'bulk_upload' ? 'active' : ''; ?>" onclick="switchTab(event, 'bulk_upload')">Bulk Upload</button>
                 <button class="tab-btn <?php echo $activeTab === 'profile' ? 'active' : ''; ?>" onclick="switchTab(event, 'profile')">My Profile</button>
                 <button class="tab-btn <?php echo $activeTab === 'logs' ? 'active' : ''; ?>" onclick="switchTab(event, 'logs')">Activity Logs</button>
             </div>
@@ -1314,6 +1371,118 @@ $profileImage = trim($profile['profile_pic']) !== '' ? '../' . ltrim($profile['p
                                     <?php endif; ?>
                                 </tbody>
                             </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="bulk_upload" class="tab-panel <?php echo $activeTab === 'bulk_upload' ? 'active' : ''; ?>">
+                <div class="section-header">
+                    <h1>Bulk Upload</h1>
+                    <p>Add a whole intake of new enrollees, or your faculty and staff roster, from a CSV file instead of one at a time.</p>
+                </div>
+
+                <div class="card-grid">
+                    <div class="form-card">
+                        <form method="POST" enctype="multipart/form-data">
+                            <input type="hidden" name="csrf_token" value="<?php echo e($_SESSION['csrf_token']); ?>">
+                            <input type="hidden" name="action" value="bulk_upload_students">
+                            <div class="form-group">
+                                <label><i class='bx bx-upload'></i> Upload Student CSV</label>
+                                <p style="font-size: 12.5px; color: var(--text-light); margin-bottom: 12px;">
+                                    Each row creates a student account and profile. Rows that are invalid or already
+                                    exist are skipped and listed below, so the rest of the file still imports.
+                                </p>
+                                <div class="form-group" style="margin-bottom: 14px;">
+                                    <input type="file" class="input-field" name="students_csv" accept=".csv,.txt" required>
+                                </div>
+                                <div style="display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 12px;">
+                                    <button class="btn-primary" type="submit"><i class='bx bx-cloud-upload'></i> Upload Students</button>
+                                    <a class="btn-secondary" href="admin_setting.php?download=student_template"><i class='bx bx-download'></i> Download CSV Template</a>
+                                </div>
+                            </div>
+                        </form>
+
+                        <?php if ($bulkUploadNotes !== []): ?>
+                            <div class="form-group">
+                                <label><i class='bx bx-list-ul'></i> Skipped Rows (<?php echo count($bulkUploadNotes); ?>)</label>
+                                <div class="table-container">
+                                    <table>
+                                        <thead>
+                                            <tr><th>Details</th></tr>
+                                        </thead>
+                                        <tbody>
+                                            <?php foreach ($bulkUploadNotes as $note): ?>
+                                                <tr><td><?php echo e((string)$note); ?></td></tr>
+                                            <?php endforeach; ?>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        <?php endif; ?>
+                    </div>
+
+                    <div class="form-card">
+                        <form method="POST" enctype="multipart/form-data">
+                            <input type="hidden" name="csrf_token" value="<?php echo e($_SESSION['csrf_token']); ?>">
+                            <input type="hidden" name="action" value="bulk_upload_faculty">
+                            <div class="form-group">
+                                <label><i class='bx bx-id-card'></i> Upload Faculty/Staff CSV</label>
+                                <p style="font-size: 12.5px; color: var(--text-light); margin-bottom: 12px;">
+                                    Faculty and staff can be reported in a complaint, which is then routed to the
+                                    SAS Director. They have no login accounts &mdash; only <strong>first_name</strong>
+                                    and <strong>last_name</strong> are required.
+                                </p>
+                                <div class="form-group" style="margin-bottom: 14px;">
+                                    <input type="file" class="input-field" name="faculty_csv" accept=".csv,.txt" required>
+                                </div>
+                                <div style="display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 12px;">
+                                    <button class="btn-primary" type="submit"><i class='bx bx-cloud-upload'></i> Upload Faculty/Staff</button>
+                                    <a class="btn-secondary" href="admin_setting.php?download=faculty_template"><i class='bx bx-download'></i> Download CSV Template</a>
+                                </div>
+                                <p style="font-size: 12.5px; color: var(--text-light);">
+                                    Optional columns: <?php echo e(implode(', ', array_keys(faculty_bulk_upload_columns()['optional']))); ?>.
+                                    Add an <strong>email</strong> so the SAS Director can send them a Call Slip.
+                                </p>
+                            </div>
+                        </form>
+                    </div>
+
+                    <div class="form-card">
+                        <div class="form-group">
+                            <label><i class='bx bx-help-circle'></i> Student CSV Format</label>
+                            <p style="font-size: 12.5px; color: var(--text-light); margin-bottom: 12px;">
+                                The first row must be the column headers. Column order does not matter, and
+                                colleges and programs may be given either by code or by full name.
+                            </p>
+                            <div class="table-container">
+                                <table>
+                                    <thead>
+                                        <tr>
+                                            <th>Column</th>
+                                            <th>Required</th>
+                                            <th>Notes</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <?php $bulkColumns = student_bulk_upload_columns(); ?>
+                                        <?php foreach ($bulkColumns['required'] as $column => $description): ?>
+                                            <tr>
+                                                <td><strong><?php echo e($column); ?></strong></td>
+                                                <td>Yes</td>
+                                                <td><?php echo e($description); ?></td>
+                                            </tr>
+                                        <?php endforeach; ?>
+                                        <?php foreach ($bulkColumns['optional'] as $column => $description): ?>
+                                            <tr>
+                                                <td><?php echo e($column); ?></td>
+                                                <td>No</td>
+                                                <td><?php echo e($description); ?></td>
+                                            </tr>
+                                        <?php endforeach; ?>
+                                    </tbody>
+                                </table>
+                            </div>
                         </div>
                     </div>
                 </div>

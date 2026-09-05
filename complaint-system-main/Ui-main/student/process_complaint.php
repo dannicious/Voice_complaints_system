@@ -5,6 +5,7 @@ declare(strict_types=1);
 session_start();
 require_once __DIR__ . '/../db_connection.php';
 require_once __DIR__ . '/../ticket_flow.php';
+require_once __DIR__ . '/../faculty_helpers.php';
 
 function back_with_message(string $type, string $msg): void
 {
@@ -293,6 +294,39 @@ function resolve_direct_category_route(PDO $pdo, string $categoryInput, ?int $st
     ];
 }
 
+// Who is being reported decides where the complaint goes, so the student
+// filing it never picks an office: a reported student goes to the dean of
+// that student's college, a reported faculty/staff member goes to the SAS
+// Director.
+ensure_faculty_tables($pdo);
+
+$reportedType = (string)($draft['reported_type'] ?? 'student');
+if (!in_array($reportedType, ['student', 'faculty'], true)) {
+    $reportedType = 'student';
+}
+$reportedFacultyIds = array_values(array_filter(array_map('intval', (array)($draft['reported_faculty_ids'] ?? []))));
+
+// A complaint that routes to a dean should go to the dean with jurisdiction
+// over the REPORTED student (who the dean would actually call in) — not the
+// complainant's own dean. Fall back to the complainant's college only when no
+// reported student profile is on record (e.g. the reported party isn't a
+// registered student), preserving the previous behavior for that case.
+$reportedStudentCollegeId = null;
+if (!empty($reportedStudentIds)) {
+    try {
+        $reportedCollegeStmt = $pdo->prepare('SELECT college_id FROM student_profiles WHERE id = :id LIMIT 1');
+        $reportedCollegeStmt->execute([':id' => $reportedStudentIds[0]]);
+        $reportedCollegeIdValue = $reportedCollegeStmt->fetchColumn();
+        if ($reportedCollegeIdValue !== false && $reportedCollegeIdValue !== null) {
+            $reportedStudentCollegeId = (int)$reportedCollegeIdValue;
+        }
+    } catch (PDOException $e) {
+        $reportedStudentCollegeId = null;
+    }
+}
+$routingCollegeId = $reportedStudentCollegeId
+    ?? ($student['college_id'] !== null ? (int)$student['college_id'] : null);
+
 try {
     $attachment = finalize_preview_upload($draft, 'complaints');
     $categoryId = null;
@@ -300,8 +334,13 @@ try {
     $recipientUserId = 0;
     $collegeId = null;
 
-    if (in_array($normalizedCategory, ['dean', 'admin'], true)) {
-        $route = resolve_direct_category_route($pdo, $categoryInput, $student['college_id'] !== null ? (int)$student['college_id'] : null);
+    if ($reportedType === 'faculty') {
+        // Complaints about faculty/staff are handled by the SAS Director.
+        $recipientRole = 'admin';
+        $recipientUserId = 0;
+        $collegeId = null;
+    } elseif (in_array($normalizedCategory, ['dean', 'admin'], true)) {
+        $route = resolve_direct_category_route($pdo, $categoryInput, $routingCollegeId);
         $recipientRole = (string)$route['role'];
         $recipientUserId = isset($route['user_id']) ? (int)$route['user_id'] : 0;
         $collegeId = isset($route['college_id']) ? (int)$route['college_id'] : null;
@@ -317,10 +356,10 @@ try {
         if ($categoryId === null) {
             back_with_message('error', 'Selected complaint category is invalid. Please review the form again.');
         }
-        $route = resolve_ticket_route($pdo, 'complaint', $categoryId, $student['college_id'] !== null ? (int)$student['college_id'] : null);
+        $route = resolve_ticket_route($pdo, 'complaint', $categoryId, $routingCollegeId);
         $recipientRole = (string)$route['role'];
         $recipientUserId = isset($route['user_id']) ? (int)$route['user_id'] : 0;
-        $collegeId = $recipientRole === 'admin' ? null : ($student['college_id'] !== null ? (int)$student['college_id'] : null);
+        $collegeId = $recipientRole === 'admin' ? null : $routingCollegeId;
     }
 
     $ticketNo = create_ticket_no($pdo, 'complaints', 'VOX-C');
@@ -345,6 +384,7 @@ try {
             attachments,
             desired_outcome,
             terms_agreement_accepted,
+            reported_type,
             status,
             approval_status,
             visibility_status,
@@ -368,6 +408,7 @@ try {
             :attachments,
             :desired_outcome,
             :terms_agreement_accepted,
+            :reported_type,
             :status,
             :approval_status,
             :visibility_status,
@@ -394,6 +435,7 @@ try {
         ':attachments' => $attachment,
         ':desired_outcome' => $desiredOutcome,
         ':terms_agreement_accepted' => $termsAccepted,
+        ':reported_type' => $reportedType,
         ':status' => 'new',
         ':approval_status' => 'approved',
         ':visibility_status' => 'private',
@@ -410,6 +452,16 @@ try {
                 ':student_id' => $reportedStudentId,
             ]);
             $countStmt->execute([':student_id' => $reportedStudentId]);
+        }
+    }
+
+    if (!empty($reportedFacultyIds)) {
+        $facultyLinkStmt = $pdo->prepare('INSERT INTO complaint_faculty_links (complaint_id, faculty_id) VALUES (:complaint_id, :faculty_id)');
+        foreach ($reportedFacultyIds as $reportedFacultyId) {
+            $facultyLinkStmt->execute([
+                ':complaint_id' => $complaintId,
+                ':faculty_id' => $reportedFacultyId,
+            ]);
         }
     }
 

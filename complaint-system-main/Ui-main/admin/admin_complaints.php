@@ -2,6 +2,7 @@
 session_start();
 require_once __DIR__ . '/../db_connection.php';
 require_once __DIR__ . '/../ticket_flow.php';
+require_once __DIR__ . '/../complaint_age_helpers.php';
 
 function require_admin_session(PDO $pdo): void
 {
@@ -54,6 +55,9 @@ function complaint_status_badge(string $status): string
 {
     if ($status === 'resolved') {
         return 'status-resolved';
+    }
+    if ($status === 'dismissed') {
+        return 'status-dismissed';
     }
     if ($status === 'new' || $status === 'pending') {
         return 'status-new';
@@ -668,6 +672,7 @@ tbody tr:hover { background-color: #fcfcfc; }
 .status-new      { background: #e0f2fe; color: #0284c7; }
 .status-pending  { background: #fef3c7; color: #d97706; }
 .status-resolved { background: #d1fae5; color: #059669; }
+.status-dismissed { background: #e5e7eb; color: #4b5563; }
 
 .approval-badge {
     padding: 4px 10px;
@@ -997,6 +1002,7 @@ tbody tr:hover { background-color: #fcfcfc; }
     }
 }
 </style>
+<?php echo complaint_age_styles(); ?>
 </head>
 
 <body>
@@ -1059,6 +1065,7 @@ tbody tr:hover { background-color: #fcfcfc; }
                         <option value="">All Statuses</option>
                         <option value="under_review" <?php echo $status === 'under_review' ? 'selected' : ''; ?>>Under Review</option>
                         <option value="resolved" <?php echo $status === 'resolved' ? 'selected' : ''; ?>>Resolved</option>
+                        <option value="dismissed" <?php echo $status === 'dismissed' ? 'selected' : ''; ?>>Dismissed</option>
                     </select>
                 </div>
                 <button class="btn-apply-filter" type="submit"><i class='bx bx-filter-alt'></i> Apply Filter</button>
@@ -1150,7 +1157,7 @@ tbody tr:hover { background-color: #fcfcfc; }
                                             </td>
                                             <td class="cell-college"><?php echo e((string)$row['college_code']); ?></td>
                                             <td class="cell-category"><?php echo e((string)$row['category_name']); ?></td>
-                                            <td class="cell-status"><span class="status-badge <?php echo complaint_status_badge((string)$row['status']); ?>"><?php echo e(ucfirst(str_replace('_', ' ', (string)$row['status']))); ?></span></td>
+                                            <td class="cell-status"><span class="status-badge <?php echo complaint_status_badge((string)$row['status']); ?>"><?php echo e(ucfirst(str_replace('_', ' ', (string)$row['status']))); ?></span><div><?php echo complaint_age_badge((string)$row['created_at'], (string)$row['status']); ?></div></td>
                                             <td class="cell-action">
                                                 <button class="btn-manage btn-view" type="button"
                                                     data-id="<?php echo (int)$row['id']; ?>"
@@ -1201,6 +1208,7 @@ tbody tr:hover { background-color: #fcfcfc; }
                                                 <span class="status-badge <?php echo complaint_status_badge((string)$row['status']); ?>">
                                                     <?php echo e(ucfirst(str_replace('_', ' ', (string)$row['status']))); ?>
                                                 </span>
+                                                <div><?php echo complaint_age_badge((string)$row['created_at'], (string)$row['status']); ?></div>
                                             </td>
                                             <td>
                                                 <span class="badge-inline badge-dean">

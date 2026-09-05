@@ -4,6 +4,8 @@ session_start();
 require_once __DIR__ . '/../db_connection.php';
 require_once __DIR__ . '/../ticket_flow.php';
 require_once __DIR__ . '/../call_slip_helpers.php';
+require_once __DIR__ . '/../faculty_helpers.php';
+require_once __DIR__ . '/../complaint_age_helpers.php';
 // Prevent PHP warnings from being printed to the page (they break layout). Logging still occurs.
 ini_set('display_errors', '0');
 error_reporting(E_ALL & ~E_NOTICE & ~E_WARNING);
@@ -207,6 +209,13 @@ if ($flashMessage === '') {
             $flashMessage = 'Complaint not found.';
             $flashType = 'error';
         } else {
+            // Opening a complaint counts as picking it up, so it stops sitting
+            // in the list as "New" while the SAS Director is already on it.
+            if (complaint_is_awaiting_action((string)($ticket['status'] ?? ''))) {
+                mark_complaint_under_review($pdo, $ticketId);
+                $ticket['status'] = 'under_review';
+            }
+
             $studentDisplayName = '';
             $studentDisplayEmail = '';
             $reportedStudentId = 0;
@@ -226,6 +235,16 @@ if ($flashMessage === '') {
                 $studentDisplayName = trim((string)($reportedStudent['first_name'] ?? '') . ' ' . (string)($reportedStudent['last_name'] ?? ''));
                 $studentDisplayEmail = trim((string)($reportedStudent['email'] ?? ''));
             }
+
+            // A complaint filed against a faculty/staff member has no reported
+            // student, so the Call Slip is addressed to the faculty record.
+            $isFacultyComplaint = (string)($ticket['reported_type'] ?? 'student') === 'faculty';
+            $reportedFaculty = $isFacultyComplaint ? complaint_reported_faculty($pdo, $ticketId) : null;
+            if ($reportedFaculty !== null) {
+                $studentDisplayName = $reportedFaculty['name'];
+                $studentDisplayEmail = $reportedFaculty['email'];
+            }
+
             if ($studentDisplayName === '') {
                 $studentDisplayName = trim((string)($ticket['person_complained_of'] ?? ''));
             }
@@ -235,7 +254,9 @@ if ($flashMessage === '') {
                 $recipientName = trim((string)($_POST['student_name'] ?? $studentDisplayName));
                 $dateIssued = trim((string)($_POST['date_issued'] ?? ''));
                 $timeIssued = trim((string)($_POST['time_issued'] ?? ''));
-                $result = issue_call_slip($pdo, $ticketId, 'complaint', $reportedStudentId > 0 ? $reportedStudentId : (int)$ticket['student_id'], 'admin', (int)$_SESSION['user_id']);
+                $result = $reportedFaculty !== null
+                    ? issue_faculty_call_slip($pdo, $ticketId, $reportedFaculty['id'], 'admin', (int)$_SESSION['user_id'])
+                    : issue_call_slip($pdo, $ticketId, 'complaint', $reportedStudentId > 0 ? $reportedStudentId : (int)$ticket['student_id'], 'admin', (int)$_SESSION['user_id']);
                 if ($result['ok']) {
                     $mailResult = send_call_slip_email(
                         $recipientEmail,
@@ -283,8 +304,15 @@ if ($flashMessage === '') {
                         $remark = trim((string)($_POST['remark'] ?? ''));
                         $remarkId = isset($_POST['remark_id']) ? (int)$_POST['remark_id'] : 0;
 
-                        if (in_array($newStatus, ['under_review', 'resolved'], true)) {
-                            // If marking as resolved, require a remark
+                        // A dismissal always carries a reason: if the remarks
+                        // box was left empty, the standard wording stands in.
+                        if ($newStatus === 'dismissed' && $remark === '') {
+                            $remark = default_dismissal_remark();
+                        }
+
+                        if (in_array($newStatus, ['under_review', 'resolved', 'dismissed'], true)) {
+                            // Resolving still needs a written reason; there is
+                            // no sensible generic wording for that outcome.
                             if ($newStatus === 'resolved' && $remark === '') {
                                 $flashMessage = 'Please provide Official Remarks before marking this complaint as Resolved.';
                                 $flashType = 'error';
@@ -549,21 +577,33 @@ textarea.form-control { resize:vertical; min-height:100px; }
         <div class="muted">Submitted <?php echo e(!empty($ticket['created_at']) ? date('M d, Y h:i A', strtotime((string)$ticket['created_at'])) : ''); ?></div>
     </div>
     <script>
-        (function(){
+        // The status form is rendered further down the page, so this has to
+        // wait for the DOM - inline it was bailing out before binding.
+        document.addEventListener('DOMContentLoaded', function(){
             var status = document.getElementById('statusSelect');
             var remark = document.getElementById('remarkTextarea');
             if (!status || !remark) return;
+            var defaultDismissalRemark = <?php echo json_encode(default_dismissal_remark(), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES); ?>;
+
             function toggleRequired(){
-                if (status.value === 'resolved') {
-                    remark.required = true;
-                } else {
-                    remark.required = false;
+                remark.required = (status.value === 'resolved' || status.value === 'dismissed');
+
+                if (status.value === 'dismissed') {
+                    // Offer the standard wording as a starting point, but never
+                    // overwrite remarks that are already written.
+                    if (remark.value.trim() === '') {
+                        remark.value = defaultDismissalRemark;
+                    }
+                } else if (remark.value.trim() === defaultDismissalRemark) {
+                    // Switching away from Dismissed: drop the dismissal wording
+                    // if it was left untouched.
+                    remark.value = '';
                 }
             }
             status.addEventListener('change', toggleRequired);
             // initialize
             toggleRequired();
-        })();
+        });
     </script>
 
     <!-- Complaint Details -->
@@ -619,6 +659,7 @@ textarea.form-control { resize:vertical; min-height:100px; }
                     <select id="statusSelect" name="status" class="form-control">
                         <option value="under_review" <?php echo ((string)$ticket['status'] === 'under_review') ? 'selected' : ''; ?>>Under Review</option>
                         <option value="resolved" <?php echo ((string)$ticket['status'] === 'resolved') ? 'selected' : ''; ?>>Resolved</option>
+                        <option value="dismissed" <?php echo ((string)$ticket['status'] === 'dismissed') ? 'selected' : ''; ?>>Dismissed</option>
                         
                 </select>
             </div>

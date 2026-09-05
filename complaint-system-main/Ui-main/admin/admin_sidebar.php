@@ -160,6 +160,11 @@ try {
             </a>
         </li>
         <li>
+            <a href="admin_faculty.php" class="<?= $current === 'admin_faculty.php' ? 'active' : '' ?>">
+                <i class='bx bx-id-card'></i> Faculty & Staff
+            </a>
+        </li>
+        <li>
             <a href="admin_students.php" class="<?= $current === 'admin_students.php' ? 'active' : '' ?>">
                 <i class='bx bx-group'></i> Reports
             </a>

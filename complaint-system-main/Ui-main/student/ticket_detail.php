@@ -475,6 +475,10 @@ body { background: #f4f6fb; }
             $statusColor = 'background:#f59e0b;color:#1f2937;';
             if ($status === 'resolved' || $status === 'reviewed') {
                 $statusColor = 'background:#dcfce7;color:#065f46;';
+            } elseif ($status === 'dismissed') {
+                // Closed without action; neutral rather than the amber used
+                // for complaints that are still in progress.
+                $statusColor = 'background:#e5e7eb;color:#374151;';
             }
         ?>
         <div style="padding:8px 12px;border-radius:999px;font-weight:700;<?php echo $statusColor; ?>"><?php echo e($statusLabel); ?></div>

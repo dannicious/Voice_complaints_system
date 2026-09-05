@@ -191,6 +191,7 @@ function normalize_ticket_status(string $status): string
         'under_review' => 'under_review',
         'pending' => 'under_review',
         'resolved' => 'resolved',
+        'dismissed' => 'dismissed',
     ];
 
     return $map[$value] ?? $value;
@@ -202,10 +203,22 @@ function ticket_thread_is_active(string $status): bool
     return in_array($status, ['new', 'under_review'], true);
 }
 
+/**
+ * Standard wording used when a complaint is dismissed. It pre-fills the
+ * Official Remarks box so a dismissal always carries a reason, and the dean or
+ * SAS Director can replace it with their own. Also applied server-side when
+ * the box is submitted empty, so the default holds even without JavaScript.
+ */
+function default_dismissal_remark(): string
+{
+    return 'The complaint has been determined to have no sufficient or valid basis, '
+        . 'is considered a false or unserious report, or does not require further action.';
+}
+
 function ticket_thread_is_locked(string $status): bool
 {
     $status = normalize_ticket_status($status);
-    return in_array($status, ['resolved'], true);
+    return in_array($status, ['resolved', 'dismissed'], true);
 }
 
 function get_ticket_status_state(PDO $pdo, string $ticketType, int $ticketId): array
@@ -328,6 +341,24 @@ function set_ticket_status(PDO $pdo, string $ticketType, int $ticketId, string $
         $sql = 'UPDATE `' . $table . '` SET ' . implode(', ', $parts) . ' WHERE id = :id';
         $stmt = $pdo->prepare($sql);
         $stmt->execute([':status' => 'resolved', ':id' => $ticketId]);
+        return;
+    }
+
+    // Dismissed is terminal like resolved, but the complaint was never acted
+    // on - it had no valid basis, was a prank, or needed no further action -
+    // so no resolved_at is recorded. It needs its own branch because the
+    // fallback below coerces anything unrecognised into 'under_review'.
+    if ($status === 'dismissed') {
+        $parts = ['status = :status'];
+        if ($hasResolved) {
+            $parts[] = 'resolved_at = NULL';
+        }
+        if ($hasClosed) {
+            $parts[] = 'closed_at = NOW()';
+        }
+        $sql = 'UPDATE `' . $table . '` SET ' . implode(', ', $parts) . ' WHERE id = :id';
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute([':status' => 'dismissed', ':id' => $ticketId]);
         return;
     }
 

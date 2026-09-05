@@ -4,6 +4,7 @@ if (!isset($_SESSION['csrf_token'])) {
     $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
 }
 require_once __DIR__ . '/../db_connection.php';
+require_once __DIR__ . '/../complaint_age_helpers.php';
 require_once __DIR__ . '/../ticket_flow.php';
 
 function e(string $value): string
@@ -42,7 +43,7 @@ if ($deanCollegeId === null) {
 $q = trim((string)($_GET['q'] ?? ''));
 $statusFilter = strtolower(trim((string)($_GET['status'] ?? 'all')));
 $viewMode = strtolower(trim((string)($_GET['view'] ?? 'all'))); // 'all' or 'new'
-$allowedStatusFilters = ['all', 'under_review', 'resolved'];
+$allowedStatusFilters = ['all', 'under_review', 'resolved', 'dismissed'];
 if (!in_array($statusFilter, $allowedStatusFilters, true)) {
     $statusFilter = 'all';
 }
@@ -51,7 +52,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     $complaintId = (int)($_POST['complaint_id'] ?? 0);
     $status = trim((string)($_POST['status'] ?? ''));
     $remarks = trim((string)($_POST['remarks'] ?? ''));
-    $allowedStatuses = ['under_review', 'resolved'];
+    $allowedStatuses = ['under_review', 'resolved', 'dismissed'];
 
     if ($complaintId <= 0 || !in_array($status, $allowedStatuses, true)) {
         $flashMsg = 'Invalid complaint update request.';
@@ -78,7 +79,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                 $flashMsg = 'Complaint not found in your college scope.';
                 $flashType = 'error';
             } else {
-                    // If marking as resolved, require remarks
+                    // A dismissal always carries a reason: if the remarks box
+                    // was left empty, the standard wording stands in.
+                    if ($status === 'dismissed' && $remarks === '') {
+                        $remarks = default_dismissal_remark();
+                    }
+
+                    // Resolving still needs a written reason; there is no
+                    // sensible generic wording for that outcome.
                     if ($status === 'resolved' && $remarks === '') {
                         $flashMsg = 'Please provide Official Remarks before marking this complaint as Resolved.';
                         $flashType = 'error';
@@ -415,6 +423,7 @@ tbody tr:hover td { background: #f9fafb; }
 .status-pending  { background: #fffbeb; color: #d97706; }
 .status-review   { background: #eff6ff; color: #2563eb; }
 .status-resolved { background: #f0fdf4; color: #16a34a; }
+.status-dismissed { background: #f3f4f6; color: #4b5563; }
 .status-flagged  { background: #fef2f2; color: #dc2626; }
 
 .subject-text { font-weight: 500; color: #1f2937; }
@@ -672,6 +681,7 @@ textarea.form-control { resize: vertical; min-height: 100px; }
     .modal-body { grid-template-columns: 1fr; }
 }
 </style>
+<?php echo complaint_age_styles(); ?>
 </head>
 
 <body>
@@ -707,6 +717,7 @@ textarea.form-control { resize: vertical; min-height: 100px; }
                                 <option value="all" <?php echo $statusFilter === 'all' ? 'selected' : ''; ?>>All Statuses</option>
                                 <option value="under_review" <?php echo $statusFilter === 'under_review' ? 'selected' : ''; ?>>Under Review</option>
                                 <option value="resolved" <?php echo $statusFilter === 'resolved' ? 'selected' : ''; ?>>Resolved</option>
+                                <option value="dismissed" <?php echo $statusFilter === 'dismissed' ? 'selected' : ''; ?>>Dismissed</option>
                             </select>
                         </div>
                     <button type="submit" class="btn-search">Apply</button>
@@ -748,6 +759,10 @@ textarea.form-control { resize: vertical; min-height: 100px; }
                                     $statusClass = 'status-resolved';
                                     $statusIcon = 'bx-check-circle';
                                     $statusLabel = 'Resolved';
+                                } elseif ($status === 'dismissed') {
+                                    $statusClass = 'status-dismissed';
+                                    $statusIcon = 'bx-x-circle';
+                                    $statusLabel = 'Dismissed';
                                 } elseif ($status === 'flagged') {
                                     $statusClass = 'status-flagged';
                                     $statusIcon = 'bx-flag';
@@ -767,7 +782,10 @@ textarea.form-control { resize: vertical; min-height: 100px; }
                                     <div class="small-text"><?php echo e($submitter); ?></div>
                                 </td>
                                 <td><?php echo e((string)$row['category_name']); ?></td>
-                                <td><span class="status-badge <?php echo e($statusClass); ?>"><?php echo e($statusLabel); ?></span></td>
+                                <td>
+                                    <span class="status-badge <?php echo e($statusClass); ?>"><?php echo e($statusLabel); ?></span>
+                                    <div><?php echo complaint_age_badge((string)$row['created_at'], (string)$row['status']); ?></div>
+                                </td>
                                 <td>
                                     <a href="dean_ticket_detail.php?id=<?php echo (int)$row['id']; ?>" class="btn-manage" style="text-decoration:none;display:inline-flex;align-items:center;gap:6px;"><i class='bx bx-edit-alt'></i> Manage</a>
                                 </td>
@@ -917,7 +935,7 @@ textarea.form-control { resize: vertical; min-height: 100px; }
                         <option value="new">New</option>
                         <option value="under_review">Under Review</option>
                         <option value="resolved">Resolved</option>
-                        
+                        <option value="dismissed">Dismissed</option>
                     </select>
                 </div>
                 <div class="form-group">
@@ -929,11 +947,29 @@ textarea.form-control { resize: vertical; min-height: 100px; }
                         var status = document.getElementById('statusSelect');
                         var remark = document.getElementById('modalRemarksTextarea');
                         if (!status || !remark) return;
+
+                        var defaultDismissalRemark = <?php echo json_encode(default_dismissal_remark(), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES); ?>;
+
                         function toggleRequired(){
-                            if (status.value === 'resolved') remark.required = true; else remark.required = false;
+                            remark.required = (status.value === 'resolved' || status.value === 'dismissed');
+
+                            if (status.value === 'dismissed') {
+                                // Standard wording as a starting point; never
+                                // overwrite remarks already written.
+                                if (remark.value.trim() === '') {
+                                    remark.value = defaultDismissalRemark;
+                                }
+                            } else if (remark.value.trim() === defaultDismissalRemark) {
+                                remark.value = '';
+                            }
                         }
+
                         status.addEventListener('change', toggleRequired);
                         toggleRequired();
+
+                        // The modal sets the status when it opens, so it needs
+                        // to re-sync the remarks box afterwards.
+                        window.syncRemarkForStatus = toggleRequired;
                     })();
                 </script>
                 </form>
@@ -1088,6 +1124,9 @@ function openModal(button) {
 
     document.getElementById('modalComplaintId').value = button.dataset.id;
     document.getElementById('statusSelect').value = button.dataset.status;
+    if (typeof window.syncRemarkForStatus === 'function') {
+        window.syncRemarkForStatus();
+    }
 
     repliesSection.style.display = 'block';
     repliesContainer.innerHTML = '';
