@@ -143,8 +143,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action'] ?? '') ==
 }
 
 $q = trim((string)($_GET['q'] ?? ''));
-$date = trim((string)($_GET['date'] ?? ''));
+$dateFrom = trim((string)($_GET['date_from'] ?? ''));
+$dateTo = trim((string)($_GET['date_to'] ?? ''));
+$legacyDate = trim((string)($_GET['date'] ?? ''));
+if ($dateFrom === '' && $dateTo === '' && $legacyDate !== '') {
+    $dateFrom = $legacyDate;
+    $dateTo = $legacyDate;
+}
+foreach (['dateFrom', 'dateTo'] as $dateVariable) {
+    if ($$dateVariable !== '') {
+        $parsedDate = DateTimeImmutable::createFromFormat('!Y-m-d', $$dateVariable);
+        if ($parsedDate === false || $parsedDate->format('Y-m-d') !== $$dateVariable) {
+            $$dateVariable = '';
+        }
+    }
+}
+if ($dateFrom !== '' && $dateTo !== '' && $dateFrom > $dateTo) {
+    [$dateFrom, $dateTo] = [$dateTo, $dateFrom];
+}
 $college = (int)($_GET['college'] ?? 0);
+$department = (int)($_GET['department'] ?? 0);
+$departments = [];
+if ($college <= 0) {
+    $department = 0;
+}
 $status = trim((string)($_GET['status'] ?? ''));
 
  $colleges = [];
@@ -155,6 +177,15 @@ $status = trim((string)($_GET['status'] ?? ''));
 try {
     $collegeStmt = $pdo->query('SELECT id, code, name FROM colleges ORDER BY name ASC');
     $colleges = $collegeStmt->fetchAll();
+    if ($college > 0) {
+        $departmentStmt = $pdo->prepare('SELECT id, code, name FROM programs WHERE college_id = :college_id AND status = "active" ORDER BY name ASC');
+        $departmentStmt->execute([':college_id' => $college]);
+        $departments = $departmentStmt->fetchAll(PDO::FETCH_ASSOC);
+        $departmentIds = array_map(static fn(array $row): int => (int)$row['id'], $departments);
+        if (!in_array($department, $departmentIds, true)) {
+            $department = 0;
+        }
+    }
 
     $sql =
         "SELECT
@@ -187,18 +218,32 @@ try {
     $params = [];
 
     if ($q !== '') {
-        $sql .= ' AND (s.ticket_no LIKE :q OR s.subject LIKE :q OR s.description LIKE :q OR CONCAT(COALESCE(sp.first_name,\'\'), \" \", COALESCE(sp.last_name,\'\')) LIKE :q)';
-        $params[':q'] = '%' . $q . '%';
+        $sql .= ' AND (s.ticket_no LIKE :q_ticket OR s.subject LIKE :q_subject OR s.description LIKE :q_description OR CONCAT(COALESCE(sp.first_name,\'\'), " ", COALESCE(sp.last_name,\'\')) LIKE :q_student)';
+        $searchLike = '%' . $q . '%';
+        $params[':q_ticket'] = $searchLike;
+        $params[':q_subject'] = $searchLike;
+        $params[':q_description'] = $searchLike;
+        $params[':q_student'] = $searchLike;
     }
 
-    if ($date !== '') {
-        $sql .= ' AND DATE(s.created_at) = :date_submitted';
-        $params[':date_submitted'] = $date;
+    if ($dateFrom !== '') {
+        $sql .= ' AND DATE(s.created_at) >= :date_from';
+        $params[':date_from'] = $dateFrom;
+    }
+
+    if ($dateTo !== '') {
+        $sql .= ' AND DATE(s.created_at) <= :date_to';
+        $params[':date_to'] = $dateTo;
     }
 
     if ($college > 0) {
         $sql .= ' AND s.college_id = :college_id';
         $params[':college_id'] = $college;
+    }
+
+    if ($department > 0) {
+        $sql .= ' AND sp.program_id = :department_id';
+        $params[':department_id'] = $department;
     }
 
     // Filter by active tab (using status for suggestions)
@@ -496,13 +541,17 @@ body {
 .controls-divider { width: 100%; height: 1px; background: #f0f0f0; }
 
 .controls-bottom {
-    display: flex;
-    gap: 15px;
-    align-items: flex-end;
-    flex-wrap: wrap;
+    display: grid;
+    grid-template-columns: 138px 138px minmax(210px, 1.15fr) minmax(210px, 1.15fr) 126px auto;
+    gap: 12px;
+    align-items: end;
 }
 
-.filter-group { display: flex; flex-direction: column; gap: 5px; }
+.controls-bottom.without-department {
+    grid-template-columns: 138px 138px minmax(260px, 1fr) 126px auto;
+}
+
+.filter-group { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
 
 .filter-group label {
     font-size: 11px;
@@ -523,6 +572,19 @@ body {
     outline: none;
     min-width: 150px;
     height: 38px;
+    width: 100%;
+    min-width: 0;
+}
+
+.controls-bottom .btn-reset {
+    align-self: end;
+    white-space: nowrap;
+}
+
+@media (max-width: 1050px) {
+    .controls-bottom {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
 }
 
 .btn-apply-filter {
@@ -559,16 +621,16 @@ body {
 /* ===== TABS NAVIGATION ===== */
 .tabs-nav {
     display: flex;
-    gap: 0;
+    gap: 40px;
     border-bottom: 2px solid #e5e7eb;
-    margin-bottom: 25px;
+    margin-bottom: 20px;
     background: #fff;
     padding: 0 20px;
     border-radius: 12px 12px 0 0;
 }
 
 .tab-link {
-    padding: 16px 20px;
+    padding: 12px 24px;
     font-size: 14px;
     font-weight: 500;
     color: #6b7280;
@@ -592,8 +654,8 @@ body {
 }
 
 .tab-badge {
-    background: #ef4444;
-    color: #fff;
+    background: #ede9fe;
+    color: #6d28d9;
     font-size: 11px;
     font-weight: 600;
     padding: 2px 8px;
@@ -603,7 +665,8 @@ body {
 }
 
 .tab-badge.gray {
-    background: #6b7280;
+    background: #f3f4f6;
+    color: #4b5563;
 }
 
 .table-card {
@@ -821,6 +884,81 @@ td { position: relative; }
     box-shadow: 0 6px 18px rgba(79,140,255,0.08);
 }
 
+/* Match the manageable complaints table hierarchy and spacing. */
+#manageable.table-card {
+    padding: 22px 24px 10px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    border: 1px solid #e5e7eb;
+    box-shadow: 0 4px 16px rgba(15, 23, 42, 0.04);
+}
+#manageable .table-card-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 14px;
+    margin: 0 0 18px;
+}
+#manageable .table-card-title { font-size: 17px; font-weight: 700; color: #1f2937; }
+#manageable .table-card-subtitle { margin-top: 4px; font-size: 12px; color: #94a3b8; }
+#manageable .scope-badge { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px; font-size: 11px; font-weight: 700; white-space: nowrap; }
+#manageable .scope-general { background: #ede9fe; color: #6d28d9; }
+#manageable .scope-college { background: #e0f2fe; color: #0369a1; }
+#manageable table { width: 100%; min-width: 920px; table-layout: fixed; }
+#manageable table thead th { color: #64748b; font-size: 11px; font-weight: 700; padding: 0 16px 12px; border-bottom: 1px solid #e5e7eb; }
+#manageable table tbody tr { transition: background-color .18s ease; }
+#manageable table tbody tr:hover { background: #fafbff; }
+#manageable table td { padding: 16px; vertical-align: middle; border-bottom: 1px solid #f3f4f6; }
+#manageable table th:nth-child(1), #manageable table td:nth-child(1) { width: 116px; }
+#manageable table th:nth-child(2), #manageable table td:nth-child(2) { width: 31%; }
+#manageable table th:nth-child(3), #manageable table td:nth-child(3) { width: 120px; }
+#manageable table th:nth-child(4), #manageable table td:nth-child(4) { width: 18%; }
+#manageable table th:nth-child(5), #manageable table td:nth-child(5) { width: 150px; }
+#manageable table th:nth-child(6), #manageable table td:nth-child(6) { width: 112px; text-align: right; }
+#manageable .subject-text { font-weight: 700; }
+#manageable .subject-text, #manageable .small-text, #manageable .cell-college, #manageable .cell-category { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#manageable .status-badge { padding: 6px 11px; border-radius: 999px; min-width: 80px; }
+#manageable .cell-action { text-align: right !important; }
+#manageable .btn-manage, #manageable .btn-open-view-only { min-width: 96px; height: 38px; padding: 8px 11px; border-radius: 8px; justify-content: center; box-shadow: 0 5px 12px rgba(109, 40, 217, 0.14); transition: transform .18s ease, background-color .18s ease, box-shadow .18s ease; }
+#manageable .btn-manage:hover, #manageable .btn-open-view-only:hover { background: #5d1fa0; transform: translateY(-1px); box-shadow: 0 7px 16px rgba(109, 40, 217, 0.2); }
+#manageable .table-card-head + table { margin-top: 0; }
+
+#view_only.table-card {
+    padding: 22px 24px 10px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    border: 1px solid #e5e7eb;
+    box-shadow: 0 4px 16px rgba(15, 23, 42, 0.04);
+}
+#view_only .table-card-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 14px;
+    margin: 0 0 18px;
+}
+#view_only .table-card-title { font-size: 17px; font-weight: 700; color: #1f2937; }
+#view_only .table-card-subtitle { margin-top: 4px; font-size: 12px; color: #94a3b8; }
+#view_only .scope-badge { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px; font-size: 11px; font-weight: 700; white-space: nowrap; }
+#view_only .scope-college { background: #e0f2fe; color: #0369a1; }
+#view_only table { width: 100%; min-width: 920px; table-layout: fixed; }
+#view_only table thead th { color: #64748b; font-size: 11px; font-weight: 700; padding: 0 16px 12px; border-bottom: 1px solid #e5e7eb; }
+#view_only table tbody tr { transition: background-color .18s ease; }
+#view_only table tbody tr:hover { background: #fafbff; }
+#view_only table td { padding: 16px; vertical-align: middle; border-bottom: 1px solid #f3f4f6; }
+#view_only table th:nth-child(1), #view_only table td:nth-child(1) { width: 116px; }
+#view_only table th:nth-child(2), #view_only table td:nth-child(2) { width: 31%; }
+#view_only table th:nth-child(3), #view_only table td:nth-child(3) { width: 120px; }
+#view_only table th:nth-child(4), #view_only table td:nth-child(4) { width: 18%; }
+#view_only table th:nth-child(5), #view_only table td:nth-child(5) { width: 150px; }
+#view_only table th:nth-child(6), #view_only table td:nth-child(6) { width: 112px; text-align: right; }
+#view_only .subject-text { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#view_only .small-text, #view_only .cell-college, #view_only .cell-category { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#view_only .status-badge { padding: 6px 11px; border-radius: 999px; min-width: 80px; }
+#view_only .cell-action { text-align: right !important; }
+#view_only .btn-open-view-only { min-width: 96px; height: 38px; padding: 8px 11px; border-radius: 8px; justify-content: center; box-shadow: 0 5px 12px rgba(109, 40, 217, 0.14); transition: transform .18s ease, background-color .18s ease, box-shadow .18s ease; }
+#view_only .btn-open-view-only:hover { background: #5d1fa0; transform: translateY(-1px); box-shadow: 0 7px 16px rgba(109, 40, 217, 0.2); }
+
 @media (max-width: 900px) {
     #manageable .table-card { padding: 14px 12px 8px; }
     #manageable table { table-layout: auto; }
@@ -863,24 +1001,32 @@ td { position: relative; }
             </div>
         <?php endif; ?>
 
-        <form method="GET" class="controls-card">
-            <input type="hidden" name="tab" value="all">
+        <div class="tabs-nav">
+            <a href="admin_suggestions.php?tab=manageable" class="tab-link <?php echo $activeTab === 'manageable' ? 'active' : ''; ?>">Manageable Suggestions <span class="tab-badge"><?php echo (int)($manageableCount ?? 0); ?></span></a>
+            <a href="admin_suggestions.php?tab=view_only" class="tab-link <?php echo $activeTab === 'view_only' ? 'active' : ''; ?>">View Only Suggestions <span class="tab-badge gray"><?php echo (int)($viewOnlyCount ?? 0); ?></span></a>
+        </div>
+
+        <form method="GET" class="controls-card" id="suggestionFiltersForm">
+            <input type="hidden" name="tab" value="<?php echo e($activeTab); ?>">
             <div class="controls-top">
                 <div class="top-search-actions">
                     <div class="search-box">
                         <i class='bx bx-search'></i>
                         <input type="text" name="q" value="<?php echo e($q); ?>" placeholder="Search Ticket, Student Name, Subject...">
                     </div>
-                    <button class="btn-search" type="submit"><i class='bx bx-search'></i> Search</button>
                 </div>
             </div>
 
             <div class="controls-divider"></div>
 
-            <div class="controls-bottom">
+            <div class="controls-bottom <?php echo $college > 0 ? 'with-department' : 'without-department'; ?>">
                 <div class="filter-group">
-                    <label>Date</label>
-                    <input type="date" name="date" class="filter-input" value="<?php echo e($date); ?>">
+                    <label>From Date</label>
+                    <input type="date" name="date_from" class="filter-input" value="<?php echo e($dateFrom); ?>">
+                </div>
+                <div class="filter-group">
+                    <label>To Date</label>
+                    <input type="date" name="date_to" class="filter-input" value="<?php echo e($dateTo); ?>">
                 </div>
                 <div class="filter-group">
                     <label>College</label>
@@ -893,6 +1039,19 @@ td { position: relative; }
                         <?php endforeach; ?>
                     </select>
                 </div>
+                <?php if ($college > 0): ?>
+                    <div class="filter-group">
+                        <label>Department</label>
+                        <select name="department" class="filter-select">
+                            <option value="0">All Departments</option>
+                            <?php foreach ($departments as $d): ?>
+                                <option value="<?php echo (int)$d['id']; ?>" <?php echo $department === (int)$d['id'] ? 'selected' : ''; ?>>
+                                    <?php echo e((string)$d['code'] . ' - ' . (string)$d['name']); ?>
+                                </option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+                <?php endif; ?>
                 <div class="filter-group">
                     <label>Status</label>
                     <select name="status" class="filter-select">
@@ -901,15 +1060,9 @@ td { position: relative; }
                         <option value="reviewed" <?php echo $status === 'reviewed' ? 'selected' : ''; ?>>Reviewed</option>
                     </select>
                 </div>
-                <button class="btn-apply-filter" type="submit"><i class='bx bx-filter-alt'></i> Apply Filter</button>
-                <a class="btn-reset" href="admin_suggestions.php">Reset</a>
+                <a class="btn-reset" href="admin_suggestions.php?tab=<?php echo e($activeTab); ?>">Reset</a>
             </div>
         </form>
-
-        <div class="tabs-nav">
-            <a href="admin_suggestions.php?tab=manageable" class="tab-link <?php echo $activeTab === 'manageable' ? 'active' : ''; ?>">Manageable Suggestions <span class="tab-badge"><?php echo (int)($manageableCount ?? 0); ?></span></a>
-            <a href="admin_suggestions.php?tab=view_only" class="tab-link <?php echo $activeTab === 'view_only' ? 'active' : ''; ?>">View Only Suggestions <span class="tab-badge gray"><?php echo (int)($viewOnlyCount ?? 0); ?></span></a>
-        </div>
 
         <?php $tabConfigs = [
             'manageable' => ['rows' => $manageableSuggestions ?? [], 'canManage' => true],
@@ -918,6 +1071,15 @@ td { position: relative; }
 
         <?php foreach ($tabConfigs as $tabKey => $tabConfig): ?>
             <div id="<?php echo e($tabKey); ?>" class="table-card" style="display: <?php echo $activeTab === $tabKey ? 'block' : 'none'; ?>;">
+                <div class="table-card-head">
+                    <div>
+                        <div class="table-card-title"><?php echo $tabKey === 'manageable' ? 'Manageable Suggestions' : 'View Only Suggestions'; ?></div>
+                        <div class="table-card-subtitle"><?php echo $tabKey === 'manageable' ? 'General suggestions that the admin can manage directly.' : 'College suggestions assigned to deans.'; ?></div>
+                    </div>
+                    <span class="scope-badge <?php echo $tabKey === 'manageable' ? 'scope-general' : 'scope-college'; ?>">
+                        <?php echo $tabKey === 'manageable' ? 'Admin Managed' : 'Dean Managed'; ?>
+                    </span>
+                </div>
                 <table>
                     <thead>
                         <tr>
@@ -939,7 +1101,7 @@ td { position: relative; }
                                 <tr>
                                     <td class="cell-date"><?php echo e(date('M d, Y', strtotime((string)$row['created_at']))); ?></td>
                                     <td class="subject-cell">
-                                        <div class="subject-text"><?php echo e((string)$row['subject']); ?></div>
+                                        <div class="subject-text" title="<?php echo e((string)$row['subject']); ?>"><?php echo e((string)$row['subject']); ?></div>
                                         <div class="small-text">
                                             <?php
                                                 $displayName = 'Anonymous Student';
@@ -1384,6 +1546,33 @@ function submitFeedbackReply(event) {
 const adminFeedbackReplyForm = document.getElementById('feedbackReplyForm');
 if (adminFeedbackReplyForm) {
     adminFeedbackReplyForm.addEventListener('submit', submitFeedbackReply);
+}
+
+const suggestionFiltersForm = document.getElementById('suggestionFiltersForm');
+if (suggestionFiltersForm) {
+    const searchInput = suggestionFiltersForm.querySelector('input[name="q"]');
+    const searchFocusKey = 'adminSuggestionsSearchFocus';
+    let searchTimer;
+
+    if (searchInput) {
+        if (window.sessionStorage.getItem(searchFocusKey) === '1') {
+            searchInput.focus();
+            searchInput.setSelectionRange(searchInput.value.length, searchInput.value.length);
+        }
+
+        searchInput.addEventListener('input', () => {
+            window.sessionStorage.setItem(searchFocusKey, '1');
+            window.clearTimeout(searchTimer);
+            searchTimer = window.setTimeout(() => suggestionFiltersForm.submit(), 350);
+        });
+    }
+
+    suggestionFiltersForm.querySelectorAll('input[name="date_from"], input[name="date_to"], select[name="college"], select[name="department"], select[name="status"]').forEach((filter) => {
+        filter.addEventListener('change', () => {
+            window.sessionStorage.removeItem(searchFocusKey);
+            suggestionFiltersForm.submit();
+        });
+    });
 }
 </script>
 

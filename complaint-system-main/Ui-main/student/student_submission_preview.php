@@ -144,6 +144,21 @@ if (!isset($_SESSION['user_id']) || (string)($_SESSION['role'] ?? '') !== 'stude
 }
 
 $mode = normalize_mode((string)($_GET['mode'] ?? $_POST['mode'] ?? 'complaint'));
+
+// Defense in depth: filing/previewing is only allowed for the current school
+// year, even if a student somehow posts here directly while a past school
+// year is selected (the "File Complaint" / "Send Suggestion" nav is already
+// locked in that state).
+require_once __DIR__ . '/../school_year_helpers.php';
+$svStudentProfileId = sy_resolve_student_profile_id($pdo);
+$svSchoolYearCurrent = sy_current();
+$svSchoolYearSelected = $svStudentProfileId > 0 ? sy_get_selected($pdo, $svStudentProfileId) : $svSchoolYearCurrent;
+if ($svSchoolYearSelected !== $svSchoolYearCurrent) {
+    header('Location: student_complaints.php?mode=' . $mode . '&status=error&msg=' . urlencode(
+        'Switch to the current school year (' . $svSchoolYearCurrent . ') to file a new complaint or suggestion.'
+    ));
+    exit;
+}
 $flashMessage = '';
 $flashType = 'error';
 

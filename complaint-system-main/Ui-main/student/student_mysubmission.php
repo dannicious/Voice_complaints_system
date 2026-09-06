@@ -1,6 +1,7 @@
 <?php
 session_start();
 require_once __DIR__ . '/../db_connection.php';
+require_once __DIR__ . '/../school_year_helpers.php';
 
 function e(string $value): string
 {
@@ -9,6 +10,9 @@ function e(string $value): string
 
 $submissions = [];
 $loadError = '';
+$schoolYearCurrent = sy_current();
+$schoolYearSelected = $schoolYearCurrent;
+$isPastSchoolYear = false;
 
 if (!isset($_SESSION['user_id']) || (string)($_SESSION['role'] ?? '') !== 'student') {
     $loadError = 'Please log in as a student to view your submissions.';
@@ -27,6 +31,8 @@ if (!isset($_SESSION['user_id']) || (string)($_SESSION['role'] ?? '') !== 'stude
             $loadError = 'Student profile not found.';
         } else {
             $studentProfileId = (int)$student['id'];
+            $schoolYearSelected = sy_get_selected($pdo, $studentProfileId);
+            $isPastSchoolYear = $schoolYearSelected !== $schoolYearCurrent;
 
             $sql = "
                 SELECT
@@ -39,7 +45,7 @@ if (!isset($_SESSION['user_id']) || (string)($_SESSION['role'] ?? '') !== 'stude
                     c.status AS raw_status
                 FROM complaints c
                 LEFT JOIN complaint_categories cc ON cc.id = c.category_id
-                                WHERE c.student_id = :student_id_complaint
+                                WHERE c.student_id = :student_id_complaint AND c.school_year = :school_year_complaint
 
                 UNION ALL
 
@@ -53,7 +59,7 @@ if (!isset($_SESSION['user_id']) || (string)($_SESSION['role'] ?? '') !== 'stude
                     s.status AS raw_status
                 FROM suggestions s
                 LEFT JOIN suggestion_categories sc ON sc.id = s.category_id
-                WHERE s.student_id = :student_id_suggestion
+                WHERE s.student_id = :student_id_suggestion AND s.school_year = :school_year_suggestion
 
                 ORDER BY submitted_at DESC
             ";
@@ -61,7 +67,9 @@ if (!isset($_SESSION['user_id']) || (string)($_SESSION['role'] ?? '') !== 'stude
             $stmt = $pdo->prepare($sql);
             $stmt->execute([
                 ':student_id_complaint' => $studentProfileId,
+                ':school_year_complaint' => $schoolYearSelected,
                 ':student_id_suggestion' => $studentProfileId,
+                ':school_year_suggestion' => $schoolYearSelected,
             ]);
             $rows = $stmt->fetchAll();
 
@@ -165,6 +173,26 @@ body {
     color: #333;
     font-weight: 600;
     font-size: 24px;
+}
+
+.sy-readonly-banner {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    background: #fffbeb;
+    border: 1px solid #fcd34d;
+    color: #92400e;
+    border-radius: 10px;
+    padding: 14px 16px;
+    margin-bottom: 20px;
+    font-size: 13.5px;
+    line-height: 1.5;
+}
+
+.sy-readonly-banner i {
+    font-size: 20px;
+    flex-shrink: 0;
+    margin-top: 1px;
 }
 
 .data-card {
@@ -272,7 +300,18 @@ tr:hover td {
 <div class="main">
 
     <h2 class="page-title">My Tracking List</h2>
-    
+
+    <?php if ($isPastSchoolYear): ?>
+        <div class="sy-readonly-banner">
+            <i class='bx bx-lock-alt'></i>
+            <span>
+                You're viewing School Year <strong><?php echo e($schoolYearSelected); ?></strong> (read-only).
+                Filing new complaints and suggestions is only available for the current school year
+                (<strong><?php echo e($schoolYearCurrent); ?></strong>).
+            </span>
+        </div>
+    <?php endif; ?>
+
     <div class="data-card">
         <table>
             <thead>

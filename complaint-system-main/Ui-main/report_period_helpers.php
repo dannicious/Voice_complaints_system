@@ -1,13 +1,19 @@
 <?php
 
+require_once __DIR__ . '/school_year_helpers.php';
+
 /**
  * Builds period buckets (week/month/year) and counts how many complaints
  * ("reports") were submitted in each one, for the Reports Management
  * period-comparison table. Shared by admin_students.php and dean_reports.php.
  *
- * @param PDO      $pdo
- * @param string   $rangeType  'week' | 'month' | 'year'
- * @param int|null $collegeId  Restrict to one college (dean scope); null = all colleges (admin scope)
+ * @param PDO         $pdo
+ * @param string      $rangeType   'week' | 'month' | 'year'
+ * @param int|null    $collegeId   Restrict to one college (dean scope); null = all colleges (admin scope)
+ * @param int|null    $programId   Restrict to one department/program within that college (dean scope only)
+ * @param string|null $schoolYear  Restrict to one school year label (e.g. "2025-2026"); null = no school-year restriction.
+ *                                 When set, the bucket window is anchored to that school year (instead of "today") so a
+ *                                 past school year still shows its own data rather than an empty window.
  * @return array{
  *     rangeType: string,
  *     buckets: list<array{key:string,label:string,count:int}>,
@@ -17,12 +23,22 @@
  *     delta: int
  * }
  */
-function report_period_buckets(PDO $pdo, string $rangeType, ?int $collegeId = null): array
+function report_period_buckets(PDO $pdo, string $rangeType, ?int $collegeId = null, ?int $programId = null, ?string $schoolYear = null, ?string $semester = null): array
 {
     $rangeType = in_array($rangeType, ['week', 'month', 'year'], true) ? $rangeType : 'month';
     $bucketCount = ['week' => 12, 'month' => 12, 'year' => 5][$rangeType];
 
     $now = new DateTimeImmutable('now');
+    if ($schoolYear !== null && sy_is_valid_label($schoolYear)) {
+        // Anchor the bucket window to the selected school year so a past
+        // school year shows its own trend instead of an empty "last 12
+        // weeks from today" window that doesn't overlap it at all.
+        [, $syEndExclusive] = sy_bounds($schoolYear);
+        $syLastDay = (new DateTimeImmutable($syEndExclusive))->modify('-1 day');
+        if ($syLastDay < $now) {
+            $now = $syLastDay;
+        }
+    }
     $buckets = [];
 
     for ($i = $bucketCount - 1; $i >= 0; $i--) {
@@ -55,14 +71,31 @@ function report_period_buckets(PDO $pdo, string $rangeType, ?int $collegeId = nu
     $rangeStart = $buckets[0]['start'];
     $rangeEnd = $buckets[count($buckets) - 1]['end'];
 
-    $sql = 'SELECT created_at FROM complaints WHERE created_at >= :range_start AND created_at < :range_end';
+    $sql = 'SELECT c.created_at FROM complaints c';
+    if ($programId !== null) {
+        $sql .= ' INNER JOIN student_profiles sp ON sp.id = c.student_id';
+    }
+    $sql .= ' WHERE c.created_at >= :range_start AND c.created_at < :range_end';
     $params = [
         ':range_start' => $rangeStart->format('Y-m-d H:i:s'),
         ':range_end' => $rangeEnd->format('Y-m-d H:i:s'),
     ];
     if ($collegeId !== null) {
-        $sql .= ' AND college_id = :college_id';
+        $sql .= ' AND c.college_id = :college_id';
         $params[':college_id'] = $collegeId;
+    }
+    if ($programId !== null) {
+        $sql .= ' AND sp.program_id = :program_id';
+        $params[':program_id'] = $programId;
+    }
+    if ($schoolYear !== null && sy_is_valid_label($schoolYear)) {
+        $sql .= ' AND c.school_year = :school_year';
+        $params[':school_year'] = $schoolYear;
+    }
+    if ($semester === '1') {
+        $sql .= " AND (DATE_FORMAT(c.created_at, '%m-%d') >= '08-01' OR DATE_FORMAT(c.created_at, '%m-%d') < '01-01')";
+    } elseif ($semester === '2') {
+        $sql .= " AND DATE_FORMAT(c.created_at, '%m-%d') >= '01-01' AND DATE_FORMAT(c.created_at, '%m-%d') < '08-01'";
     }
 
     $stmt = $pdo->prepare($sql);
@@ -109,19 +142,26 @@ function report_period_buckets(PDO $pdo, string $rangeType, ?int $collegeId = nu
  * data table. Self-contained (own <style>, emitted once per page even if
  * called multiple times).
  *
- * @param PDO      $pdo
- * @param int|null $collegeId       Restrict counts to one college (dean scope); null = all colleges (admin scope)
- * @param string   $currentRange    'week' | 'month' | 'year'
- * @param string   $pageUrl         The current page's filename, e.g. 'dean_reports.php'
- * @param array    $preserveParams  Other GET params (e.g. ['q' => ..., 'sort' => ...]) to keep when switching range
+ * @param PDO         $pdo
+ * @param int|null    $collegeId       Restrict counts to one college (dean scope); null = all colleges (admin scope)
+ * @param string      $currentRange    'week' | 'month' | 'year'
+ * @param string      $pageUrl         The current page's filename, e.g. 'dean_reports.php'
+ * @param array       $preserveParams  Other GET params (e.g. ['q' => ..., 'sort' => ...]) to keep when switching range
+ * @param int|null    $programId       Restrict counts to one department/program (dean scope only)
+ * @param string|null $schoolYear      Restrict counts to one school year label; null = no restriction
+ * @param string|null $semester        Restrict counts to semester 1 (Aug-Dec) or 2 (Jan-Jul)
+ * @param bool        $showRangeSwitch Whether to render the built-in Week/Month/Year switch in the card header
+ *                                     (set false when the caller renders its own range control elsewhere, using
+ *                                     the same 'range' query param and preserveParams)
  */
-function render_report_period_widget(PDO $pdo, ?int $collegeId, string $currentRange, string $pageUrl, array $preserveParams = []): void
+function render_report_period_widget(PDO $pdo, ?int $collegeId, string $currentRange, string $pageUrl, array $preserveParams = [], ?int $programId = null, ?string $schoolYear = null, bool $showRangeSwitch = true, ?string $semester = null): void
 {
     static $stylePrinted = false;
 
     $currentRange = in_array($currentRange, ['week', 'month', 'year'], true) ? $currentRange : 'month';
-    $data = report_period_buckets($pdo, $currentRange, $collegeId);
+    $data = report_period_buckets($pdo, $currentRange, $collegeId, $programId, $schoolYear, $semester);
     $buckets = $data['buckets'];
+    $maxBucketCount = max(1, max(array_column($buckets, 'count')));
 
     $rangeLabels = ['week' => 'Week', 'month' => 'Month', 'year' => 'Year'];
     $latestBucket = $buckets[count($buckets) - 1];
@@ -144,11 +184,13 @@ function render_report_period_widget(PDO $pdo, ?int $collegeId, string $currentR
                 <h3>Report Submissions Over Time</h3>
                 <p>Compare how many reports were submitted per <?php echo $esc($periodNoun); ?>.</p>
             </div>
-            <div class="rpt-range-switch">
-                <?php foreach ($rangeLabels as $key => $label): ?>
-                    <a href="<?php echo $esc($buildUrl($key)); ?>" class="<?php echo $currentRange === $key ? 'active' : ''; ?>"><?php echo $esc($label); ?>ly</a>
-                <?php endforeach; ?>
-            </div>
+            <?php if ($showRangeSwitch): ?>
+                <div class="rpt-range-switch">
+                    <?php foreach ($rangeLabels as $key => $label): ?>
+                        <a href="<?php echo $esc($buildUrl($key)); ?>" class="<?php echo $currentRange === $key ? 'active' : ''; ?>"><?php echo $esc($label); ?>ly</a>
+                    <?php endforeach; ?>
+                </div>
+            <?php endif; ?>
         </div>
 
         <div class="rpt-stats">
@@ -167,7 +209,16 @@ function render_report_period_widget(PDO $pdo, ?int $collegeId, string $currentR
                 <thead><tr><th><?php echo $esc(ucfirst($periodNoun)); ?></th><th>Reports</th></tr></thead>
                 <tbody>
                     <?php foreach (array_reverse($buckets) as $b): ?>
-                        <tr><td><?php echo $esc($b['label']); ?></td><td><?php echo number_format($b['count']); ?></td></tr>
+                        <?php $barPct = $maxBucketCount > 0 ? round(($b['count'] / $maxBucketCount) * 100) : 0; ?>
+                        <tr>
+                            <td><?php echo $esc($b['label']); ?></td>
+                            <td>
+                                <div class="rpt-bar-cell">
+                                    <span class="rpt-bar-track"><span class="rpt-bar-fill" style="width:<?php echo (int)$barPct; ?>%"></span></span>
+                                    <span class="rpt-bar-value"><?php echo number_format($b['count']); ?></span>
+                                </div>
+                            </td>
+                        </tr>
                     <?php endforeach; ?>
                 </tbody>
             </table>
@@ -201,6 +252,10 @@ function render_report_period_widget(PDO $pdo, ?int $collegeId, string $currentR
     .rpt-table th { position:sticky; top:0; background:#fafafa; text-align:left; font-size:11px; color:#9ca3af; text-transform:uppercase; padding:8px 12px; border-bottom:1px solid #f0f1f3; }
     .rpt-table td { padding:8px 12px; font-size:13px; color:#374151; border-bottom:1px solid #f9f9f9; font-variant-numeric:tabular-nums; }
     .rpt-table td:last-child, .rpt-table th:last-child { text-align:right; }
+    .rpt-bar-cell { display:flex; align-items:center; justify-content:flex-end; gap:10px; }
+    .rpt-bar-track { flex:1; max-width:140px; height:6px; background:#f0f1f3; border-radius:999px; overflow:hidden; }
+    .rpt-bar-fill { display:block; height:100%; background:#6d28d9; border-radius:999px; }
+    .rpt-bar-value { min-width:28px; text-align:right; font-weight:600; color:#111827; }
     </style>
     <?php
 }

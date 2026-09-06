@@ -3,6 +3,7 @@
 session_start();
 require_once __DIR__ . '/../db_connection.php';
 require_once __DIR__ . '/../ticket_flow.php';
+require_once __DIR__ . '/../school_year_helpers.php';
 // Prevent PHP warnings from being printed to the page (they break layout). Logging still occurs.
 ini_set('display_errors', '0');
 error_reporting(E_ALL & ~E_NOTICE & ~E_WARNING);
@@ -170,6 +171,8 @@ $feedbackReplies = [];
 $feedbackHistory = [];
 $feedbackSubmissionReason = null;
 $threadState = ['status' => 'unknown', 'can_reply' => false, 'can_reopen' => false, 'is_closed' => true];
+$ticketSchoolYear = sy_current();
+$ticketIsPastSchoolYear = false;
 
 if ($flashMessage === '') {
     try {
@@ -182,6 +185,13 @@ if ($flashMessage === '') {
             $flashMessage = 'Ticket not found or you do not have access to view it.';
             $flashType = 'error';
         } else {
+            // A ticket's school year is fixed at the time it was filed, so a
+            // ticket from a past school year stays read-only wherever it's
+            // opened from, regardless of the topbar's current SY selection.
+            $ticketSchoolYear = (string)($ticket['school_year'] ?? '');
+            $ticketSchoolYear = sy_is_valid_label($ticketSchoolYear) ? $ticketSchoolYear : sy_current();
+            $ticketIsPastSchoolYear = $ticketSchoolYear !== sy_current();
+
             // POST handling for feedback submission
             if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'submit_feedback') {
                 $postedTicketType = (string)($_POST['ticket_type'] ?? '');
@@ -189,7 +199,10 @@ if ($flashMessage === '') {
                 $satisfaction = (string)($_POST['satisfaction'] ?? '');
                 $comment = trim((string)($_POST['comment'] ?? ''));
 
-                if ($postedTicketType !== $ticketType || $postedTicketId !== $ticketId) {
+                if ($ticketIsPastSchoolYear) {
+                    $flashMessage = 'This ticket is from a past school year (' . $ticketSchoolYear . ') and is read-only.';
+                    $flashType = 'error';
+                } elseif ($postedTicketType !== $ticketType || $postedTicketId !== $ticketId) {
                     $flashMessage = 'Invalid submission.';
                     $flashType = 'error';
                 } elseif ($satisfaction === '') {
@@ -409,6 +422,13 @@ body { background: #f4f6fb; }
 <div class="main" style="margin-left:260px;margin-top:61px;padding:25px;min-height:calc(100vh - 61px);">
     <?php if ($flashMessage !== ''): ?>
         <div class="notice <?php echo e($flashType); ?>"><?php echo e($flashMessage); ?></div>
+    <?php endif; ?>
+
+    <?php if ($ticketIsPastSchoolYear): ?>
+        <div class="notice" style="background:#fffbeb;border:1px solid #fcd34d;color:#92400e;display:flex;align-items:flex-start;gap:10px;">
+            <i class='bx bx-lock-alt' style="font-size:20px;flex-shrink:0;"></i>
+            <span>This ticket is from School Year <strong><?php echo e($ticketSchoolYear); ?></strong> and is read-only. Rating and replying are only available for tickets filed in the current school year.</span>
+        </div>
     <?php endif; ?>
 
     <?php
@@ -672,7 +692,7 @@ body { background: #f4f6fb; }
 <?php echo nl2br(e((string)($feedback['comment'] ?? ''))); ?>
                                     </div>
                                 </div>
-                            <?php elseif (empty($feedback) && $feedbackSubmissionReason === null): ?>
+                            <?php elseif (empty($feedback) && $feedbackSubmissionReason === null && !$ticketIsPastSchoolYear): ?>
                                 <form class="rating-form" method="POST">
                                     <input type="hidden" name="action" value="submit_feedback">
                                     <input type="hidden" name="ticket_type" value="<?php echo e($ticketType); ?>">
@@ -715,6 +735,8 @@ body { background: #f4f6fb; }
                                         <button type="submit" class="btn">Submit Rating</button>
                                     </div>
                                 </form>
+                            <?php elseif ($ticketIsPastSchoolYear): ?>
+                                <div class="empty-card">Read-only: this ticket is from a past school year, so a new rating can no longer be submitted.</div>
                             <?php else: ?>
                                 <div class="empty-card"><?php echo e($feedbackSubmissionReason ?? 'No rating has been submitted yet.'); ?></div>
                             <?php endif; ?>
@@ -780,7 +802,7 @@ body { background: #f4f6fb; }
                         <?php endif; ?>
                     </div>
 
-                    <?php if (($threadState['can_reply'] ?? false) && strtolower((string)$threadState['status']) !== 'resolved'): ?>
+                    <?php if (($threadState['can_reply'] ?? false) && strtolower((string)$threadState['status']) !== 'resolved' && !$ticketIsPastSchoolYear): ?>
                         <div class="ticket-section">
                             <div class="reply-box-card">
                                 <form id="studentReplyForm" class="student-feedback-reply-form" method="POST">
@@ -800,7 +822,9 @@ body { background: #f4f6fb; }
                         </div>
                     <?php endif; ?>
 
-                    <?php if ((($threadState['can_reply'] ?? false) === false) && in_array(strtolower((string)($threadState['status'] ?? '')), ['resolved', 'reviewed'], true)): ?>
+                    <?php if ($ticketIsPastSchoolYear && ($threadState['can_reply'] ?? false)): ?>
+                        <div style="margin-top:16px;color:#111827;font-size:13px;line-height:1.5;">This ticket is from a past school year and is read-only. No further replies can be sent.</div>
+                    <?php elseif ((($threadState['can_reply'] ?? false) === false) && in_array(strtolower((string)($threadState['status'] ?? '')), ['resolved', 'reviewed'], true)): ?>
                         <?php if (strtolower($ticketType) === 'suggestion'): ?>
                             <div style="margin-top:16px;color:#111827;font-size:13px;line-height:1.5;">This suggestion has been reviewed. No further replies can be sent.</div>
                         <?php elseif (!empty($feedback)): ?>

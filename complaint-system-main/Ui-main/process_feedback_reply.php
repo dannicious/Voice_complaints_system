@@ -5,6 +5,7 @@ declare(strict_types=1);
 session_start();
 require_once __DIR__ . '/db_connection.php';
 require_once __DIR__ . '/ticket_flow.php';
+require_once __DIR__ . '/school_year_helpers.php';
 require_once __DIR__ . '/../config/auth.php';
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST' && $_SERVER['REQUEST_METHOD'] !== 'GET') {
@@ -354,10 +355,24 @@ if ($actorProfileId <= 0) {
 
 // Prevent replies before the student has submitted a rating and when the ticket is resolved/closed
 try {
-    $stmt = $pdo->prepare('SELECT status FROM ' . ($ticketType === 'complaint' ? 'complaints' : 'suggestions') . ' WHERE id = :id LIMIT 1');
+    $stmt = $pdo->prepare('SELECT status, school_year FROM ' . ($ticketType === 'complaint' ? 'complaints' : 'suggestions') . ' WHERE id = :id LIMIT 1');
     $stmt->execute([':id' => $ticketId]);
     $row = $stmt->fetch(PDO::FETCH_ASSOC);
     $status = strtolower((string)($row['status'] ?? ''));
+
+    // A ticket's school year is fixed at filing time: students may not reply
+    // to a ticket from a past school year, even if it's still "open".
+    if ($role === 'student') {
+        $ticketSy = (string)($row['school_year'] ?? '');
+        $ticketSy = sy_is_valid_label($ticketSy) ? $ticketSy : sy_current();
+        if ($ticketSy !== sy_current()) {
+            http_response_code(403);
+            header('Content-Type: application/json');
+            echo json_encode(['status' => 'error', 'message' => 'This ticket is from a past school year (' . $ticketSy . ') and is read-only.']);
+            exit;
+        }
+    }
+
     if ($status === 'resolved') {
         http_response_code(403);
         header('Content-Type: application/json');

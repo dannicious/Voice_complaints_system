@@ -6,6 +6,7 @@ session_start();
 require_once __DIR__ . '/../db_connection.php';
 require_once __DIR__ . '/../ticket_flow.php';
 require_once __DIR__ . '/../faculty_helpers.php';
+require_once __DIR__ . '/../school_year_helpers.php';
 
 function back_with_message(string $type, string $msg): void
 {
@@ -190,6 +191,14 @@ try {
 
 if (!$student) {
     back_with_message('error', 'Student profile not found.');
+}
+
+// Defense in depth: filing is only allowed for the current school year, even
+// if this is posted directly while a past school year is selected.
+$schoolYearCurrent = sy_current();
+$schoolYearSelected = sy_get_selected($pdo, (int)$student['id']);
+if ($schoolYearSelected !== $schoolYearCurrent) {
+    back_with_message('error', 'Switch to the current school year (' . $schoolYearCurrent . ') to file a new complaint.');
 }
 
 // Complainant Information
@@ -388,6 +397,7 @@ try {
             status,
             approval_status,
             visibility_status,
+            school_year,
             created_at
         ) VALUES (
             :ticket_no,
@@ -412,6 +422,7 @@ try {
             :status,
             :approval_status,
             :visibility_status,
+            :school_year,
             NOW()
         )'
     );
@@ -439,6 +450,7 @@ try {
         ':status' => 'new',
         ':approval_status' => 'approved',
         ':visibility_status' => 'private',
+        ':school_year' => $schoolYearCurrent,
     ]);
 
     $complaintId = (int)$pdo->lastInsertId();

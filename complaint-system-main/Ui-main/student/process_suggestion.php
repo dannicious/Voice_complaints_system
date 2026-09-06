@@ -5,6 +5,7 @@ declare(strict_types=1);
 session_start();
 require_once __DIR__ . '/../db_connection.php';
 require_once __DIR__ . '/../ticket_flow.php';
+require_once __DIR__ . '/../school_year_helpers.php';
 
 function back_with_message(string $type, string $msg): void
 {
@@ -206,6 +207,14 @@ try {
         back_with_message('error', 'Student profile not found.');
     }
 
+    // Defense in depth: filing is only allowed for the current school year,
+    // even if this is posted directly while a past school year is selected.
+    $schoolYearCurrent = sy_current();
+    $schoolYearSelected = sy_get_selected($pdo, (int)$student['id']);
+    if ($schoolYearSelected !== $schoolYearCurrent) {
+        back_with_message('error', 'Switch to the current school year (' . $schoolYearCurrent . ') to send a new suggestion.');
+    }
+
     $attachment = finalize_preview_upload($draft, 'suggestions');
     $categoryId = resolve_category_id($pdo, 'suggestion_categories', $categoryInput, $categoryAliases);
     if ($categoryId === null) {
@@ -231,7 +240,8 @@ try {
             description,
             expected_outcome,
             attachment,
-            status
+            status,
+            school_year
         ) VALUES (
             :ticket_no,
             :student_id,
@@ -242,7 +252,8 @@ try {
             :description,
             :expected_outcome,
             :attachment,
-            :status
+            :status,
+            :school_year
         )'
     );
 
@@ -257,6 +268,7 @@ try {
         ':expected_outcome' => trim((string)($draft['expected_outcome'] ?? '')),
         ':attachment' => $attachment,
         ':status' => 'approved',
+        ':school_year' => $schoolYearCurrent,
     ]);
 
     $suggestionId = (int)$pdo->lastInsertId();

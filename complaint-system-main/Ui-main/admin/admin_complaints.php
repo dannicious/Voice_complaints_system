@@ -71,7 +71,7 @@ function normalize_complaint_category_type(?string $value): string
     return in_array($normalized, ['general', 'college'], true) ? $normalized : 'general';
 }
 
-function fetch_complaints_by_category_type(PDO $pdo, string $categoryType, string $q, string $date, int $college, string $status): array
+function fetch_complaints_by_category_type(PDO $pdo, string $categoryType, string $q, string $dateFrom, string $dateTo, int $college, int $department, string $status): array
 {
     $sql = <<<'SQL'
 SELECT
@@ -114,21 +114,44 @@ LEFT JOIN colleges scol ON scol.id = sp.college_id
 WHERE COALESCE(cc.category_type, cc.route, 'general') = :category_type
 SQL;
 
-    $params = [':category_type' => $categoryType];
+$sql = str_replace(
+    'WHERE COALESCE(cc.category_type, cc.route, \'general\') = :category_type',
+    $categoryType === 'college'
+        ? "WHERE (c.college_id IS NOT NULL OR COALESCE(cc.category_type, cc.route, 'general') = 'college')"
+        : "WHERE (c.college_id IS NULL AND COALESCE(cc.category_type, cc.route, 'general') <> 'college')",
+    $sql
+);
+$params = [];
 
     if ($q !== '') {
-        $sql .= ' AND (c.ticket_no LIKE :q OR c.complainant_name LIKE :q OR c.act_complained_of LIKE :q OR c.narrative_report LIKE :q OR CONCAT(COALESCE(sp.first_name,\'\'), " ", COALESCE(sp.last_name,\'\')) LIKE :q)';
-        $params[':q'] = '%' . $q . '%';
+        $sql .= ' AND (c.ticket_no LIKE :q_ticket OR c.complainant_name LIKE :q_name OR c.act_complained_of LIKE :q_subject OR c.narrative_report LIKE :q_narrative OR CONCAT(COALESCE(sp.first_name,\'\'), " ", COALESCE(sp.last_name,\'\')) LIKE :q_student)';
+        $searchLike = '%' . $q . '%';
+        $params[':q_ticket'] = $searchLike;
+        $params[':q_name'] = $searchLike;
+        $params[':q_subject'] = $searchLike;
+        $params[':q_narrative'] = $searchLike;
+        $params[':q_student'] = $searchLike;
     }
 
-    if ($date !== '') {
-        $sql .= ' AND DATE(c.created_at) = :date_submitted';
-        $params[':date_submitted'] = $date;
+    if ($dateFrom !== '') {
+        $sql .= ' AND c.created_at >= :date_from';
+        $params[':date_from'] = $dateFrom . ' 00:00:00';
+    }
+
+    if ($dateTo !== '') {
+        $dateToExclusive = (new DateTimeImmutable($dateTo))->modify('+1 day')->format('Y-m-d 00:00:00');
+        $sql .= ' AND c.created_at < :date_to';
+        $params[':date_to'] = $dateToExclusive;
     }
 
     if ($college > 0) {
         $sql .= ' AND c.college_id = :college_id';
         $params[':college_id'] = $college;
+    }
+
+    if ($department > 0) {
+        $sql .= ' AND sp.program_id = :department_id';
+        $params[':department_id'] = $department;
     }
 
     if ($status !== '') {
@@ -285,8 +308,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 $q = trim((string)($_GET['q'] ?? ''));
-$date = trim((string)($_GET['date'] ?? ''));
+$dateFrom = trim((string)($_GET['date_from'] ?? ''));
+$dateTo = trim((string)($_GET['date_to'] ?? ''));
+$legacyDate = trim((string)($_GET['date'] ?? ''));
+if ($dateFrom === '' && $dateTo === '' && $legacyDate !== '') {
+    $dateFrom = $legacyDate;
+    $dateTo = $legacyDate;
+}
+foreach (['dateFrom', 'dateTo'] as $dateVariable) {
+    if ($$dateVariable !== '') {
+        $parsedDate = DateTimeImmutable::createFromFormat('!Y-m-d', $$dateVariable);
+        if ($parsedDate === false || $parsedDate->format('Y-m-d') !== $$dateVariable) {
+            $$dateVariable = '';
+        }
+    }
+}
+if ($dateFrom !== '' && $dateTo !== '' && $dateFrom > $dateTo) {
+    [$dateFrom, $dateTo] = [$dateTo, $dateFrom];
+}
 $college = (int)($_GET['college'] ?? 0);
+$department = (int)($_GET['department'] ?? 0);
+$departments = [];
+if ($college <= 0) {
+    $department = 0;
+}
 $status = trim((string)($_GET['status'] ?? ''));
 $activeTab = strtolower(trim((string)($_GET['tab'] ?? 'manageable')));
 if (!in_array($activeTab, ['manageable', 'view_only'], true)) {
@@ -300,9 +345,18 @@ $viewOnlyComplaints = [];
 try {
     $collegeStmt = $pdo->query('SELECT id, code, name FROM colleges ORDER BY name ASC');
     $colleges = $collegeStmt->fetchAll(PDO::FETCH_ASSOC);
+    if ($college > 0) {
+        $departmentStmt = $pdo->prepare('SELECT id, code, name FROM programs WHERE college_id = :college_id AND status = "active" ORDER BY name ASC');
+        $departmentStmt->execute([':college_id' => $college]);
+        $departments = $departmentStmt->fetchAll(PDO::FETCH_ASSOC);
+        $departmentIds = array_map(static fn(array $row): int => (int)$row['id'], $departments);
+        if (!in_array($department, $departmentIds, true)) {
+            $department = 0;
+        }
+    }
 
-    $manageableComplaints = fetch_complaints_by_category_type($pdo, 'general', $q, $date, $college, $status);
-    $viewOnlyComplaints = fetch_complaints_by_category_type($pdo, 'college', $q, $date, $college, $status);
+    $manageableComplaints = fetch_complaints_by_category_type($pdo, 'general', $q, $dateFrom, $dateTo, $college, $department, $status);
+    $viewOnlyComplaints = fetch_complaints_by_category_type($pdo, 'college', $q, $dateFrom, $dateTo, $college, $department, $status);
 } catch (PDOException $e) {
     if ($flashMessage === '') {
         $flashMessage = 'Unable to load complaints right now.';
@@ -430,13 +484,17 @@ body {
 .controls-divider { width: 100%; height: 1px; background: #f0f0f0; }
 
 .controls-bottom {
-    display: flex;
-    gap: 15px;
-    align-items: flex-end;
-    flex-wrap: wrap;
+    display: grid;
+    grid-template-columns: 138px 138px minmax(210px, 1.15fr) minmax(210px, 1.15fr) 126px auto;
+    gap: 12px;
+    align-items: end;
 }
 
-.filter-group { display: flex; flex-direction: column; gap: 5px; }
+.controls-bottom.without-department {
+    grid-template-columns: 138px 138px minmax(260px, 1fr) 126px auto;
+}
+
+.filter-group { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
 
 .filter-group label {
     font-size: 11px;
@@ -457,6 +515,23 @@ body {
     outline: none;
     min-width: 140px;
     height: 38px;
+    width: 100%;
+    min-width: 0;
+}
+
+.controls-bottom .btn-reset {
+    align-self: end;
+    white-space: nowrap;
+}
+
+@media (max-width: 1050px) {
+    .controls-bottom {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .controls-bottom .btn-reset {
+        justify-content: center;
+    }
 }
 
 .btn-apply-filter {
@@ -741,46 +816,60 @@ tbody tr:hover { background-color: #fcfcfc; }
 
 /* Manageable tab layout refinements */
 #manageable .table-card {
-    padding: 16px 18px 10px;
-    overflow-x: hidden;
+    padding: 22px 24px 10px;
+    overflow-x: auto;
     overflow-y: hidden;
+    border: 1px solid #e5e7eb;
+    box-shadow: 0 4px 16px rgba(15, 23, 42, 0.04);
+}
+#manageable .table-card-head {
+    margin: 0 0 18px;
+    align-items: flex-start;
+}
+#manageable .table-card-title {
+    font-size: 17px;
+    font-weight: 700;
+}
+#manageable .table-card-subtitle {
+    margin-top: 4px;
+    font-size: 12px;
+    color: #94a3b8;
 }
 #manageable table {
     width: 100%;
     border-collapse: collapse;
     table-layout: fixed;
-    min-width: 0;
+    min-width: 920px;
 }
 #manageable table thead th {
     text-align: left;
-    color: #6b7280;
-    font-size: 12px;
+    color: #64748b;
+    font-size: 11px;
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.04em;
-    padding: 0 8px 10px;
+    padding: 0 16px 12px;
     border-bottom: 1px solid #e5e7eb;
 }
 #manageable table tbody tr {
-    transition: background-color 0.2s ease;
+    transition: background-color 0.18s ease, box-shadow 0.18s ease;
 }
 #manageable table tbody tr:hover {
-    background-color: #f9fafb;
+    background-color: #fafbff;
 }
 #manageable table td {
     vertical-align: middle;
-    padding: 12px 8px;
+    padding: 16px;
     font-size: 13px;
     color: #374151;
     border-bottom: 1px solid #f3f4f6;
 }
-#manageable table th:nth-child(1), #manageable table td:nth-child(1) { width: 110px; }
-#manageable table th:nth-child(2), #manageable table td:nth-child(2) { width: 100px; }
-#manageable table th:nth-child(3), #manageable table td:nth-child(3) { width: auto; min-width: 260px; }
-#manageable table th:nth-child(4), #manageable table td:nth-child(4) { width: 90px; }
-#manageable table th:nth-child(5), #manageable table td:nth-child(5) { width: 130px; }
-#manageable table th:nth-child(6), #manageable table td:nth-child(6) { width: 110px; }
-#manageable table th:nth-child(7), #manageable table td:nth-child(7) { width: 96px; text-align: center; }
+#manageable table th:nth-child(1), #manageable table td:nth-child(1) { width: 116px; }
+#manageable table th:nth-child(2), #manageable table td:nth-child(2) { width: 31%; }
+#manageable table th:nth-child(3), #manageable table td:nth-child(3) { width: 120px; }
+#manageable table th:nth-child(4), #manageable table td:nth-child(4) { width: 18%; }
+#manageable table th:nth-child(5), #manageable table td:nth-child(5) { width: 150px; }
+#manageable table th:nth-child(6), #manageable table td:nth-child(6) { width: 112px; text-align: right; }
 
 #manageable .cell-ticket,
 #manageable .cell-date,
@@ -798,7 +887,7 @@ tbody tr:hover { background-color: #fcfcfc; }
 }
 #manageable .subject-text {
     display: block;
-    font-weight: 600;
+    font-weight: 700;
     color: #111827;
     margin-bottom: 4px;
     white-space: nowrap;
@@ -814,7 +903,7 @@ tbody tr:hover { background-color: #fcfcfc; }
     text-overflow: ellipsis;
 }
 #manageable .status-badge {
-    padding: 5px 9px;
+    padding: 6px 11px;
     border-radius: 999px;
     font-size: 11px;
     font-weight: 700;
@@ -823,11 +912,20 @@ tbody tr:hover { background-color: #fcfcfc; }
     justify-content: center;
     min-width: 72px;
 }
+#manageable .cell-status > div {
+    margin-top: 5px;
+    line-height: 1;
+}
+#manageable .cell-status .age-chip {
+    margin-top: 0;
+    font-size: 10px;
+    padding: 3px 8px;
+}
 #manageable .btn-manage {
-    padding: 6px 8px;
-    height: 34px;
+    padding: 8px 11px;
+    height: 38px;
     border-radius: 8px;
-    min-width: 0;
+    min-width: 96px;
     color: #fff;
     display: inline-flex;
     align-items: center;
@@ -841,19 +939,20 @@ tbody tr:hover { background-color: #fcfcfc; }
     white-space: nowrap;
     font-size: 12px;
     font-weight: 600;
-    box-shadow: 0 6px 18px rgba(79,140,255,0.08);
+    box-shadow: 0 5px 12px rgba(109, 40, 217, 0.14);
+    transition: transform .18s ease, background-color .18s ease, box-shadow .18s ease;
+}
+#manageable .btn-manage:hover {
+    background: #5d1fa0;
+    transform: translateY(-1px);
+    box-shadow: 0 7px 16px rgba(109, 40, 217, 0.2);
 }
 
 @media (max-width: 900px) {
-    #manageable .table-card { padding: 14px 12px 8px; }
-    #manageable table { table-layout: auto; }
-    #manageable table th:nth-child(1), #manageable table td:nth-child(1) { width: 92px; }
-    #manageable table th:nth-child(2), #manageable table td:nth-child(2) { width: 86px; }
-    #manageable table th:nth-child(3), #manageable table td:nth-child(3) { min-width: 200px; }
-    #manageable table th:nth-child(4), #manageable table td:nth-child(4) { width: 78px; }
-    #manageable table th:nth-child(5), #manageable table td:nth-child(5) { width: 110px; }
-    #manageable table th:nth-child(6), #manageable table td:nth-child(6) { width: 96px; }
-    #manageable table th:nth-child(7), #manageable table td:nth-child(7) { width: 86px; }
+    #manageable .table-card { padding: 18px 14px 8px; }
+    #manageable table { min-width: 880px; }
+    #manageable table thead th,
+    #manageable table td { padding-left: 12px; padding-right: 12px; }
 }
 
 /* Modal Styles */
@@ -1032,7 +1131,7 @@ tbody tr:hover { background-color: #fcfcfc; }
             </button>
         </div>
 
-        <form method="GET" class="controls-card">
+        <form method="GET" class="controls-card" id="complaintFiltersForm">
             <input type="hidden" name="tab" id="activeTabInput" value="<?php echo e($activeTab); ?>">
             <div class="controls-top">
                 <div class="search-box">
@@ -1043,10 +1142,14 @@ tbody tr:hover { background-color: #fcfcfc; }
 
             <div class="controls-divider"></div>
 
-            <div class="controls-bottom">
+            <div class="controls-bottom <?php echo $college > 0 ? 'with-department' : 'without-department'; ?>">
                 <div class="filter-group">
-                    <label>Date</label>
-                    <input type="date" name="date" class="filter-input" value="<?php echo e($date); ?>">
+                    <label>From Date</label>
+                    <input type="date" name="date_from" class="filter-input" value="<?php echo e($dateFrom); ?>">
+                </div>
+                <div class="filter-group">
+                    <label>To Date</label>
+                    <input type="date" name="date_to" class="filter-input" value="<?php echo e($dateTo); ?>">
                 </div>
                 <div class="filter-group">
                     <label>College</label>
@@ -1059,6 +1162,19 @@ tbody tr:hover { background-color: #fcfcfc; }
                         <?php endforeach; ?>
                     </select>
                 </div>
+                <?php if ($college > 0): ?>
+                    <div class="filter-group">
+                        <label>Department</label>
+                        <select name="department" class="filter-select">
+                            <option value="0">All Departments</option>
+                            <?php foreach ($departments as $d): ?>
+                                <option value="<?php echo (int)$d['id']; ?>" <?php echo $department === (int)$d['id'] ? 'selected' : ''; ?>>
+                                    <?php echo e((string)$d['code'] . ' - ' . (string)$d['name']); ?>
+                                </option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+                <?php endif; ?>
                 <div class="filter-group">
                     <label>Status</label>
                     <select name="status" class="filter-select">
@@ -1068,7 +1184,6 @@ tbody tr:hover { background-color: #fcfcfc; }
                         <option value="dismissed" <?php echo $status === 'dismissed' ? 'selected' : ''; ?>>Dismissed</option>
                     </select>
                 </div>
-                <button class="btn-apply-filter" type="submit"><i class='bx bx-filter-alt'></i> Apply Filter</button>
                 <a class="btn-reset" href="admin_complaints.php?tab=<?php echo e($activeTab); ?>">Reset</a>
             </div>
         </form>
@@ -1141,7 +1256,7 @@ tbody tr:hover { background-color: #fcfcfc; }
                                         <?php if ($tabKey === 'manageable'): ?>
                                             <td class="cell-date"><?php echo e(date('M d, Y', strtotime((string)$row['created_at']))); ?></td>
                                             <td class="subject-cell">
-                                                <div class="subject-text"><?php echo e((string)$row['act_complained_of']); ?></div>
+                                                <div class="subject-text" title="<?php echo e((string)$row['act_complained_of']); ?>"><?php echo e((string)$row['act_complained_of']); ?></div>
                                                 <div class="small-text">
                                                     <?php
                                                         $submitter = 'Anonymous Student';
@@ -1748,6 +1863,33 @@ function closeModal(modalId) {
     document.getElementById(modalId).classList.remove('show');
 }
 
+const complaintFiltersForm = document.getElementById('complaintFiltersForm');
+if (complaintFiltersForm) {
+    const searchInput = complaintFiltersForm.querySelector('input[name="q"]');
+    const searchFocusKey = 'adminComplaintsSearchFocus';
+    let searchTimer;
+
+    if (searchInput) {
+        if (window.sessionStorage.getItem(searchFocusKey) === '1') {
+            searchInput.focus();
+            searchInput.setSelectionRange(searchInput.value.length, searchInput.value.length);
+        }
+
+        searchInput.addEventListener('input', () => {
+            window.sessionStorage.setItem(searchFocusKey, '1');
+            window.clearTimeout(searchTimer);
+            searchTimer = window.setTimeout(() => complaintFiltersForm.submit(), 350);
+        });
+    }
+
+    complaintFiltersForm.querySelectorAll('input[name="date_from"], input[name="date_to"], select[name="college"], select[name="department"], select[name="status"]').forEach((filter) => {
+        filter.addEventListener('change', () => {
+            window.sessionStorage.removeItem(searchFocusKey);
+            complaintFiltersForm.submit();
+        });
+    });
+}
+
 document.querySelectorAll('.modal').forEach(modal => {
     modal.addEventListener('click', (e) => {
         if (e.target === modal) {
@@ -1756,7 +1898,7 @@ document.querySelectorAll('.modal').forEach(modal => {
     });
 });
 
-document.querySelectorAll('.btn-manage.btn-view, .btn-icon.btn-view').forEach((btn) => {
+document.querySelectorAll('.btn-icon.btn-view[data-can-manage="1"], .btn-icon.btn-view[data-can-manage="true"]').forEach((btn) => {
     btn.addEventListener('click', (event) => {
         event.preventDefault();
         event.stopPropagation();

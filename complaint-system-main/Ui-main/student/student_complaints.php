@@ -4,6 +4,7 @@ if (session_status() === PHP_SESSION_NONE) {
 }
 require_once __DIR__ . '/../db_connection.php';
 require_once __DIR__ . '/../faculty_helpers.php';
+require_once __DIR__ . '/../school_year_helpers.php';
 
 $pageMode = (string)($_GET['mode'] ?? 'complaint');
 $flashStatus = (string)($_GET['status'] ?? '');
@@ -12,6 +13,69 @@ $flashMessage = trim((string)($_GET['msg'] ?? ''));
 function e(string $value): string
 {
     return htmlspecialchars($value, ENT_QUOTES, 'UTF-8');
+}
+
+// Filing a new complaint/suggestion is only allowed while viewing the
+// current school year. A student viewing a past school year (via the
+// topbar switcher) gets a locked, read-only notice instead of the form.
+$studentProfileId = sy_resolve_student_profile_id($pdo);
+$schoolYearCurrent = sy_current();
+$schoolYearSelected = $studentProfileId > 0 ? sy_get_selected($pdo, $studentProfileId) : $schoolYearCurrent;
+
+if ($studentProfileId > 0 && $schoolYearSelected !== $schoolYearCurrent) {
+    $lockedIsSuggestion = $pageMode === 'suggestion';
+    $lockedTitle = $lockedIsSuggestion ? 'Send a Suggestion' : 'File a Complaint';
+    $lockedAction = $lockedIsSuggestion ? 'Sending a suggestion' : 'Filing a complaint';
+    ?>
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title><?php echo e($lockedTitle); ?> - VOICE</title>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600&display=swap" rel="stylesheet">
+    <link href='https://unpkg.com/boxicons@2.1.4/css/boxicons.min.css' rel='stylesheet'>
+    <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Poppins', sans-serif; }
+    body { background: #f4f6fb; }
+    .main { margin-left: 260px; margin-top: 61px; padding: 25px; min-height: calc(100vh - 61px); display: flex; justify-content: center; }
+    .content-wrapper { width: 100%; max-width: 700px; }
+    .page-title { margin-bottom: 25px; color: #333; font-weight: 600; font-size: 24px; }
+    .locked-card { background: #fff; padding: 45px 35px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.03); border: 1px solid #eee; text-align: center; }
+    .locked-card i.bx-lock-alt { font-size: 46px; color: #f59e0b; margin-bottom: 16px; }
+    .locked-card h3 { font-size: 18px; color: #1f2937; margin-bottom: 10px; }
+    .locked-card p { color: #6b7280; font-size: 14px; margin-bottom: 26px; line-height: 1.6; }
+    .btn-blue { padding: 12px 25px; background: #6d28d9; color: #fff; border-radius: 8px; text-decoration: none; font-size: 15px; font-weight: 500; display: inline-flex; align-items: center; gap: 8px; border: none; cursor: pointer; }
+    .btn-blue:hover { background: #5d1fa0; }
+    @media (max-width: 1024px) { .main { margin-left: 0 !important; padding: 16px !important; } }
+    </style>
+    </head>
+    <body>
+    <?php include 'student_topbar.php'; ?>
+    <?php include 'student_sidebar.php'; ?>
+    <div class="main">
+        <div class="content-wrapper">
+            <h2 class="page-title"><?php echo e($lockedTitle); ?></h2>
+            <div class="locked-card">
+                <i class='bx bx-lock-alt'></i>
+                <h3>You're viewing School Year <?php echo e($schoolYearSelected); ?></h3>
+                <p>
+                    <?php echo e($lockedAction); ?> is only available while viewing the current school year
+                    (<?php echo e($schoolYearCurrent); ?>). This past school year's records are read-only.
+                    Switch back to the current school year to continue.
+                </p>
+                <form method="POST" action="set_school_year.php">
+                    <input type="hidden" name="school_year" value="<?php echo e($schoolYearCurrent); ?>">
+                    <input type="hidden" name="redirect_to" value="<?php echo e($_SERVER['REQUEST_URI'] ?? 'student_complaints.php'); ?>">
+                    <button type="submit" class="btn-blue"><i class='bx bx-refresh'></i> Switch to <?php echo e($schoolYearCurrent); ?></button>
+                </form>
+            </div>
+        </div>
+    </div>
+    </body>
+    </html>
+    <?php
+    exit;
 }
 
 function draft_value(array $draft, string $key, string $default = ''): string

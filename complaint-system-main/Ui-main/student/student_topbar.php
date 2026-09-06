@@ -3,6 +3,7 @@ if (session_status() === PHP_SESSION_NONE) {
     session_start();
 }
 require_once __DIR__ . '/../db_connection.php';
+require_once __DIR__ . '/../school_year_helpers.php';
 
 function topbar_time_ago(string $dateTime): string
 {
@@ -94,12 +95,16 @@ $topbarUnreadCount = 0;
 $studentName = 'Student';
 $studentEmail = '';
 $studentPhoto = '../assets/images/default-avatar.svg';
+$studentProfileId = 0;
+$schoolYearCurrent = sy_current();
+$schoolYearSelected = $schoolYearCurrent;
+$schoolYearOptions = [];
 
 if (isset($_SESSION['user_id']) && isset($pdo)) {
     try {
         // Fetch student profile data
         $profileStmt = $pdo->prepare(
-            'SELECT sp.first_name, sp.last_name, sp.student_number, sp.year_level, sp.section,
+            'SELECT sp.id AS student_profile_id, sp.first_name, sp.last_name, sp.student_number, sp.year_level, sp.section,
                     c.name AS college_name, p.name AS program_name,
                     u.username, u.email, u.profile_pic
              FROM student_profiles sp
@@ -110,8 +115,9 @@ if (isset($_SESSION['user_id']) && isset($pdo)) {
         );
         $profileStmt->execute([':user_id' => (int)$_SESSION['user_id']]);
         $studentProfile = $profileStmt->fetch(PDO::FETCH_ASSOC);
-        
+
         if ($studentProfile) {
+            $studentProfileId = (int)($studentProfile['student_profile_id'] ?? 0);
             $studentName = trim($studentProfile['first_name'] . ' ' . $studentProfile['last_name']);
             if (empty($studentName)) {
                 $studentName = trim((string)($_SESSION['full_name'] ?? $_SESSION['username'] ?? $studentProfile['username'] ?? 'Student'));
@@ -142,7 +148,13 @@ if (isset($_SESSION['user_id']) && isset($pdo)) {
         // Silently fail - use defaults
         error_log('Topbar DB Error: ' . $e->getMessage());
     }
+
+    if ($studentProfileId > 0) {
+        $schoolYearOptions = sy_list_for_student($pdo, $studentProfileId);
+        $schoolYearSelected = sy_get_selected($pdo, $studentProfileId);
+    }
 }
+$isPastSchoolYear = $schoolYearSelected !== $schoolYearCurrent;
 ?>
 <link href='https://unpkg.com/boxicons@2.1.4/css/boxicons.min.css' rel='stylesheet'>
 
@@ -201,6 +213,63 @@ if (isset($_SESSION['user_id']) && isset($pdo)) {
     display: flex;
     align-items: center;
     gap: 20px;
+}
+
+/* ===== SCHOOL YEAR SWITCHER ===== */
+.topbar-sy {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.topbar-sy-select {
+    appearance: none;
+    -webkit-appearance: none;
+    background: rgba(255,255,255,0.14);
+    border: 1px solid rgba(255,255,255,0.35);
+    color: #fff;
+    font-family: 'Poppins', sans-serif;
+    font-size: 13px;
+    font-weight: 500;
+    padding: 7px 30px 7px 12px;
+    border-radius: 8px;
+    cursor: pointer;
+    outline: none;
+    background-image: url("data:image/svg+xml;charset=UTF-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='white'%3E%3Cpath d='M7 10l5 5 5-5z'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 8px center;
+    background-size: 16px;
+    transition: 0.2s;
+}
+
+.topbar-sy-select:hover,
+.topbar-sy-select:focus {
+    background-color: rgba(255,255,255,0.24);
+}
+
+.topbar-sy-select option {
+    color: #1f2937;
+    background: #fff;
+}
+
+.topbar-sy-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 5px 10px;
+    border-radius: 20px;
+    font-size: 11px;
+    font-weight: 600;
+    white-space: nowrap;
+    background: #fef3c7;
+    color: #92400e;
+    border: 1px solid #fcd34d;
+}
+
+@media (max-width: 640px) {
+    .topbar-sy-badge span.sy-badge-label {
+        display: none;
+    }
 }
 
 /* ===== PROFILE ===== */
@@ -479,6 +548,27 @@ if (isset($_SESSION['user_id']) && isset($pdo)) {
     </a>
 
     <div class="topbar-right">
+
+        <?php if ($studentProfileId > 0 && count($schoolYearOptions) > 0): ?>
+            <div class="topbar-sy">
+                <form method="POST" action="set_school_year.php" id="schoolYearForm">
+                    <input type="hidden" name="redirect_to" value="<?php echo e($_SERVER['REQUEST_URI'] ?? 'student_dashboard.php'); ?>">
+                    <label for="schoolYearSelect" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);">School Year</label>
+                    <select name="school_year" id="schoolYearSelect" class="topbar-sy-select" onchange="document.getElementById('schoolYearForm').submit()">
+                        <?php foreach ($schoolYearOptions as $sy): ?>
+                            <option value="<?php echo e($sy); ?>" <?php echo $sy === $schoolYearSelected ? 'selected' : ''; ?>>
+                                SY <?php echo e($sy); ?><?php echo $sy === $schoolYearCurrent ? ' (Current)' : ''; ?>
+                            </option>
+                        <?php endforeach; ?>
+                    </select>
+                </form>
+                <?php if ($isPastSchoolYear): ?>
+                    <span class="topbar-sy-badge" title="You're viewing a past school year. These records are read-only.">
+                        <i class='bx bx-lock-alt'></i><span class="sy-badge-label">Read-only</span>
+                    </span>
+                <?php endif; ?>
+            </div>
+        <?php endif; ?>
 
         <div class="topbar-bell" id="bellIcon">
             <i class='bx bx-bell'></i>

@@ -161,6 +161,38 @@ INSERT INTO `chatbot_triggers` (`id`, `keywords`, `response`, `is_active`) VALUE
 -- --------------------------------------------------------
 
 --
+-- Table structure for table `faq_categories`
+--
+
+CREATE TABLE `faq_categories` (
+  `id` int(10) unsigned NOT NULL,
+  `name` varchar(150) NOT NULL,
+  `display_order` int(11) NOT NULL DEFAULT 0,
+  `is_active` tinyint(1) NOT NULL DEFAULT 1,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp()
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- --------------------------------------------------------
+
+--
+-- Table structure for table `faq_questions`
+--
+
+CREATE TABLE `faq_questions` (
+  `id` int(10) unsigned NOT NULL,
+  `category_id` int(10) unsigned NOT NULL,
+  `question` varchar(255) NOT NULL,
+  `answer` text NOT NULL,
+  `display_order` int(11) NOT NULL DEFAULT 0,
+  `is_active` tinyint(1) NOT NULL DEFAULT 1,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp()
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- --------------------------------------------------------
+
+--
 -- Table structure for table `colleges`
 --
 
@@ -217,6 +249,7 @@ CREATE TABLE `complaints` (
   `admin_notes` text DEFAULT NULL,
   `admin_reviewed_at` timestamp NULL DEFAULT NULL,
   `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  `school_year` varchar(9) DEFAULT NULL,
   `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
   `is_escalated` tinyint(1) DEFAULT 0,
   `visibility_status` varchar(50) DEFAULT 'private' COMMENT 'private, public'
@@ -527,6 +560,7 @@ CREATE TABLE `suggestions` (
   `admin_notes` text DEFAULT NULL,
   `admin_reviewed_at` timestamp NULL DEFAULT NULL,
   `visibility_status` varchar(50) DEFAULT 'private' COMMENT 'private, public'
+  ,`school_year` varchar(9) DEFAULT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 -- --------------------------------------------------------
@@ -801,7 +835,8 @@ ALTER TABLE `complaints`
   ADD KEY `fk_complaints_admin` (`admin_id`),
   ADD KEY `idx_approval_status` (`approval_status`),
   ADD KEY `idx_visibility_status` (`visibility_status`),
-  ADD KEY `idx_admin_reviewed_at` (`admin_reviewed_at`);
+  ADD KEY `idx_admin_reviewed_at` (`admin_reviewed_at`),
+  ADD KEY `idx_complaints_student_school_year` (`student_id`,`school_year`);
 
 --
 -- Indexes for table `complaint_categories`
@@ -832,6 +867,21 @@ ALTER TABLE `dean_profiles`
   ADD PRIMARY KEY (`id`),
   ADD UNIQUE KEY `user_id` (`user_id`),
   ADD KEY `college_id` (`college_id`);
+
+--
+-- Indexes for table `faq_categories`
+--
+ALTER TABLE `faq_categories`
+  ADD PRIMARY KEY (`id`),
+  ADD UNIQUE KEY `uq_faq_category_name` (`name`),
+  ADD KEY `idx_faq_category_active_order` (`is_active`,`display_order`,`name`);
+
+--
+-- Indexes for table `faq_questions`
+--
+ALTER TABLE `faq_questions`
+  ADD PRIMARY KEY (`id`),
+  ADD KEY `idx_faq_question_category_active_order` (`category_id`,`is_active`,`display_order`,`question`);
 
 --
 -- Indexes for table `notifications`
@@ -876,7 +926,8 @@ ALTER TABLE `suggestions`
   ADD KEY `idx_approval_status` (`approval_status`),
   ADD KEY `idx_visibility_status` (`visibility_status`),
   ADD KEY `idx_admin_reviewed_at` (`admin_reviewed_at`),
-  ADD KEY `fk_suggestions_admin` (`admin_id`);
+  ADD KEY `fk_suggestions_admin` (`admin_id`),
+  ADD KEY `idx_suggestions_student_school_year` (`student_id`,`school_year`);
 
 --
 -- Indexes for table `suggestion_categories`
@@ -992,6 +1043,18 @@ ALTER TABLE `dean_profiles`
   MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=9;
 
 --
+-- AUTO_INCREMENT for table `faq_categories`
+--
+ALTER TABLE `faq_categories`
+  MODIFY `id` int(10) unsigned NOT NULL AUTO_INCREMENT;
+
+--
+-- AUTO_INCREMENT for table `faq_questions`
+--
+ALTER TABLE `faq_questions`
+  MODIFY `id` int(10) unsigned NOT NULL AUTO_INCREMENT;
+
+--
 -- AUTO_INCREMENT for table `notifications`
 --
 ALTER TABLE `notifications`
@@ -1101,6 +1164,12 @@ ALTER TABLE `complaint_reactions`
 ALTER TABLE `dean_profiles`
   ADD CONSTRAINT `dean_profiles_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE,
   ADD CONSTRAINT `dean_profiles_ibfk_2` FOREIGN KEY (`college_id`) REFERENCES `colleges` (`id`) ON DELETE SET NULL;
+
+--
+-- Constraints for table `faq_questions`
+--
+ALTER TABLE `faq_questions`
+  ADD CONSTRAINT `fk_faq_question_category` FOREIGN KEY (`category_id`) REFERENCES `faq_categories` (`id`) ON DELETE CASCADE;
 
 --
 -- Constraints for table `notifications`

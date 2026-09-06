@@ -28,55 +28,6 @@ function verify_password_compat(string $plainPassword, string $storedPassword): 
     return hash_equals($storedPassword, $plainPassword);
 }
 
-function route_to_label(?string $route, string $ticketType, string $name): string
-{
-    $normalized = normalize_ticket_route($route);
-    if ($normalized !== null) {
-        return $normalized;
-    }
-
-    return ticket_route_role($ticketType, $name) === 'dean' ? 'college' : 'general';
-}
-
-function category_table_for_scope(string $scope): string
-{
-    return $scope === 'suggestion' ? 'suggestion_categories' : 'complaint_categories';
-}
-
-function category_label_for_scope(string $scope): string
-{
-    return $scope === 'suggestion' ? 'Suggestion Topics' : 'Issue Categories (Complaints)';
-}
-
-function category_context_label(string $scope): string
-{
-    return $scope === 'suggestion' ? 'Suggestion' : 'Complaint';
-}
-
-function normalize_category_scope(?string $scope): ?string
-{
-    $value = strtolower(trim((string)$scope));
-    return in_array($value, ['complaint', 'suggestion'], true) ? $value : null;
-}
-
-function fetch_category_rows(PDO $pdo, string $scope): array
-{
-    $table = category_table_for_scope($scope);
-    $rows = [];
-
-    try {
-        $stmt = $pdo->query(
-            "SELECT id, name, COALESCE(category_type, route) AS category_type
-             FROM {$table}
-             ORDER BY name ASC"
-        );
-        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
-    } catch (PDOException $e) {
-    }
-
-    return $rows;
-}
-
 function redirect_settings(string $tab, string $type, string $msg): void
 {
     $query = http_build_query([
@@ -104,10 +55,10 @@ function log_admin_activity(PDO $pdo, int $userId, string $action, ?string $targ
     ]);
 }
 
-$activeTab = (string)($_GET['tab'] ?? 'categories');
-$allowedTabs = ['categories', 'bulk_upload', 'profile', 'logs'];
+$activeTab = (string)($_GET['tab'] ?? 'faq');
+$allowedTabs = ['faq', 'bulk_upload', 'profile', 'logs'];
 if (!in_array($activeTab, $allowedTabs, true)) {
-    $activeTab = 'categories';
+    $activeTab = 'faq';
 }
 
 $flashStatus = (string)($_GET['status'] ?? '');
@@ -336,86 +287,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             redirect_settings('chatbot', 'success', 'Trigger removed successfully.');
         }
 
-        if ($action === 'save_category') {
-            $scope = normalize_category_scope((string)($_POST['category_scope'] ?? ''));
-            $name = trim((string)($_POST['category_name'] ?? ''));
-            $type = normalize_ticket_route((string)($_POST['category_type'] ?? 'general')) ?? 'general';
-            $categoryId = (int)($_POST['category_id'] ?? 0);
-
-            if ($scope === null) {
-                redirect_settings('categories', 'error', 'Please choose a category group.');
-            }
-
-            if ($name === '') {
-                redirect_settings('categories', 'error', 'Category name is required.');
-            }
-
-            $table = category_table_for_scope($scope);
-            $existingStmt = $pdo->prepare("SELECT id FROM {$table} WHERE name = :name" . ($categoryId > 0 ? ' AND id <> :id' : '') . ' LIMIT 1');
-            $existingParams = [':name' => $name];
-            if ($categoryId > 0) {
-                $existingParams[':id'] = $categoryId;
-            }
-            $existingStmt->execute($existingParams);
-
-            if ($existingStmt->fetch()) {
-                redirect_settings('categories', 'error', 'That category name already exists.');
-            }
-
-            $pdo->beginTransaction();
-            if ($categoryId > 0) {
-                $updateStmt = $pdo->prepare(
-                    "UPDATE {$table}
-                     SET name = :name, category_type = :category_type, route = :route, is_active = 1
-                     WHERE id = :id"
-                );
-                $updateStmt->execute([
-                    ':name' => $name,
-                    ':category_type' => $type,
-                    ':route' => $type,
-                    ':id' => $categoryId,
-                ]);
-                $actionLabel = 'Updated ' . $scope . ' category';
-            } else {
-                $insertStmt = $pdo->prepare(
-                    "INSERT INTO {$table} (name, category_type, route, is_active)
-                     VALUES (:name, :category_type, :route, 1)"
-                );
-                $insertStmt->execute([
-                    ':name' => $name,
-                    ':category_type' => $type,
-                    ':route' => $type,
-                ]);
-                $actionLabel = 'Added ' . $scope . ' category';
-            }
-            $pdo->commit();
-
-            if ($adminUserId > 0) {
-                log_admin_activity($pdo, $adminUserId, $actionLabel, $table, $categoryId > 0 ? $categoryId : (int)$pdo->lastInsertId());
-            }
-
-            redirect_settings('categories', 'success', ucfirst($scope) . ' category saved successfully.');
-        }
-
-        if ($action === 'delete_category') {
-            $scope = normalize_category_scope((string)($_POST['category_scope'] ?? ''));
-            $categoryId = (int)($_POST['category_id'] ?? 0);
-
-            if ($scope === null || $categoryId <= 0) {
-                redirect_settings('categories', 'error', 'Invalid category selected.');
-            }
-
-            $table = category_table_for_scope($scope);
-            $deleteStmt = $pdo->prepare("DELETE FROM {$table} WHERE id = :id");
-            $deleteStmt->execute([':id' => $categoryId]);
-
-            if ($adminUserId > 0) {
-                log_admin_activity($pdo, $adminUserId, 'Deleted ' . $scope . ' category', $table, $categoryId);
-            }
-
-            redirect_settings('categories', 'success', ucfirst($scope) . ' category deleted successfully.');
-        }
-
         if ($action === 'update_profile') {
             if ($adminUserId <= 0) {
                 redirect_settings('profile', 'error', 'No admin user available to update.');
@@ -571,15 +442,6 @@ $chatbot = [
     'is_active' => 1,
 ];
 $triggers = [];
-$issueCategories = [];
-$suggestionCategories = [];
-$editCategoryScope = normalize_category_scope((string)($_GET['edit_scope'] ?? ''));
-$editCategoryId = (int)($_GET['edit_id'] ?? 0);
-$editCategory = null;
-$issueFormName = '';
-$issueFormType = 'general';
-$suggestionFormName = '';
-$suggestionFormType = 'general';
 $profile = [
     'name' => 'Super Admin',
     'email' => 'admin@voice-system.edu',
@@ -599,54 +461,6 @@ try {
 
     $triggerStmt = $pdo->query('SELECT id, keywords, response FROM chatbot_triggers ORDER BY id DESC');
     $triggers = $triggerStmt->fetchAll();
-
-    $issueRows = fetch_category_rows($pdo, 'complaint');
-    foreach ($issueRows as $row) {
-        $name = (string)($row['name'] ?? '');
-        $type = route_to_label($row['category_type'] ?? null, 'complaint', $name);
-        $issueCategories[] = [
-            'id' => (int)($row['id'] ?? 0),
-            'name' => $name,
-            'type' => $type,
-        ];
-        if ($editCategoryScope === 'complaint' && $editCategoryId > 0 && (int)($row['id'] ?? 0) === $editCategoryId) {
-            $editCategory = [
-                'scope' => 'complaint',
-                'id' => (int)$row['id'],
-                'name' => $name,
-                'type' => $type,
-            ];
-        }
-    }
-
-    $suggestionRows = fetch_category_rows($pdo, 'suggestion');
-    foreach ($suggestionRows as $row) {
-        $name = (string)($row['name'] ?? '');
-        $type = route_to_label($row['category_type'] ?? null, 'suggestion', $name);
-        $suggestionCategories[] = [
-            'id' => (int)($row['id'] ?? 0),
-            'name' => $name,
-            'type' => $type,
-        ];
-        if ($editCategoryScope === 'suggestion' && $editCategoryId > 0 && (int)($row['id'] ?? 0) === $editCategoryId) {
-            $editCategory = [
-                'scope' => 'suggestion',
-                'id' => (int)$row['id'],
-                'name' => $name,
-                'type' => $type,
-            ];
-        }
-    }
-
-    if ($editCategory !== null) {
-        if ($editCategory['scope'] === 'complaint') {
-            $issueFormName = (string)$editCategory['name'];
-            $issueFormType = (string)$editCategory['type'];
-        } else {
-            $suggestionFormName = (string)$editCategory['name'];
-            $suggestionFormType = (string)$editCategory['type'];
-        }
-    }
 
     if ($adminUserId > 0) {
         $profileStmt = $pdo->prepare(
@@ -1084,7 +898,7 @@ $profileImage = trim($profile['profile_pic']) !== '' ? '../' . ltrim($profile['p
 
         <div class="nav-header">
             <div class="nav-tabs">
-                <button class="tab-btn <?php echo $activeTab === 'categories' ? 'active' : ''; ?>" onclick="switchTab(event, 'categories')">Categories & Suggestions</button>
+                <button class="tab-btn <?php echo $activeTab === 'faq' ? 'active' : ''; ?>" onclick="switchTab(event, 'faq')">FAQ Management</button>
                 <button class="tab-btn <?php echo $activeTab === 'bulk_upload' ? 'active' : ''; ?>" onclick="switchTab(event, 'bulk_upload')">Bulk Upload</button>
                 <button class="tab-btn <?php echo $activeTab === 'profile' ? 'active' : ''; ?>" onclick="switchTab(event, 'profile')">My Profile</button>
                 <button class="tab-btn <?php echo $activeTab === 'logs' ? 'active' : ''; ?>" onclick="switchTab(event, 'logs')">Activity Logs</button>
@@ -1097,6 +911,10 @@ $profileImage = trim($profile['profile_pic']) !== '' ? '../' . ltrim($profile['p
                     <?php echo e($flashMessage); ?>
                 </div>
             <?php endif; ?>
+
+            <div id="faq" class="tab-panel <?php echo $activeTab === 'faq' ? 'active' : ''; ?>">
+                <iframe src="admin_faq.php?embedded=1" title="FAQ Management" style="display:block;width:100%;height:calc(100vh - 150px);min-height:720px;border:0;border-radius:10px;background:#f8fafc;"></iframe>
+            </div>
 
             <div id="chatbot" class="tab-panel <?php echo $activeTab === 'chatbot' ? 'active' : ''; ?>">
                 <div class="section-header">
@@ -1213,165 +1031,6 @@ $profileImage = trim($profile['profile_pic']) !== '' ? '../' . ltrim($profile['p
                                 </button>
                             </div>
                         </form>
-                    </div>
-                </div>
-            </div>
-
-            <div id="categories" class="tab-panel <?php echo $activeTab === 'categories' ? 'active' : ''; ?>">
-                <div class="section-header">
-                    <h1>System Classifications</h1>
-                    <p>Organize how complaints and suggestions are grouped across the platform.</p>
-                </div>
-
-                <div class="card-grid">
-                    <div class="form-card">
-                        <form method="POST">
-                            <input type="hidden" name="csrf_token" value="<?php echo e($_SESSION['csrf_token']); ?>">
-                            <input type="hidden" name="action" value="save_category">
-                            <input type="hidden" name="category_scope" value="complaint">
-                            <input type="hidden" name="category_id" value="<?php echo ($editCategory !== null && $editCategory['scope'] === 'complaint') ? (int)$editCategory['id'] : 0; ?>">
-                            <div class="form-group">
-                                <label><i class='bx bx-error-circle'></i> <?php echo e(category_label_for_scope('complaint')); ?></label>
-                                <p style="font-size: 12.5px; color: var(--text-light); margin-bottom: 12px;">Create or update complaint categories here. Route decides whether the category goes to Admin or Dean.</p>
-                                <?php if ($editCategory !== null && $editCategory['scope'] === 'complaint'): ?>
-                                    <div class="flash success" style="margin-bottom: 14px;">Editing complaint category <?php echo e((string)$editCategory['name']); ?>.</div>
-                                <?php endif; ?>
-                                <div class="form-group" style="margin-bottom: 14px;">
-                                    <label><i class='bx bx-tag'></i> Category Name</label>
-                                    <input type="text" class="input-field" name="category_name" value="<?php echo e($issueFormName); ?>" placeholder="e.g. Facilities" required>
-                                </div>
-                                <div class="form-group" style="margin-bottom: 14px;">
-                                    <label><i class='bx bx-transfer-alt'></i> Category Type</label>
-                                    <select class="input-field" name="category_type" required>
-                                        <option value="general" <?php echo $issueFormType === 'general' ? 'selected' : ''; ?>>GENERAL - routes to Admin</option>
-                                        <option value="college" <?php echo $issueFormType === 'college' ? 'selected' : ''; ?>>COLLEGE - routes to Dean</option>
-                                    </select>
-                                </div>
-                                <div style="display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 12px;">
-                                    <button class="btn-primary" type="submit"><i class='bx bx-save'></i> <?php echo $issueFormName !== '' ? 'Update Category' : 'Add Category'; ?></button>
-                                    <?php if ($editCategory !== null && $editCategory['scope'] === 'complaint'): ?>
-                                        <a class="btn-secondary" href="admin_setting.php?tab=categories">Cancel Edit</a>
-                                    <?php endif; ?>
-                                </div>
-                            </div>
-                        </form>
-
-                        <div class="table-container">
-                            <table>
-                                <thead>
-                                    <tr>
-                                        <th>Category Name</th>
-                                        <th>Type</th>
-                                        <th width="180">Actions</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    <?php if (count($issueCategories) === 0): ?>
-                                        <tr>
-                                            <td colspan="3">No complaint categories yet.</td>
-                                        </tr>
-                                    <?php else: ?>
-                                        <?php foreach ($issueCategories as $category): ?>
-                                            <tr>
-                                                <td><?php echo e((string)$category['name']); ?></td>
-                                                <td>
-                                                    <span class="badge" style="background: <?php echo $category['type'] === 'college' ? '#7c3aed' : 'var(--primary)'; ?>;">
-                                                        <?php echo e(strtoupper((string)$category['type'])); ?>
-                                                    </span>
-                                                </td>
-                                                <td>
-                                                    <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
-                                                        <a class="btn-secondary" href="admin_setting.php?tab=categories&edit_scope=complaint&edit_id=<?php echo (int)$category['id']; ?>">Edit</a>
-                                                        <form method="POST" class="inline-form" onsubmit="return confirm('Delete this complaint category?');">
-                                                            <input type="hidden" name="csrf_token" value="<?php echo e($_SESSION['csrf_token']); ?>">
-                                                            <input type="hidden" name="action" value="delete_category">
-                                                            <input type="hidden" name="category_scope" value="complaint">
-                                                            <input type="hidden" name="category_id" value="<?php echo (int)$category['id']; ?>">
-                                                            <button class="btn-delete" type="submit" title="Delete"><i class='bx bx-trash'></i></button>
-                                                        </form>
-                                                    </div>
-                                                </td>
-                                            </tr>
-                                        <?php endforeach; ?>
-                                    <?php endif; ?>
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
-
-                    <div class="form-card">
-                        <form method="POST">
-                            <input type="hidden" name="csrf_token" value="<?php echo e($_SESSION['csrf_token']); ?>">
-                            <input type="hidden" name="action" value="save_category">
-                            <input type="hidden" name="category_scope" value="suggestion">
-                            <input type="hidden" name="category_id" value="<?php echo ($editCategory !== null && $editCategory['scope'] === 'suggestion') ? (int)$editCategory['id'] : 0; ?>">
-                            <div class="form-group">
-                                <label><i class='bx bx-bulb'></i> <?php echo e(category_label_for_scope('suggestion')); ?></label>
-                                <p style="font-size: 12.5px; color: var(--text-light); margin-bottom: 12px;">Create or update suggestion categories here. Route decides whether the category goes to Admin or Dean.</p>
-                                <?php if ($editCategory !== null && $editCategory['scope'] === 'suggestion'): ?>
-                                    <div class="flash success" style="margin-bottom: 14px;">Editing suggestion category <?php echo e((string)$editCategory['name']); ?>.</div>
-                                <?php endif; ?>
-                                <div class="form-group" style="margin-bottom: 14px;">
-                                    <label><i class='bx bx-tag'></i> Category Name</label>
-                                    <input type="text" class="input-field" name="category_name" value="<?php echo e($suggestionFormName); ?>" placeholder="e.g. Library Resources" required>
-                                </div>
-                                <div class="form-group" style="margin-bottom: 14px;">
-                                    <label><i class='bx bx-transfer-alt'></i> Category Type</label>
-                                    <select class="input-field" name="category_type" required>
-                                        <option value="general" <?php echo $suggestionFormType === 'general' ? 'selected' : ''; ?>>GENERAL - routes to Admin</option>
-                                        <option value="college" <?php echo $suggestionFormType === 'college' ? 'selected' : ''; ?>>COLLEGE - routes to Dean</option>
-                                    </select>
-                                </div>
-                                <div style="display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 12px;">
-                                    <button class="btn-primary" type="submit"><i class='bx bx-save'></i> <?php echo $suggestionFormName !== '' ? 'Update Category' : 'Add Category'; ?></button>
-                                    <?php if ($editCategory !== null && $editCategory['scope'] === 'suggestion'): ?>
-                                        <a class="btn-secondary" href="admin_setting.php?tab=categories">Cancel Edit</a>
-                                    <?php endif; ?>
-                                </div>
-                            </div>
-                        </form>
-
-                        <div class="table-container">
-                            <table>
-                                <thead>
-                                    <tr>
-                                        <th>Category Name</th>
-                                        <th>Type</th>
-                                        <th width="180">Actions</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    <?php if (count($suggestionCategories) === 0): ?>
-                                        <tr>
-                                            <td colspan="3">No suggestion categories yet.</td>
-                                        </tr>
-                                    <?php else: ?>
-                                        <?php foreach ($suggestionCategories as $category): ?>
-                                            <tr>
-                                                <td><?php echo e((string)$category['name']); ?></td>
-                                                <td>
-                                                    <span class="badge" style="background: <?php echo $category['type'] === 'college' ? '#7c3aed' : 'var(--primary)'; ?>;">
-                                                        <?php echo e(strtoupper((string)$category['type'])); ?>
-                                                    </span>
-                                                </td>
-                                                <td>
-                                                    <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
-                                                        <a class="btn-secondary" href="admin_setting.php?tab=categories&edit_scope=suggestion&edit_id=<?php echo (int)$category['id']; ?>">Edit</a>
-                                                        <form method="POST" class="inline-form" onsubmit="return confirm('Delete this suggestion category?');">
-                                                            <input type="hidden" name="csrf_token" value="<?php echo e($_SESSION['csrf_token']); ?>">
-                                                            <input type="hidden" name="action" value="delete_category">
-                                                            <input type="hidden" name="category_scope" value="suggestion">
-                                                            <input type="hidden" name="category_id" value="<?php echo (int)$category['id']; ?>">
-                                                            <button class="btn-delete" type="submit" title="Delete"><i class='bx bx-trash'></i></button>
-                                                        </form>
-                                                    </div>
-                                                </td>
-                                            </tr>
-                                        <?php endforeach; ?>
-                                    <?php endif; ?>
-                                </tbody>
-                            </table>
-                        </div>
                     </div>
                 </div>
             </div>

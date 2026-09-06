@@ -31,6 +31,9 @@ $flashType = '';
 
 $q = normalize_search_query((string)($_GET['q'] ?? ''));
 $statusFilter = strtolower(trim((string)($_GET['status'] ?? 'all')));
+$departmentFilter = (int)($_GET['department'] ?? 0);
+$dateFrom = trim((string)($_GET['date_from'] ?? ''));
+$dateTo = trim((string)($_GET['date_to'] ?? ''));
 $viewMode = 'all';
 $allowedStatusFilters = ['all', 'under_review', 'reviewed'];
 if (!in_array($statusFilter, $allowedStatusFilters, true)) {
@@ -57,6 +60,33 @@ try {
 if ($deanCollegeId === null) {
     $flashMsg = 'Dean college profile is not configured. Please contact the administrator.';
     $flashType = 'error';
+}
+
+$departments = [];
+if ($deanCollegeId !== null) {
+    $departmentsStmt = $pdo->prepare('SELECT id, name FROM programs WHERE college_id = :college_id AND status = "active" ORDER BY name');
+    $departmentsStmt->execute([':college_id' => $deanCollegeId]);
+    $departments = $departmentsStmt->fetchAll(PDO::FETCH_ASSOC);
+}
+$departmentIds = array_map(static fn(array $department): int => (int)$department['id'], $departments);
+if ($departmentFilter <= 0 || !in_array($departmentFilter, $departmentIds, true)) {
+    $departmentFilter = 0;
+}
+
+function dean_suggestions_valid_date(string $date): bool
+{
+    $parsed = DateTimeImmutable::createFromFormat('!Y-m-d', $date);
+    return $parsed !== false && $parsed->format('Y-m-d') === $date;
+}
+
+if ($dateFrom !== '' && !dean_suggestions_valid_date($dateFrom)) {
+    $dateFrom = '';
+}
+if ($dateTo !== '' && !dean_suggestions_valid_date($dateTo)) {
+    $dateTo = '';
+}
+if ($dateFrom !== '' && $dateTo !== '' && $dateFrom > $dateTo) {
+    [$dateFrom, $dateTo] = [$dateTo, $dateFrom];
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'update_suggestion') {
@@ -211,6 +241,21 @@ try {
     $conditions[] = 's.college_id = :college_id';
     $params[':college_id'] = $deanCollegeId;
 
+    if ($departmentFilter > 0) {
+        $conditions[] = 'sp.program_id = :department';
+        $params[':department'] = $departmentFilter;
+    }
+
+    if ($dateFrom !== '') {
+        $conditions[] = 's.created_at >= :date_from';
+        $params[':date_from'] = $dateFrom . ' 00:00:00';
+    }
+    if ($dateTo !== '') {
+        $dateToExclusive = (new DateTimeImmutable($dateTo))->modify('+1 day')->format('Y-m-d 00:00:00');
+        $conditions[] = 's.created_at < :date_to';
+        $params[':date_to'] = $dateToExclusive;
+    }
+
     if ($statusFilter !== 'all') {
         $conditions[] = 's.status = :status_filter';
         $params[':status_filter'] = $statusFilter;
@@ -304,12 +349,30 @@ body {
 
 /* ===== CONTROLS ===== */
 .controls-bar {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
+    background: #fff;
+    border: 1px solid #e5e7eb;
+    border-radius: 12px;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, .02);
+    padding: 18px 20px;
     margin-bottom: 20px;
-    gap: 15px;
-    flex-wrap: wrap;
+}
+
+.search-filter,
+.filter-box {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
+    min-width: 0;
+}
+
+.search-filter > span,
+.filter-box > span {
+    color: #52627a;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: .03em;
 }
 
 .search-box {
@@ -318,38 +381,99 @@ body {
     background: #f9fafb;
     border: 1px solid #e5e7eb;
     border-radius: 8px;
-    padding: 8px 15px;
-    width: 300px;
+    padding: 10px 12px;
+    width: 100%;
+    height: 43px;
+    flex: none;
 }
 
-.search-box i { color: #888; margin-right: 10px; }
-.search-box input { border: none; background: transparent; outline: none; width: 100%; font-size: 13px; }
+.search-box i { color: #94a3b8; margin-right: 10px; flex-shrink: 0; }
+.search-box input { border: none; background: transparent; outline: none; width: 100%; min-width: 0; font-size: 13px; }
 
 .filter-box select {
-    padding: 9px 15px;
+    height: 43px;
+    padding: 10px 14px;
     border: 1px solid #e5e7eb;
     border-radius: 8px;
     font-size: 13px;
     font-family: 'Poppins', sans-serif;
     outline: none;
-    background: #f9fafb;
+    background: #fff;
     cursor: pointer;
+    width: 100%;
+}
+
+.date-filter {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
+    min-width: 0;
+}
+
+.date-filter > span {
+    color: #52627a;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: .03em;
+}
+
+.date-filter input {
+    height: 43px;
+    width: 100%;
+    padding: 10px 12px;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    color: #1f2937;
+    font: inherit;
+    font-size: 13px;
+    outline: none;
+    background: #fff;
+}
+
+.date-filter input:focus,
+.filter-box select:focus {
+    border-color: #8b5cf6;
+    box-shadow: 0 0 0 2px rgba(139, 92, 246, .12);
 }
 
 .controls-form {
     width: 100%;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 15px;
-    flex-wrap: wrap;
+    display: block;
 }
 
 .controls-left {
-    display: flex;
-    align-items: center;
+    display: grid;
+    grid-template-columns: minmax(260px, 2fr) repeat(3, minmax(135px, 1fr)) auto auto;
+    align-items: end;
     gap: 12px;
-    flex-wrap: wrap;
+}
+
+.btn-search {
+    height: 40px;
+    padding: 10px 20px;
+    background: #6d28d9;
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    font-size: 13px;
+    font-family: 'Poppins', sans-serif;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.btn-search:hover { background: #5d1fa0; }
+
+@media (max-width: 900px) {
+    .controls-left { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .search-filter { grid-column: 1 / -1; }
+    .btn-search, .btn-clear { width: 100%; text-align: center; }
+}
+
+@media (max-width: 520px) {
+    .controls-left { grid-template-columns: 1fr; }
+    .search-filter { grid-column: auto; }
 }
 
 /* ===== TABS ===== */
@@ -851,21 +975,41 @@ textarea.form-control { resize: vertical; min-height: 100px; }
         <?php endif; ?>
 
         <div class="controls-bar">
-            <form method="GET" class="controls-form">
+            <form method="GET" class="controls-form" id="deanSuggestionFiltersForm">
                 <div class="controls-left">
-                    <div class="search-box">
-                        <i class='bx bx-search'></i>
-                        <input type="text" name="q" value="<?php echo e($q); ?>" placeholder="Search by Ticket ID, Subject, Category, or Student...">
-                    </div>
-                        <div class="filter-box">
-                            <select name="status">
-                                <option value="all" <?php echo $statusFilter === 'all' ? 'selected' : ''; ?>>All Statuses</option>
-                                <option value="under_review" <?php echo $statusFilter === 'under_review' ? 'selected' : ''; ?>>Under Review</option>
-                                <option value="reviewed" <?php echo $statusFilter === 'reviewed' ? 'selected' : ''; ?>>Reviewed</option>
-                            </select>
+                    <div class="search-filter">
+                        <span>Search</span>
+                        <div class="search-box">
+                            <i class='bx bx-search'></i>
+                            <input type="text" name="q" value="<?php echo e($q); ?>" placeholder="Search by Ticket ID, Subject, Category, or Student...">
                         </div>
-                    <button type="submit" class="btn-search">Apply</button>
-                    <?php if ($q !== '' || $statusFilter !== 'all'): ?>
+                    </div>
+                    <div class="filter-box">
+                        <span>Status</span>
+                        <select name="status">
+                            <option value="all" <?php echo $statusFilter === 'all' ? 'selected' : ''; ?>>All Statuses</option>
+                            <option value="under_review" <?php echo $statusFilter === 'under_review' ? 'selected' : ''; ?>>Under Review</option>
+                            <option value="reviewed" <?php echo $statusFilter === 'reviewed' ? 'selected' : ''; ?>>Reviewed</option>
+                        </select>
+                    </div>
+                    <div class="filter-box">
+                        <span>Department</span>
+                        <select name="department">
+                            <option value="0">All Departments</option>
+                            <?php foreach ($departments as $department): ?>
+                                <option value="<?php echo (int)$department['id']; ?>" <?php echo $departmentFilter === (int)$department['id'] ? 'selected' : ''; ?>><?php echo e((string)$department['name']); ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+                    <label class="date-filter">
+                        <span>From Date</span>
+                        <input type="date" name="date_from" value="<?php echo e($dateFrom); ?>">
+                    </label>
+                    <label class="date-filter">
+                        <span>To Date</span>
+                        <input type="date" name="date_to" value="<?php echo e($dateTo); ?>">
+                    </label>
+                    <?php if ($q !== '' || $statusFilter !== 'all' || $departmentFilter > 0 || $dateFrom !== '' || $dateTo !== ''): ?>
                         <a href="dean_suggestions.php" class="btn-clear">Clear</a>
                     <?php endif; ?>
                 </div>
@@ -1614,6 +1758,32 @@ if (document.getElementById('feedbackReplyForm')) {
         } catch (error) {
             statusEl.innerHTML = '<span style="color:#b91c1c;">Unable to send the reply. Please try again.</span>';
         }
+    });
+}
+
+const deanSuggestionFiltersForm = document.getElementById('deanSuggestionFiltersForm');
+if (deanSuggestionFiltersForm) {
+    const searchInput = deanSuggestionFiltersForm.querySelector('input[name="q"]');
+    const focusKey = 'deanSuggestionSearchFocus';
+    let searchTimer;
+
+    if (searchInput) {
+        if (window.sessionStorage.getItem(focusKey) === '1') {
+            searchInput.focus();
+            searchInput.setSelectionRange(searchInput.value.length, searchInput.value.length);
+        }
+        searchInput.addEventListener('input', () => {
+            window.sessionStorage.setItem(focusKey, '1');
+            window.clearTimeout(searchTimer);
+            searchTimer = window.setTimeout(() => deanSuggestionFiltersForm.submit(), 350);
+        });
+    }
+
+    deanSuggestionFiltersForm.querySelectorAll('select[name="status"], select[name="department"], input[name="date_from"], input[name="date_to"]').forEach((filter) => {
+        filter.addEventListener('change', () => {
+            window.sessionStorage.removeItem(focusKey);
+            deanSuggestionFiltersForm.submit();
+        });
     });
 }
 </script>

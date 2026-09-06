@@ -57,6 +57,16 @@
     /* Removed box-shadow to match admin */
 }
 
+.menu li a.menu-item-disabled {
+    color: #9ca3af;
+    cursor: not-allowed;
+}
+
+.menu li a.menu-item-disabled:hover {
+    background: #f3f4f6;
+    color: #9ca3af;
+}
+
 .mobile-sidebar-overlay {
     display: none;
 }
@@ -100,8 +110,17 @@
 </style>
 
 <?php
+require_once __DIR__ . '/../school_year_helpers.php';
+
 $current = basename($_SERVER['PHP_SELF']);
 $pageMode = (string)($_GET['mode'] ?? '');
+
+$sidebarSchoolYearCurrent = sy_current();
+$sidebarSchoolYearSelected = (string)($_SESSION['selected_school_year'] ?? $sidebarSchoolYearCurrent);
+if (!sy_is_valid_label($sidebarSchoolYearSelected)) {
+    $sidebarSchoolYearSelected = $sidebarSchoolYearCurrent;
+}
+$sidebarIsPastSchoolYear = $sidebarSchoolYearSelected !== $sidebarSchoolYearCurrent;
 ?>
 
 <div class="sidebar">
@@ -114,19 +133,37 @@ $pageMode = (string)($_GET['mode'] ?? '');
                 <i class='bx bx-home'></i> Student Guide
             </a>
         </li>
-        <li>
-            <a href="student_complaints.php" class="<?= $current === 'student_complaints.php' && $pageMode !== 'suggestion' ? 'active' : '' ?>">
-                <i class='bx bx-edit'></i> File Complaint
-            </a>
-        </li>
-        <li>
-            <a href="student_complaints.php?mode=suggestion" class="<?= $current === 'student_complaints.php' && $pageMode === 'suggestion' ? 'active' : '' ?>">
-                <i class='bx bx-bulb'></i> Send Suggestion
-            </a>
-        </li>
+        <?php if ($sidebarIsPastSchoolYear): ?>
+            <li>
+                <a href="javascript:void(0)" class="menu-item-disabled" title="File Complaint is only available for the current school year (<?= htmlspecialchars($sidebarSchoolYearCurrent, ENT_QUOTES, 'UTF-8') ?>).">
+                    <i class='bx bx-edit'></i> File Complaint <i class='bx bx-lock-alt' style="margin-left:auto;font-size:14px;"></i>
+                </a>
+            </li>
+            <li>
+                <a href="javascript:void(0)" class="menu-item-disabled" title="Send Suggestion is only available for the current school year (<?= htmlspecialchars($sidebarSchoolYearCurrent, ENT_QUOTES, 'UTF-8') ?>).">
+                    <i class='bx bx-bulb'></i> Send Suggestion <i class='bx bx-lock-alt' style="margin-left:auto;font-size:14px;"></i>
+                </a>
+            </li>
+        <?php else: ?>
+            <li>
+                <a href="student_complaints.php" class="<?= $current === 'student_complaints.php' && $pageMode !== 'suggestion' ? 'active' : '' ?>">
+                    <i class='bx bx-edit'></i> File Complaint
+                </a>
+            </li>
+            <li>
+                <a href="student_complaints.php?mode=suggestion" class="<?= $current === 'student_complaints.php' && $pageMode === 'suggestion' ? 'active' : '' ?>">
+                    <i class='bx bx-bulb'></i> Send Suggestion
+                </a>
+            </li>
+        <?php endif; ?>
         <li>
             <a href="student_mysubmission.php" class="<?= $current === 'student_mysubmission.php' ? 'active' : '' ?>">
                 <i class='bx bx-list-ul'></i> My Submissions
+            </a>
+        </li>
+        <li>
+            <a href="student_faq.php" class="<?= $current === 'student_faq.php' ? 'active' : '' ?>">
+                <i class='bx bx-help-circle'></i> FAQ
             </a>
         </li>
         <li>

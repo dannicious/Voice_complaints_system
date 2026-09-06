@@ -1,5 +1,7 @@
 <?php
 
+require_once __DIR__ . '/password_reset_helpers.php';
+
 /**
  * Bulk upload of student records from a CSV file.
  *
@@ -63,7 +65,7 @@ if (!function_exists('resolve_lookup')) {
 if (!function_exists('generate_unique_username')) {
     function generate_unique_username(PDO $pdo, string $firstName, string $lastName, string $studentNumber = ''): string
     {
-        $base = strtolower(preg_replace('/[^a-z0-9]/i', '', $firstName . '.' . $lastName));
+            $base = strtolower(trim((string)(preg_replace('/[^a-z0-9]+/i', '_', $firstName) . '_' . preg_replace('/[^a-z0-9]+/i', '_', $lastName)), '_'));
         if ($base === '') {
             $base = strtolower(preg_replace('/[^a-z0-9]/i', '', $studentNumber));
         }
@@ -84,11 +86,68 @@ if (!function_exists('generate_unique_username')) {
 
             $attempt++;
             $suffix = (string)random_int(100, 999);
-            $candidate = substr($base, 0, max(1, 40 - strlen($suffix))) . $suffix;
+            $candidate = substr($base, 0, max(1, 40 - strlen($suffix) - 1)) . '_' . $suffix;
 
             if ($attempt > 10) {
                 return 'student' . random_int(10000, 99999);
             }
+        }
+    }
+}
+
+if (!function_exists('generate_student_password')) {
+    function generate_student_password(int $length = 12): string
+    {
+        $characters = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%';
+        $password = '';
+        $maxIndex = strlen($characters) - 1;
+        for ($index = 0; $index < $length; $index++) {
+            $password .= $characters[random_int(0, $maxIndex)];
+        }
+        return $password;
+    }
+}
+
+if (!function_exists('send_student_account_email')) {
+    function send_student_account_email(string $email, string $name, string $username, string $password, ?string &$error = null): bool
+    {
+        if (!class_exists(\PHPMailer\PHPMailer\PHPMailer::class)) {
+            $error = 'PHPMailer is not installed.';
+            return false;
+        }
+
+        $settings = reset_mail_settings();
+        if ($settings['host'] === '' || $settings['username'] === '' || $settings['password'] === '' || $settings['from_email'] === '') {
+            $error = 'Mail settings are not configured.';
+            return false;
+        }
+
+        try {
+            $mailer = new \PHPMailer\PHPMailer\PHPMailer(true);
+            $mailer->isSMTP();
+            $mailer->Host = $settings['host'];
+            $mailer->SMTPAuth = true;
+            $mailer->Username = $settings['username'];
+            $mailer->Password = $settings['password'];
+            $mailer->SMTPSecure = $settings['secure'] === 'ssl'
+                ? \PHPMailer\PHPMailer\PHPMailer::ENCRYPTION_SMTPS
+                : \PHPMailer\PHPMailer\PHPMailer::ENCRYPTION_STARTTLS;
+            $mailer->Port = $settings['port'];
+            $mailer->CharSet = 'UTF-8';
+            $mailer->setFrom($settings['from_email'], $settings['from_name']);
+            $mailer->addAddress($email, $name);
+            $mailer->isHTML(true);
+            $mailer->Subject = 'Your VOICE Student Account';
+            $safeName = htmlspecialchars($name, ENT_QUOTES, 'UTF-8');
+            $safeUsername = htmlspecialchars($username, ENT_QUOTES, 'UTF-8');
+            $safePassword = htmlspecialchars($password, ENT_QUOTES, 'UTF-8');
+            $mailer->Body = "<div style=\"font-family:Arial,sans-serif;color:#111827;line-height:1.6\"><h2>Welcome to VOICE</h2><p>Hello {$safeName}, your student account has been created.</p><p><strong>Username:</strong> {$safeUsername}<br><strong>Temporary password:</strong> {$safePassword}</p><p>Please sign in and change your password after your first login.</p></div>";
+            $mailer->AltBody = "Hello {$name},\n\nYour VOICE student account has been created.\nUsername: {$username}\nTemporary password: {$password}\n\nPlease sign in and change your password after your first login.";
+            $mailer->send();
+            return true;
+        } catch (\PHPMailer\PHPMailer\Exception $exception) {
+            $error = $exception->getMessage();
+            return false;
         }
     }
 }
@@ -117,8 +176,6 @@ function student_bulk_upload_columns(): array
             'school_year' => 'School year, e.g. 2026-2027.',
             'gender' => 'male, female, or other.',
             'contact_number' => 'Contact number.',
-            'username' => 'Login username. Generated from the name when left blank.',
-            'password' => 'Initial password. Defaults to the student number when left blank.',
         ],
     ];
 }
@@ -144,8 +201,6 @@ function student_bulk_upload_template_csv(): string
         'school_year' => '2026-2027',
         'gender' => 'male',
         'contact_number' => '09123456789',
-        'username' => '',
-        'password' => '',
     ];
 
     $handle = fopen('php://temp', 'r+');
@@ -246,7 +301,7 @@ function student_bulk_upload_import(PDO $pdo, array $file): array
     }
 
     $studentExistsStmt = $pdo->prepare('SELECT id FROM student_profiles WHERE student_number = :student_number LIMIT 1');
-    $accountExistsStmt = $pdo->prepare('SELECT id FROM users WHERE username = :username OR email = :email LIMIT 1');
+    $accountExistsStmt = $pdo->prepare('SELECT username, email FROM users WHERE username = :username OR email = :email LIMIT 1');
     $insertUserStmt = $pdo->prepare(
         'INSERT INTO users (username, email, password, role, profile_pic, is_active)
          VALUES (:username, :email, :password, :role, :profile_pic, :is_active)'
@@ -261,6 +316,8 @@ function student_bulk_upload_import(PDO $pdo, array $file): array
     $importedCount = 0;
     $skippedCount = 0;
     $notes = [];
+    $emailFailedCount = 0;
+    $firstEmailError = '';
     $rowNumber = 1;
 
     while (($row = fgetcsv($handle)) !== false) {
@@ -274,8 +331,6 @@ function student_bulk_upload_import(PDO $pdo, array $file): array
         $firstName = trim(csv_value($row, $headerMap, ['first_name', 'firstname', 'given_name']));
         $lastName = trim(csv_value($row, $headerMap, ['last_name', 'lastname', 'surname']));
         $email = trim(csv_value($row, $headerMap, ['email']));
-        $username = trim(csv_value($row, $headerMap, ['username']));
-        $password = trim(csv_value($row, $headerMap, ['password']));
         $middleName = trim(csv_value($row, $headerMap, ['middle_name', 'middlename']));
         $gender = strtolower(trim(csv_value($row, $headerMap, ['gender'])));
         $contactNumber = trim(csv_value($row, $headerMap, ['contact_number', 'contact', 'phone']));
@@ -318,27 +373,30 @@ function student_bulk_upload_import(PDO $pdo, array $file): array
         $collegeId = $college ? (int)$college['id'] : null;
         $programId = $program ? (int)$program['id'] : null;
 
-        if ($username === '') {
-            $username = generate_unique_username($pdo, $firstName, $lastName, $studentNumber);
-        }
-
-        if ($password === '') {
-            $password = $studentNumber;
-        }
+        $username = generate_unique_username($pdo, $firstName, $lastName, $studentNumber);
+        $password = generate_student_password();
 
         $yearLevel = $yearLevelValue !== '' ? (int)$yearLevelValue : null;
 
         $accountExistsStmt->execute([':username' => $username, ':email' => $email]);
-        if ($accountExistsStmt->fetch()) {
+        $existingAccount = $accountExistsStmt->fetch();
+        if ($existingAccount) {
             $skippedCount++;
-            $notes[] = "Row {$rowNumber}: username or email already exists.";
+            $duplicateFields = [];
+            if (strcasecmp((string)$existingAccount['username'], $username) === 0) {
+                $duplicateFields[] = "username '{$username}'";
+            }
+            if (strcasecmp((string)$existingAccount['email'], $email) === 0) {
+                $duplicateFields[] = "email '{$email}'";
+            }
+            $notes[] = "Row {$rowNumber}: " . implode(' and ', $duplicateFields) . ' already exists in the users table.';
             continue;
         }
 
         $studentExistsStmt->execute([':student_number' => $studentNumber]);
         if ($studentExistsStmt->fetch()) {
             $skippedCount++;
-            $notes[] = "Row {$rowNumber}: student number already exists.";
+            $notes[] = "Row {$rowNumber}: student number '{$studentNumber}' already exists in the student_profiles table.";
             continue;
         }
 
@@ -375,6 +433,15 @@ function student_bulk_upload_import(PDO $pdo, array $file): array
 
             $pdo->commit();
             $importedCount++;
+
+            $mailError = null;
+            if (!send_student_account_email($email, trim($firstName . ' ' . $lastName), $username, $password, $mailError)) {
+                $emailFailedCount++;
+                if ($firstEmailError === '' && $mailError !== null) {
+                    $firstEmailError = $mailError;
+                }
+                $notes[] = "Row {$rowNumber}: account created, but the email could not be sent." . ($mailError ? " {$mailError}" : '');
+            }
         } catch (PDOException $e) {
             if ($pdo->inTransaction()) {
                 $pdo->rollBack();
@@ -391,6 +458,9 @@ function student_bulk_upload_import(PDO $pdo, array $file): array
         $message = 'Bulk upload complete. Imported ' . $importedCount . ' student' . ($importedCount === 1 ? '' : 's') . '.';
         if ($skippedCount > 0) {
             $message .= ' Skipped ' . $skippedCount . ' row' . ($skippedCount === 1 ? '' : 's') . '.';
+        }
+        if ($emailFailedCount > 0) {
+            $message .= ' Email failed for ' . $emailFailedCount . ' student' . ($emailFailedCount === 1 ? '' : 's') . '; ' . ($firstEmailError !== '' ? $firstEmailError : 'check SMTP settings.');
         }
 
         return [
