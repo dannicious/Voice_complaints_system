@@ -29,7 +29,7 @@ $current = basename($_SERVER['PHP_SELF']);
     <ul class="menu">
         <li><a href="/complaint-system/complaint-system-main/staff/dashboard.php" class="<?= $current === 'dashboard.php' ? 'active' : '' ?>"><i class="bx bx-home"></i> Dashboard</a></li>
         <li><a href="/complaint-system/complaint-system-main/Ui-main/staff/suggestions.php" class="<?= $current === 'suggestions.php' ? 'active' : '' ?>"><i class="bx bx-bulb"></i> Suggestions</a></li>
-        <li><a href="/complaint-system/complaint-system-main/Ui-main/staff/areas.php" class="<?= $current === 'areas.php' ? 'active' : '' ?>"><i class="bx bx-category"></i> Areas</a></li>
+        <li><a href="/complaint-system/complaint-system-main/Ui-main/staff/areas.php" class="<?= $current === 'areas.php' ? 'active' : '' ?>"><i class="bx bx-category"></i> Categories I Handle</a></li>
         <li><a href="/complaint-system/complaint-system-main/Ui-main/staff/profile.php" class="<?= $current === 'profile.php' ? 'active' : '' ?>"><i class="bx bx-user"></i> My Profile</a></li>
         <li class="logout-item" style="margin-top:auto;"><a href="/complaint-system/complaint-system-main/staff/logout.php"><i class="bx bx-log-out"></i> Log Out</a></li>
     </ul>

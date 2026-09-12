@@ -1,6 +1,7 @@
 <?php
 session_start();
 require_once __DIR__ . '/../db_connection.php';
+require_once __DIR__ . '/../suggestion_flow.php';
 
 function require_admin_session(PDO $pdo): void
 {
@@ -88,6 +89,7 @@ function escape_like(string $value): string
 }
 
 require_admin_session($pdo);
+ensure_suggestion_area_schema($pdo);
 
 if (!isset($_SESSION['csrf_token'])) {
     $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
@@ -113,9 +115,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $password = (string)($_POST['password'] ?? '');
         $office = trim((string)($_POST['office'] ?? ''));
         $phone = trim((string)($_POST['phone'] ?? ''));
+        // Exactly one Area, deliberately - these appear on the student-facing
+        // suggestion form as the Level 1 picker, so each one has to be a
+        // considered, singular addition to that list, not something that
+        // multiplies as a side effect of routine staff account creation.
+        $suggestionAreaName = trim((string)($_POST['suggestion_area_text'] ?? ''));
 
-        if ($name === '' || $email === '' || $password === '' || $office === '') {
-            $flashMessage = 'Name, email, password, and office are required.';
+        if ($name === '' || $email === '' || $password === '' || $office === '' || $suggestionAreaName === '') {
+            $flashMessage = 'Name, email, password, office, and a General Suggestion Area are required.';
             $flashType = 'error';
         } elseif (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
             $flashMessage = 'Please provide a valid email address.';
@@ -154,7 +161,50 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 $pdo->commit();
 
+                // Best-effort, outside the account-creation transaction: reuse
+                // the named General Suggestion Area if it already exists, or
+                // create it fresh, then file one starter category under it
+                // routed straight to this office - so suggestions can reach
+                // the new staff member immediately without a separate trip
+                // to Manage Types. Never blocks account creation if anything
+                // here goes wrong.
+                $wiredArea = false;
+                try {
+                    $findAreaStmt = $pdo->prepare('SELECT id FROM suggestion_areas WHERE LOWER(name) = LOWER(:name) LIMIT 1');
+                    $findAreaStmt->execute([':name' => $suggestionAreaName]);
+                    $areaId = (int)$findAreaStmt->fetchColumn();
+                    if ($areaId <= 0) {
+                        $nextOrderStmt = $pdo->query('SELECT COALESCE(MAX(display_order), 0) + 10 FROM suggestion_areas');
+                        $nextOrder = (int)$nextOrderStmt->fetchColumn();
+                        $pdo->prepare('INSERT INTO suggestion_areas (name, display_order) VALUES (:name, :display_order)')
+                            ->execute([':name' => $suggestionAreaName, ':display_order' => $nextOrder]);
+                        $areaId = (int)$pdo->lastInsertId();
+                    }
+
+                    $existingWireStmt = $pdo->prepare(
+                        "SELECT id FROM suggestion_categories WHERE area_id = :area_id AND route_type = 'office' AND LOWER(TRIM(office)) = LOWER(TRIM(:office)) LIMIT 1"
+                    );
+                    $existingWireStmt->execute([':area_id' => $areaId, ':office' => $office]);
+                    if (!$existingWireStmt->fetchColumn()) {
+                        // Not already wired for this office - file the starter category.
+                        $catName = $office . ' - General ' . $suggestionAreaName;
+                        $nameTakenStmt = $pdo->prepare('SELECT id FROM suggestion_categories WHERE LOWER(name) = LOWER(:name) LIMIT 1');
+                        $nameTakenStmt->execute([':name' => $catName]);
+                        if (!$nameTakenStmt->fetchColumn()) {
+                            $pdo->prepare(
+                                "INSERT INTO suggestion_categories (name, area_id, route_type, office, is_active) VALUES (:name, :area_id, 'office', :office, 1)"
+                            )->execute([':name' => $catName, ':area_id' => $areaId, ':office' => $office]);
+                            $wiredArea = true;
+                        }
+                    }
+                } catch (PDOException $e) {
+                    // Ignore - staff account is already created either way.
+                }
+
                 $flashMessage = 'Staff account created successfully.';
+                if ($wiredArea) {
+                    $flashMessage .= " Set up a starter suggestion category under \"{$suggestionAreaName}\" for {$office}.";
+                }
                 $flashType = 'success';
                 $showAddModal = false;
                 $newStaffUsername = $username;
@@ -326,6 +376,15 @@ try {
         $flashMessage = 'Unable to load staff records right now.';
         $flashType = 'error';
     }
+}
+
+// For the Add Staff modal's "General Suggestion Areas" checklist.
+$suggestionAreasForStaffForm = [];
+try {
+    $suggestionAreasForStaffForm = $pdo->query(
+        'SELECT id, name FROM suggestion_areas WHERE is_active = 1 ORDER BY display_order ASC, name ASC'
+    )->fetchAll(PDO::FETCH_ASSOC);
+} catch (PDOException $e) {
 }
 ?>
 <!DOCTYPE html>
@@ -617,11 +676,11 @@ tbody tr:hover { background-color: #fcfcfc; }
     background: #fff;
     width: 450px;
     border-radius: 12px;
-    padding: 25px;
+    padding: 18px 22px;
     box-shadow: 0 10px 30px rgba(0,0,0,0.1);
     position: relative;
     animation: fadeIn 0.3s ease;
-    max-height: 90vh;
+    max-height: 96vh;
     overflow-y: auto;
 }
 
@@ -634,30 +693,32 @@ tbody tr:hover { background-color: #fcfcfc; }
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: 20px;
+    margin-bottom: 12px;
 }
 
-.modal-header h3 { font-size: 18px; color: #333; }
-.close-btn { font-size: 24px; color: #888; cursor: pointer; transition: 0.2s; }
+.modal-header h3 { font-size: 17px; color: #333; }
+.close-btn { font-size: 22px; color: #888; cursor: pointer; transition: 0.2s; }
 .close-btn:hover { color: #ef4444; }
 
-.form-row { display: flex; gap: 15px; }
+.form-row { display: flex; gap: 12px; }
 .form-row .form-group { flex: 1; }
 
-.form-group { margin-bottom: 15px; }
-.form-group label { display: block; font-size: 13px; color: #555; margin-bottom: 5px; font-weight: 500; }
+.form-group { margin-bottom: 10px; }
+.form-group label { display: block; font-size: 12.5px; color: #555; margin-bottom: 4px; font-weight: 500; }
 .form-group input,
 .form-group select {
-    width: 100%; padding: 10px 15px; border: 1px solid #ddd;
-    border-radius: 8px; font-size: 13px; color: #333; outline: none; transition: 0.2s;
+    width: 100%; padding: 8px 12px; border: 1px solid #ddd;
+    border-radius: 8px; font-size: 12.5px; color: #333; outline: none; transition: 0.2s;
 }
 .form-group input:focus,
 .form-group select:focus { border-color: #4F8CFF; }
 
-.modal-footer { display: flex; justify-content: flex-end; gap: 10px; margin-top: 25px; }
-.btn-cancel { padding: 10px 20px; border: none; border-radius: 8px; font-size: 13px; cursor: pointer; background: #f4f6fb; color: #555; }
+.area-checklist-hint { margin: 4px 0 0; font-size: 10.5px; color: #9ca3af; line-height: 1.4; }
+
+.modal-footer { display: flex; justify-content: flex-end; gap: 10px; margin-top: 14px; }
+.btn-cancel { padding: 9px 18px; border: none; border-radius: 8px; font-size: 12.5px; cursor: pointer; background: #f4f6fb; color: #555; }
 .btn-cancel:hover { background: #e5e7eb; }
-.btn-submit { padding: 10px 20px; border: none; border-radius: 8px; font-size: 13px; cursor: pointer; background: #4F8CFF; color: #fff; font-weight: 500; }
+.btn-submit { padding: 9px 18px; border: none; border-radius: 8px; font-size: 12.5px; cursor: pointer; background: #4F8CFF; color: #fff; font-weight: 500; }
 .btn-submit:hover { background: #3b6fd1; }
 
 .empty-row {
@@ -912,6 +973,16 @@ tbody tr:hover { background-color: #fcfcfc; }
                 <datalist id="knownOfficesList">
                     <?php foreach ($knownOffices as $officeOption): ?>
                         <option value="<?php echo e((string)$officeOption); ?>">
+                    <?php endforeach; ?>
+                </datalist>
+            </div>
+
+            <div class="form-group">
+                <label>General Suggestion Area for this office</label>
+                <input type="text" name="suggestion_area_text" list="knownAreasList" placeholder="e.g. Technology &amp; Internet" value="<?php echo e((string)($_POST['suggestion_area_text'] ?? '')); ?>" required>
+                <datalist id="knownAreasList">
+                    <?php foreach ($suggestionAreasForStaffForm as $areaOption): ?>
+                        <option value="<?php echo e((string)$areaOption['name']); ?>">
                     <?php endforeach; ?>
                 </datalist>
             </div>

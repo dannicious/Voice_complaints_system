@@ -497,13 +497,13 @@ body {
 
 .controls-bottom {
     display: grid;
-    grid-template-columns: 138px 138px minmax(210px, 1.15fr) minmax(210px, 1.15fr) 126px auto;
+    grid-template-columns: 138px 138px minmax(180px, 1fr) minmax(180px, 1fr) 126px 150px auto;
     gap: 12px;
     align-items: end;
 }
 
 .controls-bottom.without-department {
-    grid-template-columns: 138px 138px minmax(260px, 1fr) 126px auto;
+    grid-template-columns: 138px 138px minmax(220px, 1fr) 126px 150px auto;
 }
 
 .filter-group { display: flex; flex-direction: column; gap: 5px; min-width: 0; }

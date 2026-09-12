@@ -3,7 +3,10 @@ declare(strict_types=1);
 session_start();
 require_once __DIR__ . '/../../config/db.php';
 require_once __DIR__ . '/../../config/auth.php';
+require_once __DIR__ . '/../suggestion_flow.php';
 ensure_role('staff');
+
+ensure_suggestion_area_schema($pdo);
 
 function e(string $value): string
 {
@@ -37,32 +40,40 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $description = trim((string)($_POST['description'] ?? ''));
 
             if ($name === '') {
-                $error = 'Area name is required.';
+                $error = 'Category name is required.';
             } else {
                 try {
                     $dupStmt = $pdo->prepare(
-                        'SELECT id FROM suggestion_categories WHERE LOWER(name) = LOWER(:name) AND LOWER(TRIM(office)) = LOWER(TRIM(:office)) LIMIT 1'
+                        'SELECT id FROM suggestion_categories WHERE LOWER(name) = LOWER(:name) LIMIT 1'
                     );
-                    $dupStmt->execute([':name' => $name, ':office' => $office]);
+                    $dupStmt->execute([':name' => $name]);
                     if ($dupStmt->fetch()) {
-                        throw new RuntimeException('An area with that name already exists for your office.');
+                        throw new RuntimeException('A category with that name already exists.');
                     }
 
+                    // Filed under the "Other" Area by default (Areas are the
+                    // student-facing Level 1 picker, not something staff need
+                    // to manage) - the admin board can move it into a more
+                    // fitting Area later if it makes sense to. Always routes
+                    // straight back to this staff member's own office.
+                    $otherAreaId = ensure_other_suggestion_area($pdo);
+
                     $insert = $pdo->prepare(
-                        "INSERT INTO suggestion_categories (name, route, category_type, office, description, is_active)
-                         VALUES (:name, 'general', 'general', :office, :description, 1)"
+                        "INSERT INTO suggestion_categories (name, area_id, route_type, office, description, is_active)
+                         VALUES (:name, :area_id, 'office', :office, :description, 1)"
                     );
                     $insert->execute([
                         ':name' => $name,
+                        ':area_id' => $otherAreaId > 0 ? $otherAreaId : null,
                         ':office' => $office,
                         ':description' => $description !== '' ? $description : null,
                     ]);
 
-                    $flash = 'Area added successfully.';
+                    $flash = 'Category added successfully.';
                 } catch (RuntimeException $exception) {
                     $error = $exception->getMessage();
                 } catch (PDOException $exception) {
-                    $error = 'Unable to add area right now.';
+                    $error = 'Unable to add category right now.';
                 }
             }
         } elseif ($action === 'toggle_area') {
@@ -79,18 +90,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $row = $check->fetch(PDO::FETCH_ASSOC);
 
                     if (!$row) {
-                        throw new RuntimeException('Area not found in your office.');
+                        throw new RuntimeException('Category not found in your office.');
                     }
 
                     $newStatus = (int)$row['is_active'] === 1 ? 0 : 1;
                     $update = $pdo->prepare('UPDATE suggestion_categories SET is_active = :is_active WHERE id = :id');
                     $update->execute([':is_active' => $newStatus, ':id' => $id]);
 
-                    $flash = $newStatus === 1 ? 'Area activated.' : 'Area deactivated.';
+                    $flash = $newStatus === 1 ? 'Category activated.' : 'Category deactivated.';
                 } catch (RuntimeException $exception) {
                     $error = $exception->getMessage();
                 } catch (PDOException $exception) {
-                    $error = 'Unable to update area right now.';
+                    $error = 'Unable to update category right now.';
                 }
             }
         }
@@ -111,7 +122,7 @@ $areas = $listStmt->fetchAll(PDO::FETCH_ASSOC);
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Suggestion Areas - VOICE</title>
+<title>Categories I Handle - VOICE</title>
 <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600&display=swap" rel="stylesheet">
 <link href="https://unpkg.com/boxicons@2.1.4/css/boxicons.min.css" rel="stylesheet">
 <style>
@@ -170,31 +181,31 @@ tbody tr:hover { background: #fafafa; }
 <section class="panel">
     <div class="panel-header">
         <div>
-            <h1>Suggestion Areas</h1>
-            <p class="muted">Areas of improvement students can pick when their suggestion is sent to your office: <strong><?= e($office) ?></strong></p>
+            <h1>Categories I Handle</h1>
+            <p class="muted">Specific suggestion categories that route straight to your office: <strong><?= e($office) ?></strong></p>
         </div>
-        <button type="button" class="btn-add" onclick="openAreaModal()"><i class="bx bx-plus"></i> Add Area</button>
+        <button type="button" class="btn-add" onclick="openAreaModal()"><i class="bx bx-plus"></i> Add Category</button>
     </div>
 
     <?php if ($flash !== ''): ?><div class="notice success"><?= e($flash) ?></div><?php endif; ?>
     <?php if ($error !== ''): ?><div class="notice error"><?= e($error) ?></div><?php endif; ?>
 
     <table>
-        <thead><tr><th>Area Name</th><th>Description</th><th>Status</th><th>Actions</th></tr></thead>
+        <thead><tr><th>Category Name</th><th>Description</th><th>Status</th><th>Actions</th></tr></thead>
         <tbody>
         <?php if (!$areas): ?>
-            <tr><td colspan="4" class="empty">No areas have been added for your office yet.</td></tr>
+            <tr><td colspan="4" class="empty">No categories have been added for your office yet.</td></tr>
         <?php else: foreach ($areas as $area): ?>
             <tr>
                 <td><strong><?= e((string)$area['name']) ?></strong></td>
                 <td class="desc-cell"><?= e((string)($area['description'] ?: '—')) ?></td>
                 <td><span class="status <?= (int)$area['is_active'] === 1 ? 'status-active' : 'status-inactive' ?>"><?= (int)$area['is_active'] === 1 ? 'Active' : 'Inactive' ?></span></td>
                 <td>
-                    <form method="post" style="display:inline;" onsubmit="return confirm('Are you sure you want to <?= (int)$area['is_active'] === 1 ? 'deactivate' : 'activate' ?> this area?');">
+                    <form method="post" style="display:inline;" onsubmit="return confirm('Are you sure you want to <?= (int)$area['is_active'] === 1 ? 'deactivate' : 'activate' ?> this category?');">
                         <input type="hidden" name="csrf_token" value="<?= e($_SESSION['staff_csrf']) ?>">
                         <input type="hidden" name="action" value="toggle_area">
                         <input type="hidden" name="id" value="<?= (int)$area['id'] ?>">
-                        <button type="submit" class="btn-icon btn-toggle" title="<?= (int)$area['is_active'] === 1 ? 'Deactivate' : 'Activate' ?> area">
+                        <button type="submit" class="btn-icon btn-toggle" title="<?= (int)$area['is_active'] === 1 ? 'Deactivate' : 'Activate' ?> category">
                             <i class="bx <?= (int)$area['is_active'] === 1 ? 'bx-power-off' : 'bx-check' ?>"></i>
                         </button>
                     </form>
@@ -209,27 +220,27 @@ tbody tr:hover { background: #fafafa; }
 <div class="modal-overlay" id="addAreaModal">
     <div class="modal-content">
         <div class="modal-header">
-            <h3>Add Suggestion Area</h3>
+            <h3>Add Category</h3>
             <button type="button" class="close-btn" onclick="closeAreaModal()">&times;</button>
         </div>
         <form method="post">
             <input type="hidden" name="csrf_token" value="<?= e($_SESSION['staff_csrf']) ?>">
             <input type="hidden" name="action" value="add_area">
             <div class="form-group">
-                <label for="areaName">Area Name</label>
+                <label for="areaName">Category Name</label>
                 <input id="areaName" name="name" placeholder="e.g. Book Availability" required>
             </div>
             <div class="form-group">
                 <label for="areaDescription">Description (Optional)</label>
-                <textarea id="areaDescription" name="description" placeholder="Briefly describe what this area covers..."></textarea>
+                <textarea id="areaDescription" name="description" placeholder="Briefly describe what this category covers..."></textarea>
             </div>
             <div class="form-group">
                 <label>Office</label>
-                <input value="<?= e($office) ?>" disabled title="Areas you add always belong to your own office.">
+                <input value="<?= e($office) ?>" disabled title="Categories you add always route to your own office.">
             </div>
             <div class="modal-footer">
                 <button type="button" class="btn-cancel" onclick="closeAreaModal()">Cancel</button>
-                <button type="submit" class="btn-submit">Save Area</button>
+                <button type="submit" class="btn-submit">Save Category</button>
             </div>
         </form>
     </div>

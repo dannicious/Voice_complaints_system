@@ -72,7 +72,7 @@ function report_groq_summary(string $type, int $total, array $counts, string $to
     return trim((string)($decoded['choices'][0]['message']['content'] ?? ''));
 }
 
-$activeTab = ($_GET['tab'] ?? 'suggestions') === 'complaints' ? 'complaints' : 'suggestions';
+$activeTab = ($_GET['tab'] ?? 'complaints') === 'suggestions' ? 'suggestions' : 'complaints';
 $search = trim((string)($_GET['q'] ?? ''));
 $collegeId = max(0, (int)($_GET['college'] ?? 0));
 $departmentId = max(0, (int)($_GET['department'] ?? 0));
@@ -105,19 +105,38 @@ $offices = $pdo->query("SELECT DISTINCT TRIM(office) AS office FROM suggestions 
 $allowedStatuses = ['new', 'under_review', 'approved', 'implemented', 'reviewed', 'declined', 'resolved', 'rejected', 'accepted', 'not_feasible', 'needs_info', 'planned', 'in_progress'];
 if ($status !== '' && !in_array($status, array_merge($allowedStatuses, ['pending', 'closed']), true)) $status = '';
 
+$aiSearchAttempted = false;
+$aiSearchFailed = false;
 if ((int)($_GET['ai_search'] ?? 0) === 1 && $search !== '') {
+    $aiSearchAttempted = true;
+    $rawSearch = $search;
     $interpreted = report_groq_filters($pdo, $search, $activeTab, $colleges, $departments, $schoolYears, $offices);
-    $interpretedCollege = (int)($interpreted['college_id'] ?? 0);
-    $interpretedDepartment = (int)($interpreted['department_id'] ?? 0);
-    if ($interpretedCollege > 0 && in_array($interpretedCollege, array_map(static fn(array $row): int => (int)$row['id'], $colleges), true)) $collegeId = $interpretedCollege;
-    if ($interpretedDepartment > 0 && in_array($interpretedDepartment, array_map(static fn(array $row): int => (int)$row['id'], $departments), true)) $departmentId = $interpretedDepartment;
-    if (is_string($interpreted['school_year'] ?? null) && in_array($interpreted['school_year'], $schoolYears, true)) $schoolYear = $interpreted['school_year'];
-    if (in_array((string)($interpreted['semester'] ?? ''), ['1', '2'], true)) $semester = (string)$interpreted['semester'];
-    if ($activeTab === 'suggestions' && is_string($interpreted['office'] ?? null) && in_array($interpreted['office'], $offices, true)) $office = $interpreted['office'];
-    if (is_string($interpreted['status'] ?? null) && in_array($interpreted['status'], array_merge($allowedStatuses, ['pending', 'closed']), true)) $status = $interpreted['status'];
-    if (report_date_valid((string)($interpreted['date_from'] ?? ''))) $dateFrom = (string)$interpreted['date_from'];
-    if (report_date_valid((string)($interpreted['date_to'] ?? ''))) $dateTo = (string)$interpreted['date_to'];
-    if (trim((string)($interpreted['keyword'] ?? '')) !== '') $search = trim((string)$interpreted['keyword']);
+    if ($interpreted === []) {
+        // Groq isn't configured, or the API call failed/timed out - report_groq_filters()
+        // returns exactly [] for both. Falling back to a literal LIKE match on the raw
+        // natural-language sentence would almost never match real data (a whole question
+        // is not a substring of any subject/description), which is what silently produced
+        // "no reports" here before - so don't apply it as a keyword filter at all.
+        $aiSearchFailed = true;
+        $search = '';
+    } else {
+        $interpretedCollege = (int)($interpreted['college_id'] ?? 0);
+        $interpretedDepartment = (int)($interpreted['department_id'] ?? 0);
+        if ($interpretedCollege > 0 && in_array($interpretedCollege, array_map(static fn(array $row): int => (int)$row['id'], $colleges), true)) $collegeId = $interpretedCollege;
+        if ($interpretedDepartment > 0 && in_array($interpretedDepartment, array_map(static fn(array $row): int => (int)$row['id'], $departments), true)) $departmentId = $interpretedDepartment;
+        if (is_string($interpreted['school_year'] ?? null) && in_array($interpreted['school_year'], $schoolYears, true)) $schoolYear = $interpreted['school_year'];
+        if (in_array((string)($interpreted['semester'] ?? ''), ['1', '2'], true)) $semester = (string)$interpreted['semester'];
+        if ($activeTab === 'suggestions' && is_string($interpreted['office'] ?? null) && in_array($interpreted['office'], $offices, true)) $office = $interpreted['office'];
+        if (is_string($interpreted['status'] ?? null) && in_array($interpreted['status'], array_merge($allowedStatuses, ['pending', 'closed']), true)) $status = $interpreted['status'];
+        if (report_date_valid((string)($interpreted['date_from'] ?? ''))) $dateFrom = (string)$interpreted['date_from'];
+        if (report_date_valid((string)($interpreted['date_to'] ?? ''))) $dateTo = (string)$interpreted['date_to'];
+        // Always replace the raw sentence with just the extracted keyword (even if that's
+        // empty) - previously, whenever the AI didn't need a separate keyword (because
+        // college/office/status/etc. already captured the request), the full original
+        // sentence stayed in $search and got ANDed in as a literal substring match below,
+        // wiping out results that the other, correctly-interpreted filters would have found.
+        $search = trim((string)($interpreted['keyword'] ?? ''));
+    }
 }
 
 $where = ['1=1'];
@@ -153,7 +172,7 @@ $underReviewPercent = $totalSuggestions > 0 ? round($underReview / $totalSuggest
 $pendingPercent = $totalSuggestions > 0 ? round($pending / $totalSuggestions * 100) : 0;
 
 $rowLimit = ($_GET['export'] ?? '') === 'csv' ? '' : ' LIMIT 100';
-$rowsStmt = $pdo->prepare("SELECT s.id, s.subject, s.description, s.created_at, s.school_year, s.semester, s.status, s.office, COALESCE(sc.name, 'Uncategorized') AS category_name, COALESCE(c.name, 'Not assigned') AS college_name, COALESCE(p.name, 'Not assigned') AS department_name FROM suggestions s LEFT JOIN suggestion_categories sc ON sc.id = s.category_id LEFT JOIN colleges c ON c.id = s.college_id LEFT JOIN student_profiles sp ON sp.id = s.student_id LEFT JOIN programs p ON p.id = sp.program_id WHERE {$whereSql} ORDER BY s.created_at DESC, s.id DESC{$rowLimit}");
+$rowsStmt = $pdo->prepare("SELECT s.id, s.subject, s.description, s.created_at, s.school_year, s.semester, s.status, s.office, s.college_id, COALESCE(sc.name, 'Uncategorized') AS category_name, COALESCE(c.name, 'Not assigned') AS college_name, COALESCE(p.name, 'Not assigned') AS department_name FROM suggestions s LEFT JOIN suggestion_categories sc ON sc.id = s.category_id LEFT JOIN colleges c ON c.id = s.college_id LEFT JOIN student_profiles sp ON sp.id = s.student_id LEFT JOIN programs p ON p.id = sp.program_id WHERE {$whereSql} ORDER BY s.created_at DESC, s.id DESC{$rowLimit}");
 $rowsStmt->execute($params);
 $suggestions = $rowsStmt->fetchAll(PDO::FETCH_ASSOC);
 
@@ -275,11 +294,11 @@ if (($_GET['export'] ?? '') === 'csv') {
 <style>
 * { box-sizing: border-box; font-family: 'Poppins', sans-serif; }
 body { margin: 0; background: #f4f6fb; color: #1f2937; }
-.main { margin-left: 260px; margin-top: 61px; padding: 25px; min-height: calc(100vh - 61px); }
+.main { margin-left: 260px; margin-top: 61px; padding: 14px 25px 25px; min-height: calc(100vh - 61px); }
 .shell { max-width: 1240px; margin: 0 auto; }
-.page-header { margin-bottom: 20px; }
+.page-header { margin-bottom: 12px; }
 .page-header h1 { margin: 0; font-size: 25px; font-weight: 600; color: #262626; }
-.subtitle { margin: 5px 0 0; color: #778197; font-size: 13px; }
+.subtitle { margin: 4px 0 0; color: #778197; font-size: 13px; }
 .tabs { display: flex; gap: 4px; border-bottom: 1px solid #e5e7eb; margin-bottom: 16px; }
 .tab { padding: 11px 16px; color: #778197; text-decoration: none; font-size: 13px; font-weight: 600; border-bottom: 3px solid transparent; }
 .tab:hover, .tab.active { color: #6d28d9; border-bottom-color: #6d28d9; }
@@ -287,6 +306,8 @@ body { margin: 0; background: #f4f6fb; color: #1f2937; }
 .search-card { padding: 16px; margin-bottom: 14px; }
 .section-label { display: block; color: #374151; font-size: 12px; font-weight: 700; margin-bottom: 8px; }
 .search-row { display: flex; gap: 10px; }
+.ai-fallback-note { margin: 10px 0 0; padding: 9px 12px; background: #fff7ed; border: 1px solid #fde3c4; border-radius: 8px; color: #9a5b1f; font-size: 12px; line-height: 1.5; display: flex; align-items: flex-start; gap: 7px; }
+.ai-fallback-note i { font-size: 15px; margin-top: 1px; flex-shrink: 0; }
 .search-row input { flex: 1; min-width: 0; height: 40px; border: 1px solid #d8dce5; border-radius: 8px; padding: 0 13px; color: #1f2937; font-size: 13px; outline: none; }
 .search-row input:focus, select:focus { border-color: #8b5cf6; box-shadow: 0 0 0 3px rgba(139,92,246,.12); }
 .primary-btn { border: 0; border-radius: 8px; background: #6d28d9; color: #fff; padding: 0 17px; height: 40px; font-weight: 600; font-size: 12.5px; cursor: pointer; white-space: nowrap; }
@@ -327,11 +348,31 @@ body { margin: 0; background: #f4f6fb; color: #1f2937; }
 .ai-note { margin-top: 14px !important; padding-top: 12px; border-top: 1px solid #eeeaf8; color: #8b93a3 !important; font-size: 10.5px !important; }
 .table-card { padding: 16px; overflow: hidden; }
 .table-scroll { overflow-x: auto; }
-table { width: 100%; min-width: 1030px; border-collapse: collapse; }
-th { padding: 10px 9px; border-bottom: 2px solid #f0f1f3; color: #798294; text-align: left; font-size: 10px; text-transform: uppercase; white-space: nowrap; }
-td { padding: 11px 9px; border-bottom: 1px solid #f1f3f6; color: #4b5563; font-size: 11.5px; vertical-align: top; }
+table { width: 100%; border-collapse: collapse; }
+table.report-table { table-layout: fixed; }
+th { padding: 9px 7px; border-bottom: 2px solid #f0f1f3; color: #798294; text-align: left; font-size: 9.5px; text-transform: uppercase; overflow-wrap: break-word; }
+td { padding: 9px 7px; border-bottom: 1px solid #f1f3f6; color: #4b5563; font-size: 11px; vertical-align: top; overflow-wrap: break-word; }
+.cols-9 th:nth-child(1), .cols-9 td:nth-child(1) { width: 9%; }
+.cols-9 th:nth-child(2), .cols-9 td:nth-child(2) { width: 21%; }
+.cols-9 th:nth-child(3), .cols-9 td:nth-child(3) { width: 10%; }
+.cols-9 th:nth-child(4), .cols-9 td:nth-child(4) { width: 13%; }
+.cols-9 th:nth-child(5), .cols-9 td:nth-child(5) { width: 15%; }
+.cols-9 th:nth-child(6), .cols-9 td:nth-child(6) { width: 9%; }
+.cols-9 th:nth-child(7), .cols-9 td:nth-child(7) { width: 8%; }
+.cols-9 th:nth-child(8), .cols-9 td:nth-child(8) { width: 9%; }
+.cols-9 th:nth-child(9), .cols-9 td:nth-child(9) { width: 6%; }
+.cols-10 th:nth-child(1), .cols-10 td:nth-child(1) { width: 8%; }
+.cols-10 th:nth-child(2), .cols-10 td:nth-child(2) { width: 18%; }
+.cols-10 th:nth-child(3), .cols-10 td:nth-child(3) { width: 9%; }
+.cols-10 th:nth-child(4), .cols-10 td:nth-child(4) { width: 11%; }
+.cols-10 th:nth-child(5), .cols-10 td:nth-child(5) { width: 13%; }
+.cols-10 th:nth-child(6), .cols-10 td:nth-child(6) { width: 9%; }
+.cols-10 th:nth-child(7), .cols-10 td:nth-child(7) { width: 8%; }
+.cols-10 th:nth-child(8), .cols-10 td:nth-child(8) { width: 7%; }
+.cols-10 th:nth-child(9), .cols-10 td:nth-child(9) { width: 9%; }
+.cols-10 th:nth-child(10), .cols-10 td:nth-child(10) { width: 8%; }
 tbody tr:hover { background: #fbfaff; }
-.subject { max-width: 210px; color: #30343b; font-weight: 600; }
+.subject { color: #30343b; font-weight: 600; }
 .subject small { display: block; overflow: hidden; color: #8a93a2; font-size: 10px; font-weight: 400; text-overflow: ellipsis; white-space: nowrap; }
 .status-pill { display: inline-block; padding: 4px 8px; border-radius: 6px; background: #f3f4f6; color: #596273; font-size: 10px; font-weight: 600; white-space: nowrap; }
 .status-pill.implemented { background: #dcfce7; color: #166534; }
@@ -341,8 +382,11 @@ tbody tr:hover { background: #fbfaff; }
 .empty { padding: 28px; color: #8b93a3; text-align: center; font-size: 12px; }
 .complaint-note { padding: 25px; color: #697386; font-size: 13px; line-height: 1.7; }
 @media (max-width: 1050px) { .filter-grid { grid-template-columns: repeat(3, minmax(150px, 1fr)); } .analytics-grid { grid-template-columns: 1fr; } }
-@media (max-width: 700px) { .main { margin-left: 0; padding: 16px; } .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .filter-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .search-row { flex-direction: column; } .primary-btn { width: 100%; } }
+@media (max-width: 700px) { .main { margin-left: 0; padding: 16px; } .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .filter-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .search-row { flex-direction: column; } .primary-btn { width: 100%; } table.report-table { table-layout: auto; min-width: 900px; } }
 @media (max-width: 430px) { .filter-grid { grid-template-columns: 1fr; } .summary-grid { gap: 8px; } .metric { padding: 12px; } }
+.back-to-top { position: fixed; right: 24px; bottom: 24px; width: 44px; height: 44px; border-radius: 50%; border: 0; background: #6d28d9; color: #fff; font-size: 20px; display: flex; align-items: center; justify-content: center; cursor: pointer; box-shadow: 0 6px 16px rgba(109,40,217,.35); z-index: 500; opacity: 0; visibility: hidden; transform: translateY(8px); transition: opacity .2s, transform .2s, visibility .2s; }
+.back-to-top.visible { opacity: 1; visibility: visible; transform: translateY(0); }
+.back-to-top:hover { background: #5b21b6; }
 </style>
 </head>
 <body>
@@ -362,16 +406,19 @@ tbody tr:hover { background: #fbfaff; }
     <form class="card search-card" method="get">
         <input type="hidden" name="tab" value="<?= e($activeTab) ?>"><input type="hidden" name="ai_search" value="1">
         <label class="section-label" for="aiSearch">Ask Reports - Powered by Groq</label>
-        <div class="search-row"><input id="aiSearch" name="q" value="<?= e($search) ?>" placeholder="Ask about <?= $activeTab === 'complaints' ? 'complaints (keyword, category, college, department, school year, semester, date, etc.)' : 'suggestions (keyword, category, college, department, school year, semester, office, status, etc.)' ?>"><button class="primary-btn" type="submit"><i class="bx bx-sparkles"></i> Generate Report</button></div>
+        <div class="search-row"><input id="aiSearch" name="q" value="<?= e($aiSearchAttempted ? $rawSearch : $search) ?>" placeholder="Ask about <?= $activeTab === 'complaints' ? 'complaints (keyword, category, college, department, school year, semester, date, etc.)' : 'suggestions (keyword, category, college, department, school year, semester, office, status, etc.)' ?>"><button class="primary-btn" type="submit"><i class="bx bx-sparkles"></i> Generate Report</button></div>
+        <?php if ($aiSearchFailed): ?>
+            <p class="ai-fallback-note"><i class="bx bx-error-circle"></i> Couldn't interpret that as a smart search right now (Groq may not be configured, or the request failed) - it was not applied as a plain text filter either, since a whole question almost never matches real report text. Try the filter fields below instead, or a short keyword.</p>
+        <?php endif; ?>
     </form>
 
     <form class="card filters" method="get" id="reportFilters">
         <input type="hidden" name="tab" value="<?= e($activeTab) ?>"><input type="hidden" name="q" value="<?= e($search) ?>">
         <div class="filter-grid">
             <div class="filter-field"><label for="keywordFilter">Search / Keyword</label><input class="filter-input" id="keywordFilter" name="q" value="<?= e($search) ?>" placeholder="Search report text..."></div>
-            <div class="filter-field"><label for="college">College</label><select id="college" name="college"><option value="0">All Colleges</option><?php foreach ($colleges as $college): ?><option value="<?= (int)$college['id'] ?>" <?= $collegeId === (int)$college['id'] ? 'selected' : '' ?>><?= e($college['name']) ?></option><?php endforeach; ?></select></div>
-            <div class="filter-field"><label for="department">Department</label><select id="department" name="department"><option value="0">All Departments</option><?php foreach ($departments as $department): ?><option value="<?= (int)$department['id'] ?>" <?= $departmentId === (int)$department['id'] ? 'selected' : '' ?>><?= e($department['name']) ?></option><?php endforeach; ?></select></div>
-            <div class="filter-field"><label for="schoolYear">School Year</label><select id="schoolYear" name="school_year"><option value="">All School Years</option><?php foreach ($schoolYears as $year): ?><option value="<?= e($year) ?>" <?= $schoolYear === $year ? 'selected' : '' ?>><?= e($year) ?></option><?php endforeach; ?></select></div>
+            <div class="filter-field"><label for="college">College</label><select id="college" name="college" onchange="toggleDepartmentFilter()"><option value="0">All Colleges</option><?php foreach ($colleges as $college): ?><option value="<?= (int)$college['id'] ?>" <?= $collegeId === (int)$college['id'] ? 'selected' : '' ?>><?= e($college['name']) ?></option><?php endforeach; ?></select></div>
+            <div class="filter-field"><label for="department">Department</label><select id="department" name="department" <?= $collegeId <= 0 ? 'disabled' : '' ?>><option value="0">All Departments</option><?php foreach ($departments as $department): ?><option value="<?= (int)$department['id'] ?>" <?= $departmentId === (int)$department['id'] ? 'selected' : '' ?>><?= e($department['name']) ?></option><?php endforeach; ?></select></div>
+            <div class="filter-field"><label for="schoolYear">School Year</label><input class="filter-input" type="text" id="schoolYear" name="school_year" list="schoolYearsList" value="<?= e($schoolYear) ?>" placeholder="e.g. 2026-2027"><datalist id="schoolYearsList"><?php foreach ($schoolYears as $year): ?><option value="<?= e($year) ?>"><?php endforeach; ?></datalist></div>
             <div class="filter-field"><label for="semester">Semester</label><select id="semester" name="semester"><option value="">All Semesters</option><option value="1" <?= $semester === '1' ? 'selected' : '' ?>>1st Semester</option><option value="2" <?= $semester === '2' ? 'selected' : '' ?>>2nd Semester</option></select></div>
             <?php if ($activeTab === 'suggestions'): ?><div class="filter-field"><label for="office">Office</label><select id="office" name="office"><option value="">All Offices</option><?php foreach ($offices as $officeOption): ?><option value="<?= e($officeOption) ?>" <?= $office === $officeOption ? 'selected' : '' ?>><?= e($officeOption) ?></option><?php endforeach; ?></select></div><?php endif; ?>
             <div class="filter-field"><label for="status">Status</label><select id="status" name="status"><option value="">All Statuses</option><?php foreach (($activeTab === 'complaints' ? ['new', 'pending', 'under_review', 'resolved', 'closed'] : $allowedStatuses) as $statusOption): ?><option value="<?= e($statusOption) ?>" <?= $status === $statusOption ? 'selected' : '' ?>><?= e(report_status_label($statusOption)) ?></option><?php endforeach; ?></select></div>
@@ -399,7 +446,7 @@ tbody tr:hover { background: #fbfaff; }
         </section>
         <section class="card table-card">
             <h2>Complaint Reports</h2>
-            <div class="table-scroll"><table><thead><tr><th>Date Submitted</th><th>Complaint</th><th>Category</th><th>College</th><th>Department</th><th>School Year</th><th>Semester</th><th>Status</th><th>Action</th></tr></thead><tbody>
+            <div class="table-scroll"><table class="report-table cols-9"><thead><tr><th>Date Submitted</th><th>Complaint</th><th>Category</th><th>College</th><th>Department</th><th>School Year</th><th>Semester</th><th>Status</th><th>Action</th></tr></thead><tbody>
             <?php if (!$complaints): ?><tr><td class="empty" colspan="9">No complaints match the selected filters.</td></tr><?php else: foreach ($complaints as $complaint): ?><tr><td><?= e(date('M j, Y', strtotime((string)$complaint['created_at']))) ?></td><td class="subject"><?= e($complaint['act_complained_of'] ?: 'Complaint') ?><small><?= e($complaint['narrative_report']) ?></small></td><td><?= e($complaint['category_name']) ?></td><td><?= e($complaint['college_name']) ?></td><td><?= e($complaint['department_name']) ?></td><td><?= e($complaint['school_year'] ?: 'N/A') ?></td><td><?= e(report_semester_label($complaint['semester'])) ?></td><td><span class="status-pill <?= e($complaint['status']) ?>"><?= e(report_status_label($complaint['status'])) ?></span></td><td><a class="action-link" href="admin_complaints_details.php?id=<?= (int)$complaint['id'] ?>">View</a></td></tr><?php endforeach; endif; ?>
             </tbody></table></div>
         </section>
@@ -418,9 +465,10 @@ tbody tr:hover { background: #fbfaff; }
         <section class="card chart-card" style="margin-bottom:14px"><h2>Suggestions Over Time</h2><div class="chart-wrap"><canvas id="trendChart"></canvas></div></section>
         <section class="card office-card"><h2>Top Offices Receiving Suggestions</h2><?php $maxOffice = max(1, (int)($officeCounts[0]['total'] ?? 1)); foreach ($officeCounts as $officeRow): ?><div class="office-item"><span><?= e($officeRow['label']) ?></span><div class="bar"><span style="width:<?= round((int)$officeRow['total'] / $maxOffice * 100) ?>%"></span></div><strong><?= (int)$officeRow['total'] ?></strong></div><?php endforeach; ?><?php if (!$officeCounts): ?><div class="empty">No office data for the selected filters.</div><?php endif; ?></section>
 
-        <section class="card table-card"><h2>Suggestions</h2><div class="table-scroll"><table><thead><tr><th>Date Submitted</th><th>Suggestion</th><th>Category</th><th>College</th><th>Department</th><th>Office</th><th>School Year</th><th>Semester</th><th>Status</th><th>Action</th></tr></thead><tbody><?php if (!$suggestions): ?><tr><td class="empty" colspan="10">No suggestions match the selected filters.</td></tr><?php else: foreach ($suggestions as $suggestion): ?><tr><td><?= e(date('M j, Y', strtotime((string)$suggestion['created_at']))) ?></td><td class="subject"><?= e($suggestion['subject']) ?><small><?= e($suggestion['description']) ?></small></td><td><?= e($suggestion['category_name']) ?></td><td><?= e($suggestion['college_name']) ?></td><td><?= e($suggestion['department_name']) ?></td><td><?= e($suggestion['office'] ?: 'Unassigned') ?></td><td><?= e($suggestion['school_year'] ?: 'N/A') ?></td><td><?= e(report_semester_label($suggestion['semester'])) ?></td><td><span class="status-pill <?= e($suggestion['status']) ?>"><?= e(report_status_label($suggestion['status'])) ?></span></td><td><a class="action-link" href="admin_suggestion_detail.php?id=<?= (int)$suggestion['id'] ?>">View</a></td></tr><?php endforeach; endif; ?></tbody></table></div></section>
+        <section class="card table-card"><h2>Suggestions</h2><div class="table-scroll"><table class="report-table cols-10"><thead><tr><th>Date Submitted</th><th>Suggestion</th><th>Category</th><th>College</th><th>Department</th><th>Office</th><th>School Year</th><th>Semester</th><th>Status</th><th>Action</th></tr></thead><tbody><?php if (!$suggestions): ?><tr><td class="empty" colspan="10">No suggestions match the selected filters.</td></tr><?php else: foreach ($suggestions as $suggestion): ?><tr><td><?= e(date('M j, Y', strtotime((string)$suggestion['created_at']))) ?></td><td class="subject"><?= e($suggestion['subject']) ?><small><?= e($suggestion['description']) ?></small></td><td><?= e($suggestion['category_name']) ?></td><td><?= e($suggestion['college_name']) ?></td><td><?= e($suggestion['department_name']) ?></td><td><?= e($suggestion['office'] ?: 'Unassigned') ?></td><td><?= e($suggestion['school_year'] ?: 'N/A') ?></td><td><?= e(report_semester_label($suggestion['semester'])) ?></td><td><span class="status-pill <?= e($suggestion['status']) ?>"><?= e(report_status_label($suggestion['status'])) ?></span></td><td><a class="action-link" href="<?= $suggestion['college_id'] !== null ? 'admin_viewOnly_suggestions.php' : 'admin_suggestion_detail.php' ?>?id=<?= (int)$suggestion['id'] ?>">View</a></td></tr><?php endforeach; endif; ?></tbody></table></div></section>
     <?php endif; ?>
 </div></main>
+<button type="button" id="backToTopBtn" class="back-to-top" title="Back to top" aria-label="Back to top"><i class="bx bx-up-arrow-alt"></i></button>
 <script>
 const categoryLabels = <?= json_encode(array_column($categories, 'label'), JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
 const categoryValues = <?= json_encode(array_map('intval', array_column($categories, 'total'))) ?>;
@@ -441,6 +489,31 @@ if (window.Chart && document.getElementById('complaintCategoryChart')) new Chart
 if (window.Chart && document.getElementById('complaintOrganizationChart')) new Chart(document.getElementById('complaintOrganizationChart'), { type: 'bar', data: { labels: complaintOrganizationLabels, datasets: [{ data: complaintOrganizationValues, backgroundColor: '#a78bfa', borderRadius: 5, barThickness: 18 }] }, options: horizontalOptions });
 if (window.Chart && document.getElementById('complaintTrendChart')) new Chart(document.getElementById('complaintTrendChart'), { type: 'line', data: { labels: complaintTrendLabels, datasets: [{ data: complaintTrendValues, borderColor: '#7c3aed', backgroundColor: 'rgba(124,58,237,.12)', fill: true, tension: .35, pointRadius: 3 }] }, options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, ticks: { precision: 0 } }, x: { grid: { display: false } } } } });
 document.querySelectorAll('.quick-date').forEach(button => button.addEventListener('click', () => { const end = new Date(); const start = new Date(end); if (button.dataset.range === 'week') start.setDate(end.getDate() - 6); if (button.dataset.range === 'month') start.setDate(end.getDate() - 29); if (button.dataset.range === 'year') start.setFullYear(end.getFullYear() - 1); const iso = date => date.toISOString().slice(0, 10); document.getElementById('dateFrom').value = iso(start); document.getElementById('dateTo').value = iso(end); document.getElementById('reportFilters').submit(); }));
+function toggleDepartmentFilter() {
+    const college = document.getElementById('college');
+    const department = document.getElementById('department');
+    const form = document.getElementById('reportFilters');
+    if (!college || !department || !form) return;
+    const hasCollege = college.value !== '0' && college.value !== '';
+    department.disabled = !hasCollege;
+    if (!hasCollege) department.value = '0';
+    // Department's option list is scoped to the selected College server-side
+    // (see $departments in the PHP above) - submit right away so switching
+    // College immediately shows only that college's departments, instead of
+    // requiring a separate "Apply Filters" click first.
+    form.submit();
+}
+const backToTop = document.getElementById('backToTopBtn');
+if (backToTop) {
+    const toggleBackToTop = function () {
+        backToTop.classList.toggle('visible', window.scrollY > 300);
+    };
+    window.addEventListener('scroll', toggleBackToTop, { passive: true });
+    toggleBackToTop();
+    backToTop.addEventListener('click', function () {
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+    });
+}
 </script>
 </body>
 </html>

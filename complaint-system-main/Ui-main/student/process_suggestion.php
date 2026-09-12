@@ -140,9 +140,9 @@ if ($draftToken === '' || !hash_equals(get_preview_token('suggestion'), $draftTo
 
 $subject = trim((string)($draft['subject'] ?? ''));
 $description = trim((string)($draft['description'] ?? ''));
-$officeInput = trim((string)($draft['office'] ?? ''));
+$categoryIdInput = (int)($draft['category_id'] ?? 0);
 
-if ($subject === '' || $description === '' || $officeInput === '') {
+if ($subject === '' || $description === '' || $categoryIdInput <= 0) {
     back_with_message('error', 'Please complete all required fields.');
 }
 
@@ -154,6 +154,7 @@ function suggestion_recipient_role(): string
 try {
     ensure_suggestion_status_enum($pdo);
     ensure_suggestion_tracking_columns($pdo);
+    ensure_suggestion_area_schema($pdo);
 
     $studentStmt = $pdo->prepare(
         'SELECT id, college_id, first_name, last_name
@@ -188,31 +189,69 @@ try {
 
     $attachment = finalize_preview_upload($draft, 'suggestions');
 
-    // The student now picks the office directly instead of a category.
-    // Derive a category for reporting/filtering purposes from whichever
-    // category (if any) is configured to route to that same office;
-    // suggestions with no matching category are simply left uncategorized.
-    $categoryId = null;
+    // The student only ever picks an area then a specific category; routing
+    // is entirely derived from that category's route_type behind the scenes:
+    //   office -> that office's staff
+    //   dean   -> the dean of the student's own college
+    //   admin  -> the SAS Director (VOICE Admin)
     $categoryLookupStmt = $pdo->prepare(
-        'SELECT id FROM suggestion_categories WHERE is_active = 1 AND LOWER(TRIM(office)) = LOWER(TRIM(:office)) LIMIT 1'
+        'SELECT id, office, route_type FROM suggestion_categories WHERE id = :id AND is_active = 1 LIMIT 1'
     );
-    $categoryLookupStmt->execute([':office' => $officeInput]);
+    $categoryLookupStmt->execute([':id' => $categoryIdInput]);
     $categoryRow = $categoryLookupStmt->fetch();
-    if ($categoryRow) {
-        $categoryId = (int)$categoryRow['id'];
+    if (!$categoryRow) {
+        back_with_message('error', 'The selected category is no longer available. Please choose another.');
     }
 
-    $categoryOffice = $officeInput;
-    $route = $categoryOffice !== ''
-        ? ['role' => 'staff', 'user_id' => 0]
-        : resolve_ticket_route($pdo, 'suggestion', $categoryId, $student['college_id'] !== null ? (int)$student['college_id'] : null);
-    $recipientRole = (string)$route['role'];
-    $recipientUserId = isset($route['user_id']) ? (int)$route['user_id'] : 0;
-    // Office-routed suggestions use the office column and stay outside admin/dean scopes.
-    // Set college_id based on routing: if routed to admin/general, store NULL so
-    // the suggestion is not visible in dean scopes. If routed to dean, store
-    // the student's college id.
-    $collegeId = $recipientRole === 'admin' ? null : ($student['college_id'] !== null ? (int)$student['college_id'] : null);
+    $categoryId = (int)$categoryRow['id'];
+    $categoryOffice = trim((string)($categoryRow['office'] ?? ''));
+    $routeType = (string)($categoryRow['route_type'] ?? 'admin');
+    if (!in_array($routeType, ['office', 'dean', 'admin'], true)) {
+        $routeType = 'admin';
+    }
+    if ($routeType === 'office' && $categoryOffice === '') {
+        // Misconfigured category (marked office-routed but no office set) -
+        // fail safe to admin rather than losing the suggestion.
+        $routeType = 'admin';
+    }
+
+    $recipientRole = 'admin';
+    $recipientUserId = 0;
+    // Only a dean-routed suggestion is scoped to a college. Office- and
+    // admin-routed suggestions always store no college_id, so they never
+    // leak into a dean's inbox (which is keyed purely on college_id).
+    $collegeId = null;
+
+    if ($routeType === 'office') {
+        $recipientRole = 'staff';
+    } elseif ($routeType === 'dean') {
+        $studentCollegeId = $student['college_id'] !== null ? (int)$student['college_id'] : 0;
+        if ($studentCollegeId > 0) {
+            $recipientRole = 'dean';
+            $collegeId = $studentCollegeId;
+            try {
+                $deanStmt = $pdo->prepare(
+                    'SELECT u.id
+                     FROM users u
+                     INNER JOIN dean_profiles dp ON dp.user_id = u.id
+                     WHERE u.role = :role AND u.is_active = 1 AND dp.status = :status AND dp.college_id = :college_id
+                     LIMIT 1'
+                );
+                $deanStmt->execute([
+                    ':role' => 'dean',
+                    ':status' => 'active',
+                    ':college_id' => $studentCollegeId,
+                ]);
+                $deanId = $deanStmt->fetchColumn();
+                if ($deanId) {
+                    $recipientUserId = (int)$deanId;
+                }
+            } catch (PDOException $e) {
+            }
+        }
+        // No college on file for this student - nothing to route to, fall
+        // back to admin rather than leaving the suggestion unreachable.
+    }
 
     $insertStmt = $pdo->prepare(
         'INSERT INTO suggestions (

@@ -181,25 +181,244 @@ function set_suggestion_status(PDO $pdo, int $suggestionId, string $newStatus): 
 }
 
 /**
+ * Two-level suggestion category structure: a student-facing "area" (broad,
+ * jargon-free grouping, e.g. "Technology & Internet") containing one or more
+ * specific categories (e.g. "Wi-Fi / Internet"), each of which carries its
+ * own routing destination. The area is purely a picker aid for the student -
+ * it is never itself the routing destination.
+ *
+ * Idempotent and safe to call on every request that touches suggestion
+ * categories (student form, admin config, staff self-service, submission).
+ * The one-time office -> route_type backfill and the starter taxonomy seed
+ * each only ever run once, guarded by checking what already exists first.
+ */
+function ensure_suggestion_area_schema(PDO $pdo): void
+{
+    static $done = false;
+    if ($done) {
+        return;
+    }
+    $done = true;
+
+    try {
+        $pdo->exec(
+            "CREATE TABLE IF NOT EXISTS suggestion_areas (
+                id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+                name VARCHAR(150) NOT NULL,
+                display_order INT NOT NULL DEFAULT 0,
+                is_active TINYINT(1) NOT NULL DEFAULT 1,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                PRIMARY KEY (id), UNIQUE KEY uq_suggestion_area_name (name)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci"
+        );
+    } catch (PDOException $e) {
+    }
+
+    // Detect whether route_type already existed *before* adding it, so the
+    // one-time office -> route_type backfill below runs exactly once, ever -
+    // never re-derived from office on a later request where an admin may
+    // have deliberately changed route_type without touching office.
+    $routeTypeExisted = true;
+    try {
+        $columnCheck = $pdo->prepare(
+            "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+             WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'suggestion_categories' AND COLUMN_NAME = 'route_type'"
+        );
+        $columnCheck->execute();
+        $routeTypeExisted = (bool)$columnCheck->fetchColumn();
+    } catch (PDOException $e) {
+    }
+
+    try {
+        $pdo->exec('ALTER TABLE suggestion_categories ADD COLUMN IF NOT EXISTS area_id INT UNSIGNED NULL');
+        $pdo->exec("ALTER TABLE suggestion_categories ADD COLUMN IF NOT EXISTS route_type ENUM('office','dean','admin') NOT NULL DEFAULT 'admin'");
+    } catch (PDOException $e) {
+    }
+
+    if (!$routeTypeExisted) {
+        try {
+            // Preserve today's actual behavior exactly: a category with an
+            // office was staff-routed, everything else fell through to
+            // admin. Never touches the suggestions table itself.
+            $pdo->exec("UPDATE suggestion_categories SET route_type = 'office' WHERE office IS NOT NULL AND TRIM(office) <> ''");
+        } catch (PDOException $e) {
+        }
+    }
+
+    seed_default_suggestion_areas($pdo);
+
+    // Any category left without an area (pre-existing ones from before this
+    // change, or an area that got deleted) lands in the "Other" catch-all
+    // rather than disappearing from the student form or the admin board.
+    // "Other" is only (re)created here if something actually needs it right
+    // now - deleting it while it's empty is meant to stick, not get silently
+    // undone on the next page load.
+    try {
+        $orphanCount = (int)$pdo->query('SELECT COUNT(*) FROM suggestion_categories WHERE area_id IS NULL')->fetchColumn();
+        if ($orphanCount > 0) {
+            $otherAreaId = ensure_other_suggestion_area($pdo);
+            if ($otherAreaId > 0) {
+                $pdo->prepare('UPDATE suggestion_categories SET area_id = :area_id WHERE area_id IS NULL')
+                    ->execute([':area_id' => $otherAreaId]);
+            }
+        }
+    } catch (PDOException $e) {
+    }
+}
+
+/**
+ * Finds the "Other" catch-all Area, creating it if it doesn't currently
+ * exist (an admin is allowed to delete it, same as any other Area, but the
+ * moment something needs a fallback - a new bulk-upload row with no Area, a
+ * staff member's self-added category, another Area's own deletion - it gets
+ * recreated on demand rather than leaving that category with nowhere to go).
+ * Returns 0 only if even creating it failed (e.g. no ALTER/INSERT rights).
+ */
+function ensure_other_suggestion_area(PDO $pdo): int
+{
+    try {
+        $id = (int)$pdo->query("SELECT id FROM suggestion_areas WHERE name = 'Other' LIMIT 1")->fetchColumn();
+        if ($id > 0) {
+            return $id;
+        }
+        $nextOrder = (int)$pdo->query('SELECT COALESCE(MAX(display_order), 0) + 10 FROM suggestion_areas')->fetchColumn();
+        $pdo->prepare("INSERT INTO suggestion_areas (name, display_order) VALUES ('Other', :display_order)")
+            ->execute([':display_order' => $nextOrder]);
+        return (int)$pdo->lastInsertId();
+    } catch (PDOException $e) {
+        return 0;
+    }
+}
+
+/**
+ * One-time starter taxonomy so the new Area -> Category -> Office structure
+ * isn't empty on first use. Only runs while suggestion_areas has zero rows;
+ * an admin who has already built out their own areas is never touched
+ * again, and a category name that already exists (from the old flat system)
+ * is left alone rather than duplicated.
+ */
+function seed_default_suggestion_areas(PDO $pdo): void
+{
+    try {
+        $existingAreaCount = (int)$pdo->query('SELECT COUNT(*) FROM suggestion_areas')->fetchColumn();
+    } catch (PDOException $e) {
+        return;
+    }
+    if ($existingAreaCount > 0) {
+        return;
+    }
+
+    // [area name, [[category name, route_type, office], ...]]
+    $starterTaxonomy = [
+        ['Technology & Internet', [
+            ['Wi-Fi / Internet', 'office', 'ICT'],
+            ['Computer Laboratories', 'office', 'ICT'],
+            ['Student Portal', 'office', 'ICT'],
+            ['School Website', 'office', 'ICT'],
+            ['Online Systems', 'office', 'ICT'],
+            ['Other Technology Concern', 'office', 'ICT'],
+        ]],
+        ['Library & Learning Resources', [
+            ['Book Availability & Requests', 'office', 'Library'],
+            ['Library Facilities', 'office', 'Library'],
+            ['Online Library Resources', 'office', 'Library'],
+            ['Other Library Concern', 'office', 'Library'],
+        ]],
+        ['Academic & Student Records', [
+            ['Enrollment & Registration', 'office', 'Registrar'],
+            ['Student Records', 'office', 'Registrar'],
+            ['Certificates & Documents', 'office', 'Registrar'],
+        ]],
+        ['Academic Programs & College', [
+            ['Curriculum & Academic Programs', 'dean', null],
+            ['Courses & Class Offerings', 'dean', null],
+            ['College/Department Concerns', 'dean', null],
+        ]],
+        ['Student Activities & Services', [
+            ['Student Activities & Events', 'admin', null],
+            ['Student Organizations', 'admin', null],
+            ['Student Programs & Services', 'admin', null],
+            ['Student Support Services', 'admin', null],
+        ]],
+        ['Guidance & Student Support', [
+            ['Counseling Services', 'office', 'Guidance'],
+            ['Peer Support Programs', 'office', 'Guidance'],
+            ['Personal / Behavioral Concerns', 'office', 'Guidance'],
+            ['Other Guidance Concern', 'office', 'Guidance'],
+        ]],
+        ['Health Services', [
+            ['Clinic Services', 'office', 'Clinic'],
+            ['Health & Wellness Programs', 'office', 'Clinic'],
+            ['Medical / Dental Concerns', 'office', 'Clinic'],
+            ['Other Health Concern', 'office', 'Clinic'],
+        ]],
+        // Catch-all: also where any pre-existing, not-yet-sorted category
+        // lands (see ensure_suggestion_area_schema above).
+        ['Other', [
+            ['Other Suggestion', 'admin', null],
+        ]],
+    ];
+
+    $insertArea = $pdo->prepare('INSERT INTO suggestion_areas (name, display_order) VALUES (:name, :display_order)');
+    $findCategory = $pdo->prepare('SELECT id FROM suggestion_categories WHERE LOWER(name) = LOWER(:name) LIMIT 1');
+    $insertCategory = $pdo->prepare(
+        'INSERT INTO suggestion_categories (name, area_id, route_type, office, is_active) VALUES (:name, :area_id, :route_type, :office, 1)'
+    );
+    $assignCategoryArea = $pdo->prepare('UPDATE suggestion_categories SET area_id = :area_id WHERE id = :id');
+
+    $order = 0;
+    foreach ($starterTaxonomy as [$areaName, $categories]) {
+        try {
+            $insertArea->execute([':name' => $areaName, ':display_order' => $order]);
+            $areaId = (int)$pdo->lastInsertId();
+        } catch (PDOException $e) {
+            continue;
+        }
+        $order += 10;
+
+        foreach ($categories as [$categoryName, $routeType, $office]) {
+            try {
+                $findCategory->execute([':name' => $categoryName]);
+                $existingId = (int)$findCategory->fetchColumn();
+                if ($existingId > 0) {
+                    // Name already exists from before this change - keep it
+                    // (and whatever routing it already has), just file it
+                    // under the matching new area instead of duplicating it.
+                    $assignCategoryArea->execute([':area_id' => $areaId, ':id' => $existingId]);
+                    continue;
+                }
+                $insertCategory->execute([
+                    ':name' => $categoryName,
+                    ':area_id' => $areaId,
+                    ':route_type' => $routeType,
+                    ':office' => $office,
+                ]);
+            } catch (PDOException $e) {
+            }
+        }
+    }
+}
+
+/**
  * Looks for a recent, still-open suggestion to the same office with a
  * similar description. Returns the closest match (ticket_no + similarity
  * percent) above the threshold, or null. Informational only - never blocks
  * submission.
  */
-function check_suggestion_duplicate(PDO $pdo, string $office, string $description, int $excludeId = 0): ?array
+function check_suggestion_duplicate(PDO $pdo, int $categoryId, string $description, int $excludeId = 0): ?array
 {
-    $office = trim($office);
     $description = trim($description);
-    if ($office === '' || $description === '') {
+    if ($categoryId <= 0 || $description === '') {
         return null;
     }
 
     $sql = "SELECT id, ticket_no, description
             FROM suggestions
-            WHERE LOWER(TRIM(office)) = LOWER(TRIM(:office))
+            WHERE category_id = :category_id
               AND status NOT IN ('not_feasible', 'implemented', 'declined', 'rejected', 'reviewed')
               AND created_at >= DATE_SUB(NOW(), INTERVAL 60 DAY)";
-    $params = [':office' => $office];
+    $params = [':category_id' => $categoryId];
     if ($excludeId > 0) {
         $sql .= ' AND id <> :exclude_id';
         $params[':exclude_id'] = $excludeId;

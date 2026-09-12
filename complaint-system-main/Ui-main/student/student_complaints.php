@@ -5,6 +5,7 @@ if (session_status() === PHP_SESSION_NONE) {
 require_once __DIR__ . '/../db_connection.php';
 require_once __DIR__ . '/../faculty_helpers.php';
 require_once __DIR__ . '/../school_year_helpers.php';
+require_once __DIR__ . '/../suggestion_flow.php';
 
 $pageMode = (string)($_GET['mode'] ?? 'complaint');
 $flashStatus = (string)($_GET['status'] ?? '');
@@ -199,23 +200,45 @@ if ($pageMode !== 'suggestion') {
 }
 
 if ($pageMode === 'suggestion') {
-    // Offices a suggestion can be routed to directly — the same set staff
-    // accounts and suggestion categories are matched against at submission.
-    $suggestionOffices = [];
+    ensure_suggestion_area_schema($pdo);
+
+    // Two-level picker: the student first narrows down to a broad, jargon-
+    // free area, then to a specific category within it. Each category is
+    // routed behind the scenes (to a specific office, the student's college
+    // dean, or admin) - the area is only a picker aid, never the routing
+    // destination itself, and the office/dean destination is never shown.
+    $suggestionAreas = [];
     try {
-        $officeStmt = $pdo->query(
-            "SELECT office FROM staff_profiles WHERE office IS NOT NULL AND TRIM(office) <> ''
-             UNION
-             SELECT office FROM suggestion_categories WHERE office IS NOT NULL AND TRIM(office) <> ''
-             ORDER BY office ASC"
+        $areaStmt = $pdo->query(
+            'SELECT id, name FROM suggestion_areas WHERE is_active = 1 ORDER BY display_order ASC, name ASC'
         );
-        foreach ($officeStmt->fetchAll(PDO::FETCH_COLUMN) as $office) {
-            $office = trim((string)$office);
-            if ($office !== '' && !in_array($office, $suggestionOffices, true)) {
-                $suggestionOffices[] = $office;
+        $suggestionAreas = $areaStmt->fetchAll(PDO::FETCH_ASSOC);
+    } catch (PDOException $e) {
+        $suggestionAreas = [];
+    }
+
+    $suggestionCategories = [];
+    try {
+        $categoryStmt = $pdo->query(
+            'SELECT id, name, area_id FROM suggestion_categories WHERE is_active = 1 ORDER BY name ASC'
+        );
+        $suggestionCategories = $categoryStmt->fetchAll(PDO::FETCH_ASSOC);
+    } catch (PDOException $e) {
+        $suggestionCategories = [];
+    }
+
+    // Redisplaying a draft (e.g. after a validation error): figure out which
+    // area the previously-chosen category lives under, so both dropdowns
+    // come back pre-filled instead of resetting to "Select an area...".
+    $preselectedCategoryId = (string)($submissionDraft['category_id'] ?? '');
+    $preselectedAreaId = '';
+    if ($preselectedCategoryId !== '') {
+        foreach ($suggestionCategories as $categoryOption) {
+            if ((string)$categoryOption['id'] === $preselectedCategoryId) {
+                $preselectedAreaId = (string)($categoryOption['area_id'] ?? '');
+                break;
             }
         }
-    } catch (PDOException $e) {
     }
     ?>
     <!DOCTYPE html>
@@ -268,16 +291,22 @@ if ($pageMode === 'suggestion') {
                     <fieldset style="border: 1px solid #e5e7eb; border-radius: 8px; padding: 15px; margin-bottom: 20px;">
                         <legend style="font-weight: 600; color: #333; padding: 0 10px;">Suggestion Details <span style="color: red;">*</span></legend>
                         <div class="form-group">
-                            <label>Select Office <span style="color: red;">*</span></label>
-                            <select name="office" class="input-field" required>
-                                <option value="" disabled <?php echo empty($submissionDraft['office']) ? 'selected' : ''; ?>>Select an office...</option>
-                                <?php foreach ($suggestionOffices as $officeOption): ?>
-                                    <option value="<?php echo htmlspecialchars($officeOption, ENT_QUOTES, 'UTF-8'); ?>" <?php echo draft_selected($submissionDraft, 'office', $officeOption); ?>><?php echo htmlspecialchars($officeOption, ENT_QUOTES, 'UTF-8'); ?></option>
+                            <label>What area is your suggestion about? <span style="color: red;">*</span></label>
+                            <select id="areaSelect" class="input-field" required>
+                                <option value="" disabled <?php echo $preselectedAreaId === '' ? 'selected' : ''; ?>>Select an area...</option>
+                                <?php foreach ($suggestionAreas as $areaOption): ?>
+                                    <option value="<?php echo e((string)$areaOption['id']); ?>" <?php echo $preselectedAreaId === (string)$areaOption['id'] ? 'selected' : ''; ?>><?php echo e((string)$areaOption['name']); ?></option>
                                 <?php endforeach; ?>
                             </select>
-                            <?php if ($suggestionOffices === []): ?>
-                                <div class="help-text" style="color:#b45309;font-size:12px;margin-top:6px;">No offices have been set up yet. Please contact the SAS Office.</div>
+                            <?php if ($suggestionAreas === []): ?>
+                                <div class="help-text" style="color:#b45309;font-size:12px;margin-top:6px;">No suggestion areas have been set up yet. Please contact the SAS Office.</div>
                             <?php endif; ?>
+                        </div>
+                        <div class="form-group">
+                            <label>What specifically? <span style="color: red;">*</span></label>
+                            <select name="category_id" id="categorySelect" class="input-field" required>
+                                <option value="" disabled selected>Select an area first...</option>
+                            </select>
                         </div>
                         <div class="form-group">
                             <label>Detailed Suggestion <span style="color: red;">*</span></label>
@@ -322,6 +351,64 @@ if ($pageMode === 'suggestion') {
             displayArea.style.display = 'none';
         }
     }
+    </script>
+    <script>
+    (function() {
+        const allCategories = <?php echo json_encode(array_map(function ($category) {
+            return ['id' => (string)$category['id'], 'name' => (string)$category['name'], 'area_id' => (string)($category['area_id'] ?? '')];
+        }, $suggestionCategories), JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP); ?>;
+        const preselectedCategoryId = <?php echo json_encode($preselectedCategoryId, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP); ?>;
+        const areaSelect = document.getElementById('areaSelect');
+        const categorySelect = document.getElementById('categorySelect');
+        if (!areaSelect || !categorySelect) {
+            return;
+        }
+
+        function populateCategories(areaId, selectedId) {
+            categorySelect.innerHTML = '';
+
+            const placeholder = document.createElement('option');
+            placeholder.value = '';
+            placeholder.disabled = true;
+
+            if (!areaId) {
+                placeholder.textContent = 'Select an area first...';
+                placeholder.selected = true;
+                categorySelect.appendChild(placeholder);
+                return;
+            }
+
+            const matches = allCategories.filter(function (category) {
+                return category.area_id === areaId;
+            });
+            placeholder.textContent = matches.length ? 'Select a category...' : 'No categories in this area yet';
+            categorySelect.appendChild(placeholder);
+
+            let matched = false;
+            matches.forEach(function (category) {
+                const opt = document.createElement('option');
+                opt.value = category.id;
+                opt.textContent = category.name;
+                if (selectedId && category.id === selectedId) {
+                    opt.selected = true;
+                    matched = true;
+                }
+                categorySelect.appendChild(opt);
+            });
+
+            if (!matched) {
+                placeholder.selected = true;
+            }
+        }
+
+        areaSelect.addEventListener('change', function () {
+            populateCategories(areaSelect.value, null);
+        });
+
+        if (areaSelect.value) {
+            populateCategories(areaSelect.value, preselectedCategoryId);
+        }
+    })();
     </script>
     <?php if ($pageMode === 'suggestion' && $flashStatus === 'error' && $flashMessage !== ''): ?>
         <div class="notice error" style="margin: 20px auto 0; max-width: 800px;">

@@ -95,8 +95,10 @@ if ($college <= 0) {
     $department = 0;
 }
 $status = trim((string)($_GET['status'] ?? ''));
+$office = trim((string)($_GET['office'] ?? ''));
 
  $colleges = [];
+ $offices = [];
  $suggestions = [];
  $manageableCount = count($manageableSuggestions ?? []);
  $viewOnlyCount = count($viewOnlySuggestions ?? []);
@@ -104,6 +106,10 @@ $status = trim((string)($_GET['status'] ?? ''));
 try {
     $collegeStmt = $pdo->query('SELECT id, code, name FROM colleges ORDER BY name ASC');
     $colleges = $collegeStmt->fetchAll();
+    $offices = $pdo->query("SELECT DISTINCT TRIM(office) AS office FROM suggestions WHERE office IS NOT NULL AND TRIM(office) <> '' ORDER BY office ASC")->fetchAll(PDO::FETCH_COLUMN);
+    if ($office !== '' && !in_array($office, $offices, true)) {
+        $office = '';
+    }
     if ($college > 0) {
         $departmentStmt = $pdo->prepare('SELECT id, code, name FROM programs WHERE college_id = :college_id AND status = "active" ORDER BY name ASC');
         $departmentStmt->execute([':college_id' => $college]);
@@ -124,6 +130,7 @@ try {
             s.attachment,
             s.status,
             s.is_anonymous,
+            s.office,
                 COALESCE(sc.name, 'Uncategorized') AS category_name,
                 COALESCE(col.code, col.name, scol.code, scol.name, 'N/A') AS college_code,
                 col.id AS college_id,
@@ -140,8 +147,7 @@ try {
             LEFT JOIN student_profiles sp ON sp.id = s.student_id
             LEFT JOIN ticket_feedback tf ON tf.ticket_type = 'suggestion' AND tf.ticket_id = s.id AND tf.student_id = sp.id
             LEFT JOIN colleges scol ON scol.id = sp.college_id
-                 WHERE 1=1
-                     AND (s.office IS NULL OR s.office = '')";
+                 WHERE 1=1";
 
     $params = [];
 
@@ -174,6 +180,11 @@ try {
         $params[':department_id'] = $department;
     }
 
+    if ($office !== '') {
+        $sql .= ' AND s.office = :office';
+        $params[':office'] = $office;
+    }
+
     // Filter by active tab (using status for suggestions)
     if ($activeTab === 'pending') {
         $sql .= ' AND s.status IN ("new", "under_review")';
@@ -194,12 +205,14 @@ try {
     $stmt->execute($params);
     $allSuggestions = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-    // Split suggestions into manageable (no college) and view-only (college assigned)
+    // Split suggestions into manageable (admin-routed: no college, no office) and
+    // view-only (anything the admin doesn't directly handle - a dean's college
+    // suggestion, or one routed straight to a specific office's staff).
     $suggestions = $allSuggestions; // keep for backward compatibility
     $manageableSuggestions = [];
     $viewOnlySuggestions = [];
     foreach ($allSuggestions as $s) {
-        if (empty($s['college_id'])) {
+        if (empty($s['college_id']) && trim((string)($s['office'] ?? '')) === '') {
             $manageableSuggestions[] = $s;
         } else {
             $viewOnlySuggestions[] = $s;
@@ -418,6 +431,7 @@ body {
     display: flex;
     flex-direction: column;
     gap: 15px;
+    overflow-x: auto;
 }
 
 .controls-top {
@@ -469,17 +483,19 @@ body {
 .controls-divider { width: 100%; height: 1px; background: #f0f0f0; }
 
 .controls-bottom {
-    display: grid;
-    grid-template-columns: 138px 138px minmax(210px, 1.15fr) minmax(210px, 1.15fr) 126px auto;
-    gap: 12px;
+    /* Never wraps to a second line - if the row is tight, every field
+       shrinks a little (down to its min-width floor) instead of any field
+       dropping to its own row. Only if even the minimums can't all fit does
+       the row scroll horizontally (see overflow-x on .controls-card). */
+    display: flex;
+    flex-wrap: nowrap;
+    gap: 10px;
     align-items: end;
 }
 
-.controls-bottom.without-department {
-    grid-template-columns: 138px 138px minmax(260px, 1fr) 126px auto;
-}
-
-.filter-group { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.filter-group { display: flex; flex-direction: column; gap: 5px; flex: 1 1 0; min-width: 88px; }
+.filter-group:has(input[name="date_from"]),
+.filter-group:has(input[name="date_to"]) { flex: 0 1 120px; min-width: 100px; }
 
 .filter-group label {
     font-size: 11px;
@@ -491,14 +507,13 @@ body {
 
 .filter-input,
 .filter-select {
-    padding: 8px 12px;
+    padding: 8px 9px;
     border: 1px solid #e5e7eb;
     border-radius: 8px;
     background: #f4f6fb;
-    font-size: 13px;
+    font-size: 12.5px;
     color: #555;
     outline: none;
-    min-width: 150px;
     height: 38px;
     width: 100%;
     min-width: 0;
@@ -507,12 +522,7 @@ body {
 .controls-bottom .btn-reset {
     align-self: end;
     white-space: nowrap;
-}
-
-@media (max-width: 1050px) {
-    .controls-bottom {
-        grid-template-columns: repeat(3, minmax(0, 1fr));
-    }
+    flex: 0 0 auto;
 }
 
 .btn-apply-filter {
@@ -881,17 +891,18 @@ td { position: relative; }
 #view_only .table-card-subtitle { margin-top: 4px; font-size: 12px; color: #94a3b8; }
 #view_only .scope-badge { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px; font-size: 11px; font-weight: 700; white-space: nowrap; }
 #view_only .scope-college { background: #e0f2fe; color: #0369a1; }
-#view_only table { width: 100%; min-width: 920px; table-layout: fixed; }
+#view_only table { width: 100%; table-layout: fixed; }
 #view_only table thead th { color: #64748b; font-size: 11px; font-weight: 700; padding: 0 16px 12px; border-bottom: 1px solid #e5e7eb; }
 #view_only table tbody tr { transition: background-color .18s ease; }
 #view_only table tbody tr:hover { background: #fafbff; }
-#view_only table td { padding: 16px; vertical-align: middle; border-bottom: 1px solid #f3f4f6; }
-#view_only table th:nth-child(1), #view_only table td:nth-child(1) { width: 116px; }
-#view_only table th:nth-child(2), #view_only table td:nth-child(2) { width: 31%; }
-#view_only table th:nth-child(3), #view_only table td:nth-child(3) { width: 120px; }
-#view_only table th:nth-child(4), #view_only table td:nth-child(4) { width: 18%; }
-#view_only table th:nth-child(5), #view_only table td:nth-child(5) { width: 150px; }
-#view_only table th:nth-child(6), #view_only table td:nth-child(6) { width: 112px; text-align: right; }
+#view_only table td { padding: 16px 10px; vertical-align: middle; border-bottom: 1px solid #f3f4f6; }
+#view_only table th:nth-child(1), #view_only table td:nth-child(1) { width: 10%; }
+#view_only table th:nth-child(2), #view_only table td:nth-child(2) { width: 24%; }
+#view_only table th:nth-child(3), #view_only table td:nth-child(3) { width: 8%; }
+#view_only table th:nth-child(4), #view_only table td:nth-child(4) { width: 11%; }
+#view_only table th:nth-child(5), #view_only table td:nth-child(5) { width: 15%; }
+#view_only table th:nth-child(6), #view_only table td:nth-child(6) { width: 14%; }
+#view_only table th:nth-child(7), #view_only table td:nth-child(7) { width: 18%; text-align: right; }
 #view_only .subject-text { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #view_only .small-text, #view_only .cell-college, #view_only .cell-category { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #view_only .status-badge { padding: 6px 11px; border-radius: 999px; min-width: 80px; }
@@ -909,6 +920,13 @@ td { position: relative; }
     #manageable table th:nth-child(5), #manageable table td:nth-child(5) { width: 110px; }
     #manageable table th:nth-child(6), #manageable table td:nth-child(6) { width: 96px; }
     #manageable table th:nth-child(7), #manageable table td:nth-child(7) { width: 86px; }
+    #view_only .table-card { padding: 14px 12px 8px; }
+    #view_only table { table-layout: auto; min-width: 760px; }
+    #view_only table th:nth-child(1), #view_only table td:nth-child(1) { width: 92px; }
+    #view_only table th:nth-child(3), #view_only table td:nth-child(3) { width: 80px; }
+    #view_only table th:nth-child(4), #view_only table td:nth-child(4) { width: 100px; }
+    #view_only table th:nth-child(6), #view_only table td:nth-child(6) { width: 110px; }
+    #view_only table th:nth-child(7), #view_only table td:nth-child(7) { width: 96px; }
 }
 
 @media (max-width: 768px) {
@@ -993,6 +1011,15 @@ td { position: relative; }
                     </div>
                 <?php endif; ?>
                 <div class="filter-group">
+                    <label>Office</label>
+                    <select name="office" class="filter-select">
+                        <option value="">All Offices</option>
+                        <?php foreach ($offices as $officeOption): ?>
+                            <option value="<?php echo e($officeOption); ?>" <?php echo $office === $officeOption ? 'selected' : ''; ?>><?php echo e($officeOption); ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <div class="filter-group">
                     <label>Status</label>
                     <select name="status" class="filter-select">
                         <option value="">All Statuses</option>
@@ -1015,19 +1042,20 @@ td { position: relative; }
                 <div class="table-card-head">
                     <div>
                         <div class="table-card-title"><?php echo $tabKey === 'manageable' ? 'Manageable Suggestions' : 'View Only Suggestions'; ?></div>
-                        <div class="table-card-subtitle"><?php echo $tabKey === 'manageable' ? 'General suggestions that the admin can manage directly.' : 'College suggestions assigned to deans.'; ?></div>
+                        <div class="table-card-subtitle"><?php echo $tabKey === 'manageable' ? 'General suggestions that the admin can manage directly.' : 'Suggestions routed to a college dean or a specific office.'; ?></div>
                     </div>
                     <span class="scope-badge <?php echo $tabKey === 'manageable' ? 'scope-general' : 'scope-college'; ?>">
-                        <?php echo $tabKey === 'manageable' ? 'Admin Managed' : 'Dean Managed'; ?>
+                        <?php echo $tabKey === 'manageable' ? 'Admin Managed' : 'Dean / Office Managed'; ?>
                     </span>
                 </div>
                 <table>
                     <thead>
                         <tr>
                             <th>Date Filed</th>
-                            <th>Subject & Submitter</th>
+                            <th>Submitter</th>
                             <th>College</th>
-                            <th>Topic</th>
+                            <?php if ($tabKey === 'view_only'): ?><th>Office</th><?php endif; ?>
+                            <th>Category</th>
                             <th>Status</th>
                             <th>Action</th>
                         </tr>
@@ -1035,7 +1063,7 @@ td { position: relative; }
                     <tbody>
                         <?php if (empty($tabConfig['rows'])): ?>
                             <tr>
-                                <td colspan="6" class="no-data">No <?php echo $tabKey === 'manageable' ? 'manageable' : 'view-only'; ?> suggestions found for the selected filters.</td>
+                                <td colspan="<?php echo $tabKey === 'view_only' ? 7 : 6; ?>" class="no-data">No <?php echo $tabKey === 'manageable' ? 'manageable' : 'view-only'; ?> suggestions found for the selected filters.</td>
                             </tr>
                         <?php else: ?>
                             <?php foreach ($tabConfig['rows'] as $row): ?>
@@ -1050,8 +1078,7 @@ td { position: relative; }
                                         <div class="age-badge <?php echo e($rowAgeClass); ?>"><?php echo e($rowAgeLabel); ?></div>
                                     </td>
                                     <td class="subject-cell">
-                                        <div class="subject-text" title="<?php echo e((string)$row['subject']); ?>"><?php echo e((string)$row['subject']); ?></div>
-                                        <div class="small-text">
+                                        <div class="subject-text">
                                             <?php
                                                 $displayName = 'Anonymous Student';
                                                 if ((int)$row['is_anonymous'] !== 1) {
@@ -1065,6 +1092,7 @@ td { position: relative; }
                                         </div>
                                     </td>
                                     <td class="cell-college"><?php echo e((string)$row['college_code']); ?></td>
+                                    <?php if ($tabKey === 'view_only'): ?><td class="cell-office"><?php echo e(trim((string)($row['office'] ?? '')) !== '' ? (string)$row['office'] : '—'); ?></td><?php endif; ?>
                                     <td class="cell-category"><?php echo e((string)$row['category_name']); ?></td>
                                     <td class="cell-status"><span class="status-badge <?php echo suggestion_status_badge((string)$row['status']); ?>"><?php echo e(suggestion_status_label((string)$row['status'])); ?></span></td>
                                     <td class="cell-action" style="text-align:center;">

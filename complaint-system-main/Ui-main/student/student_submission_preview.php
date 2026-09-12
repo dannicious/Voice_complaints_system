@@ -236,9 +236,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $flashType = 'error';
             }
         } else {
+            $categoryIdInput = (int)($_POST['category_id'] ?? 0);
+            $categoryNameInput = '';
+            if ($categoryIdInput > 0) {
+                try {
+                    $catLookupStmt = $pdo->prepare(
+                        'SELECT name FROM suggestion_categories WHERE id = :id AND is_active = 1 LIMIT 1'
+                    );
+                    $catLookupStmt->execute([':id' => $categoryIdInput]);
+                    $categoryNameInput = (string)($catLookupStmt->fetchColumn() ?: '');
+                } catch (PDOException $e) {
+                    $categoryNameInput = '';
+                }
+            }
+
             $draft = [
-                'office' => trim((string)($_POST['office'] ?? '')),
-                'subject' => trim((string)($_POST['subject'] ?? ($_POST['office'] ?? ''))),
+                'category_id' => $categoryIdInput > 0 && $categoryNameInput !== '' ? (string)$categoryIdInput : '',
+                'category_name' => $categoryNameInput,
+                'subject' => trim((string)($_POST['subject'] ?? $categoryNameInput)),
                 'description' => trim((string)($_POST['description'] ?? '')),
                 'terms_agreement_accepted' => isset($_POST['terms_agreement_accepted']) ? '1' : '',
             ];
@@ -251,7 +266,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             set_preview_draft('suggestion', $draft);
 
-            $required = ['office', 'subject', 'description', 'terms_agreement_accepted'];
+            $required = ['category_id', 'subject', 'description', 'terms_agreement_accepted'];
             $missing = [];
             foreach ($required as $key) {
                 if ($draft[$key] === '' || $draft[$key] === null) {
@@ -259,7 +274,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
             }
             if (!empty($missing)) {
-                $flashMessage = 'Please complete all required fields before proceeding.';
+                $flashMessage = $categoryIdInput > 0 && $categoryNameInput === ''
+                    ? 'The selected category is no longer available. Please choose another.'
+                    : 'Please complete all required fields before proceeding.';
                 $flashType = 'error';
             }
         }
@@ -276,12 +293,12 @@ if (empty($draft)) {
 }
 
 // Suggestions only: give the student a heads-up if a very similar suggestion
-// was already sent to the same office, so they don't file an accidental
+// was already sent for the same category, so they don't file an accidental
 // duplicate. This is informational only - it never blocks submission.
 $duplicateSuggestion = null;
 if ($mode === 'suggestion') {
     require_once __DIR__ . '/../suggestion_flow.php';
-    $duplicateSuggestion = check_suggestion_duplicate($pdo, (string)($draft['office'] ?? ''), (string)($draft['description'] ?? ''));
+    $duplicateSuggestion = check_suggestion_duplicate($pdo, (int)($draft['category_id'] ?? 0), (string)($draft['description'] ?? ''));
 }
 
 // Complaints only: there is no category dropdown anymore - the AI decides
@@ -423,7 +440,7 @@ body { background: #f4f6fb; color: #1f2937; }
         <?php if ($duplicateSuggestion !== null): ?>
             <div class="notice info">
                 <i class='bx bx-info-circle'></i>
-                A similar suggestion to this office already exists (Ticket <?php echo e($duplicateSuggestion['ticket_no']); ?>, <?php echo e((string)$duplicateSuggestion['percent']); ?>% similar) and is still being handled. You can still submit yours if it's actually different.
+                A similar suggestion in this category already exists (Ticket <?php echo e($duplicateSuggestion['ticket_no']); ?>, <?php echo e((string)$duplicateSuggestion['percent']); ?>% similar) and is still being handled. You can still submit yours if it's actually different.
             </div>
         <?php endif; ?>
 
@@ -495,7 +512,7 @@ body { background: #f4f6fb; color: #1f2937; }
                     <div class="field full"><div class="field-label">Desired Outcome</div><div class="field-value"><?php echo field((string)($draft['desired_outcome'] ?? '')); ?></div></div>
                     <div class="field full"><div class="field-label">Supporting File</div><div class="field-value"><?php echo !empty($draft['attachment_name']) ? field((string)$draft['attachment_name']) : 'No file attached'; ?></div></div>
                 <?php else: ?>
-                    <div class="field"><div class="field-label">Office</div><div class="field-value"><?php echo field((string)($draft['office'] ?? '')); ?></div></div>
+                    <div class="field"><div class="field-label">Category</div><div class="field-value"><?php echo field((string)($draft['category_name'] ?? '')); ?></div></div>
                     <div class="field full"><div class="field-label">Idea Title</div><div class="field-value"><?php echo field((string)($draft['subject'] ?? '')); ?></div></div>
                     <div class="field full"><div class="field-label">Detailed Suggestion</div><div class="field-value"><?php echo field((string)($draft['description'] ?? '')); ?></div></div>
                     <div class="field full"><div class="field-label">Supporting File</div><div class="field-value"><?php echo !empty($draft['attachment_name']) ? field((string)$draft['attachment_name']) : 'No file attached'; ?></div></div>
