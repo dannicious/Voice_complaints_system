@@ -33,9 +33,79 @@ if (!function_exists('sy_label_for_date')) {
     }
 }
 
-if (!function_exists('sy_current')) {
-    function sy_current(): string
+if (!function_exists('sy_ensure_settings_table')) {
+    function sy_ensure_settings_table(PDO $pdo): void
     {
+        $pdo->exec("CREATE TABLE IF NOT EXISTS system_settings (
+            setting_key VARCHAR(100) NOT NULL,
+            setting_value VARCHAR(255) DEFAULT NULL,
+            updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            PRIMARY KEY (setting_key)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci");
+    }
+}
+
+if (!function_exists('sy_get_override')) {
+    /**
+     * The admin-set "current school year" override, if any - takes
+     * precedence over the Aug 1 date math everywhere sy_current() is called
+     * with a $pdo. Returns '' when there's no override set (or it's not a
+     * valid label), in which case the automatic calculation is used as
+     * before - so leaving this untouched changes nothing.
+     */
+    function sy_get_override(PDO $pdo): string
+    {
+        try {
+            sy_ensure_settings_table($pdo);
+            $stmt = $pdo->prepare('SELECT setting_value FROM system_settings WHERE setting_key = :key LIMIT 1');
+            $stmt->execute([':key' => 'school_year_override']);
+            $value = trim((string)($stmt->fetchColumn() ?: ''));
+            return sy_is_valid_label($value) ? $value : '';
+        } catch (PDOException $e) {
+            return '';
+        }
+    }
+}
+
+if (!function_exists('sy_set_override')) {
+    function sy_set_override(PDO $pdo, string $schoolYear): bool
+    {
+        if (!sy_is_valid_label($schoolYear)) {
+            return false;
+        }
+        sy_ensure_settings_table($pdo);
+        $stmt = $pdo->prepare(
+            'INSERT INTO system_settings (setting_key, setting_value) VALUES (:key, :value)
+             ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)'
+        );
+        $stmt->execute([':key' => 'school_year_override', ':value' => $schoolYear]);
+        return true;
+    }
+}
+
+if (!function_exists('sy_clear_override')) {
+    function sy_clear_override(PDO $pdo): void
+    {
+        sy_ensure_settings_table($pdo);
+        $pdo->prepare('DELETE FROM system_settings WHERE setting_key = :key')->execute([':key' => 'school_year_override']);
+    }
+}
+
+if (!function_exists('sy_current')) {
+    /**
+     * The "current" school year: an admin-set override when one is on file
+     * (only checked when $pdo is passed - every real call site has a $pdo
+     * available), otherwise the Aug 1 - Jul 31 date calculation.
+     */
+    function sy_current(?PDO $pdo = null): string
+    {
+        if ($pdo !== null) {
+            $override = sy_get_override($pdo);
+            if ($override !== '') {
+                return $override;
+            }
+        }
+
         return sy_label_for_date(date('Y-m-d'));
     }
 }
@@ -74,7 +144,7 @@ if (!function_exists('sy_list_for_student')) {
      */
     function sy_list_for_student(PDO $pdo, int $studentProfileId): array
     {
-        $current = sy_current();
+        $current = sy_current($pdo);
         $years = [$current];
 
         if ($studentProfileId > 0) {
@@ -114,7 +184,7 @@ if (!function_exists('sy_list_for_college')) {
      */
     function sy_list_for_college(PDO $pdo, int $collegeId): array
     {
-        $current = sy_current();
+        $current = sy_current($pdo);
         $years = [$current];
 
         if ($collegeId > 0) {
@@ -147,25 +217,20 @@ if (!function_exists('sy_list_for_college')) {
 if (!function_exists('sy_get_selected')) {
     /**
      * Resolves (and, if needed, resets) the student's selected school year
-     * from the session. Always returns a valid label the student is allowed
-     * to view: either the current school year, or one they have records in.
+     * from the session. Any syntactically valid label is allowed — the
+     * student can freely browse a school year they have no records in;
+     * the page they're on is responsible for showing an empty state rather
+     * than silently bouncing them back to the current year.
+     *
+     * $pdo/$studentProfileId are accepted (unused) to avoid a signature
+     * change across every call site.
      */
     function sy_get_selected(PDO $pdo, int $studentProfileId): string
     {
-        $current = sy_current();
+        $current = sy_current($pdo);
         $selected = (string)($_SESSION['selected_school_year'] ?? '');
 
-        if ($selected === $current) {
-            return $current;
-        }
-
         if ($selected === '' || !sy_is_valid_label($selected)) {
-            $_SESSION['selected_school_year'] = $current;
-            return $current;
-        }
-
-        $available = sy_list_for_student($pdo, $studentProfileId);
-        if (!in_array($selected, $available, true)) {
             $_SESSION['selected_school_year'] = $current;
             return $current;
         }
@@ -178,6 +243,122 @@ if (!function_exists('sy_set_selected')) {
     function sy_set_selected(string $schoolYear): void
     {
         $_SESSION['selected_school_year'] = $schoolYear;
+    }
+}
+
+if (!function_exists('semester_label_for_date')) {
+    /**
+     * Within the Aug 1 - Jul 31 school year (see sy_label_for_date above),
+     * August-December is the 1st semester and January-July is the 2nd.
+     */
+    function semester_label_for_date(string $date): string
+    {
+        $ts = strtotime($date);
+        if ($ts === false) {
+            $ts = time();
+        }
+
+        $month = (int)date('n', $ts);
+
+        return $month >= 8 ? '1' : '2';
+    }
+}
+
+if (!function_exists('semester_current')) {
+    function semester_current(): string
+    {
+        return semester_label_for_date(date('Y-m-d'));
+    }
+}
+
+if (!function_exists('semester_is_valid_label')) {
+    function semester_is_valid_label(string $semester): bool
+    {
+        return in_array($semester, ['1', '2'], true);
+    }
+}
+
+if (!function_exists('semester_display_label')) {
+    function semester_display_label(string $semester): string
+    {
+        return $semester === '2' ? '2nd Semester' : '1st Semester';
+    }
+}
+
+if (!function_exists('semester_get_selected')) {
+    /**
+     * Resolves (and, if needed, resets) the student's selected semester from
+     * the session. Unlike the school year, there's a fixed set of two valid
+     * values, so no per-student "do they have records in it" check is needed.
+     */
+    function semester_get_selected(): string
+    {
+        $current = semester_current();
+        $selected = (string)($_SESSION['selected_semester'] ?? '');
+
+        if ($selected === '' || !semester_is_valid_label($selected)) {
+            $_SESSION['selected_semester'] = $current;
+            return $current;
+        }
+
+        return $selected;
+    }
+}
+
+if (!function_exists('semester_set_selected')) {
+    function semester_set_selected(string $semester): void
+    {
+        if (semester_is_valid_label($semester)) {
+            $_SESSION['selected_semester'] = $semester;
+        }
+    }
+}
+
+if (!function_exists('sy_smart_input_script')) {
+    /**
+     * Shared JS behind every typable school-year input in the app (student
+     * topbar switcher, admin/dean report and complaint-list filters): typing
+     * a 4-digit start year (e.g. "2024") auto-completes it to the full
+     * "2024-2025" label and submits the field's form, so nobody has to
+     * scroll a <select> that grows by one entry every year.
+     */
+    function sy_smart_input_script(): string
+    {
+        return <<<'HTML'
+<script>
+function formatSchoolYearInput(input, autoSubmit, event) {
+    // autoSubmit defaults to true (matches every existing filter that
+    // submits as soon as the year is complete); pass false when the field
+    // shares a form with something else the user still needs to set (e.g.
+    // the student school-year/semester modal), so it only auto-formats and
+    // waits for an explicit submit instead.
+    //
+    // Skip while the user is deleting (backspace/delete) rather than typing
+    // forward - otherwise backspacing an already-completed "2026-2027" down
+    // to "2026" instantly snaps back to "2026-2027", making it impossible to
+    // delete past the 4-digit start year to type a different one.
+    if (event && event.inputType && event.inputType.indexOf('delete') === 0) {
+        return;
+    }
+    if (/^\d{4}$/.test(input.value)) {
+        var startYear = parseInt(input.value, 10);
+        input.value = startYear + '-' + (startYear + 1);
+        if (autoSubmit !== false && input.form) {
+            input.form.submit();
+        }
+    }
+}
+function schoolYearInputKeydown(event, input) {
+    if (event.key === 'Enter') {
+        event.preventDefault();
+        formatSchoolYearInput(input, false);
+        if (input.form) {
+            input.form.submit();
+        }
+    }
+}
+</script>
+HTML;
     }
 }
 

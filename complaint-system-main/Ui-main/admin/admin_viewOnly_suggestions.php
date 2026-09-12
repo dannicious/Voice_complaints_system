@@ -2,6 +2,8 @@
 session_start();
 require_once __DIR__ . '/../db_connection.php';
 require_once __DIR__ . '/../ticket_flow.php';
+require_once __DIR__ . '/../suggestion_flow.php';
+require_once __DIR__ . '/../response_timeline_ui.php';
 
 function e(string $value): string
 {
@@ -75,6 +77,11 @@ function require_admin_session(PDO $pdo): void
 
 require_admin_session($pdo);
 
+function status_label(string $status): string
+{
+    return suggestion_status_meta($status)['label'];
+}
+
 $flashMessage = '';
 $flashType = 'info';
 $suggestionId = isset($_GET['id']) ? (int)$_GET['id'] : 0;
@@ -84,9 +91,9 @@ if ($suggestionId <= 0) {
 }
 
 $suggestion = null;
-$deanRemark = null;
+$replies = [];
 $feedback = null;
-$hasFeedback = false;
+$feedbackReplies = [];
 
 try {
     if ($suggestionId > 0) {
@@ -106,63 +113,24 @@ try {
             $flashMessage = 'Suggestion not found.';
             $flashType = 'error';
         } else {
-            $remarkStmt = $pdo->prepare(
+            // Full conversation, not just the first remark - so this view
+            // shows the whole exchange, same as the manage-suggestion page.
+            $replyStmt = $pdo->prepare(
                 'SELECT id, sender_id, sender_role, message, created_at
                  FROM ticket_replies
-                 WHERE ticket_type = "suggestion" AND ticket_id = :id AND LOWER(sender_role) IN ("dean", "admin")
-                 ORDER BY created_at ASC, id ASC
-                 LIMIT 1'
-            );
-            $remarkStmt->execute([':id' => $suggestionId]);
-            $deanRemark = $remarkStmt->fetch(PDO::FETCH_ASSOC);
-
-            $feedbackStmt = $pdo->prepare(
-                'SELECT id, satisfaction, comment, created_at
-                 FROM ticket_feedback
                  WHERE ticket_type = "suggestion" AND ticket_id = :id
-                 LIMIT 1'
+                 ORDER BY created_at ASC, id ASC'
             );
-            $feedbackStmt->execute([':id' => $suggestionId]);
-            $feedback = $feedbackStmt->fetch(PDO::FETCH_ASSOC);
-            $hasFeedback = !empty($feedback);
+            $replyStmt->execute([':id' => $suggestionId]);
+            $replies = $replyStmt->fetchAll(PDO::FETCH_ASSOC);
+
+            $feedback = get_ticket_feedback($pdo, 'suggestion', $suggestionId, (int)$suggestion['student_id']);
+            $feedbackReplies = get_ticket_feedback_replies($pdo, 'suggestion', $suggestionId, (int)$suggestion['student_id']);
         }
     }
 } catch (PDOException $e) {
     $flashMessage = 'Unable to load suggestion details.';
     $flashType = 'error';
-}
-
-function status_label(string $status): string
-{
-    $status = strtolower(trim($status));
-    if ($status === 'under_review') {
-        return 'Under Review';
-    }
-    if ($status === 'reviewed') {
-        return 'Reviewed';
-    }
-    if ($status === 'approved') {
-        return 'Approved';
-    }
-    if ($status === 'rejected' || $status === 'declined') {
-        return 'Rejected';
-    }
-    return ucfirst(str_replace('_', ' ', $status));
-}
-
-function feedback_badge_meta(string $satisfaction): array
-{
-    $satisfaction = strtolower(trim($satisfaction));
-    if ($satisfaction === 'satisfied') {
-        return ['label' => 'Satisfied', 'class' => 'satisfied', 'icon' => 'bx-check-circle'];
-    }
-    if ($satisfaction === 'neutral') {
-        return ['label' => 'Neutral', 'class' => 'neutral', 'icon' => 'bx-minus-circle'];
-    }
-    if ($satisfaction === 'not_satisfied' || $satisfaction === 'not satisfied') {
-        return ['label' => 'Not Satisfied', 'class' => 'not_satisfied', 'icon' => 'bx-x-circle'];
-    }
-    return ['label' => ucfirst($satisfaction), 'class' => 'neutral', 'icon' => 'bx-question-mark'];
 }
 ?>
 <!DOCTYPE html>
@@ -182,6 +150,10 @@ body { background: #f4f6fb; }
 .ticket-header { display:flex; justify-content:space-between; align-items:center; gap:16px; margin-bottom:16px; }
 .ticket-header div { min-width: 0; }
 .ticket-header .muted { color:#6b7280; font-size:13px; }
+.ticket-header-left { display:flex; align-items:center; gap:10px; min-width:0; }
+.document-back-btn { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 8px; border: 1px solid #d1d5db; background: #fff; color: #374151; text-decoration: none; flex-shrink: 0; transition: border-color .15s ease, background .15s ease, color .15s ease; }
+.document-back-btn:hover { background: #f3f4f6; border-color: #a5b4fc; color: #111827; }
+.document-back-btn i { font-size: 18px; }
 .status-pill { display:inline-flex; align-items:center; gap:8px; padding:8px 12px; border-radius:999px; font-weight:700; }
 .status-pill.new { background:#e0f2fe;color:#0369a1; }
 .status-pill.under_review { background:#fef3c7;color:#92400e; }
@@ -199,15 +171,11 @@ body { background: #f4f6fb; }
 .attachments-grid { display:flex; flex-wrap:wrap; gap:12px; margin-top:12px; }
 .attachment-thumb { border-radius:12px; overflow:hidden; box-shadow:0 8px 20px rgba(15,23,42,0.08); border:1px solid #e5e7eb; display:inline-block; }
 .attachment-thumb img { display:block; width:160px; height:120px; object-fit:cover; }
-.feedback-section { border:1px solid #e5e7eb;border-radius:14px;padding:20px;background:#f9fafb; }
-.feedback-header { display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px;margin-bottom:16px; }
-.feedback-title { font-weight:700;color:#111827; }
-.feedback-card { background:#fff;border:1px solid #e5e7eb;border-radius:14px;padding:18px; }
-.feedback-pill { display:inline-flex;align-items:center;gap:8px;padding:8px 12px;border-radius:999px;font-weight:700;font-size:13px; }
-.feedback-pill.satisfied { background:#dcfce7;color:#065f46; }
-.feedback-pill.neutral { background:#f3f4f6;color:#374151; }
-.feedback-pill.not_satisfied { background:#fee2e2;color:#b91c1c; }
 .empty-message, .empty-card { background:#f9fafb;border:1px dashed #d1d5db;border-radius:12px;padding:14px;color:#475569; }
+.timeline-shell { display:flex; flex-direction:column; gap:18px; }
+.ticket-section { display:flex; flex-direction:column; gap:12px; }
+.section-title { font-size:14px; font-weight:700; color:#111827; letter-spacing:0.01em; }
+.timeline-list { display:flex; flex-direction:column; gap:14px; }
 .timeline-entry { display:flex; gap:12px; align-items:flex-start; }
 .timeline-avatar { width:44px; height:44px; border-radius:999px; display:inline-flex; align-items:center; justify-content:center; overflow:hidden; background:#6b46c1; color:#fff; font-weight:700; font-size:14px; border:1px solid #eef2ff; flex-shrink:0; }
 .timeline-avatar img { width:100%; height:100%; object-fit:cover; }
@@ -219,15 +187,29 @@ body { background: #f4f6fb; }
 .timeline-card { display:inline-block; width:fit-content; max-width:min(78%, 720px); padding:16px 18px; border-radius:14px; border:1px solid #e5e7eb; background:#fff; box-shadow:0 6px 18px rgba(15,23,42,0.04); }
 .timeline-card.current-user { background:#f3f0ff; border-color:#c4b5fd; }
 .timeline-card .timeline-text { color:#111827; font-size:14px; line-height:1.6; white-space:pre-wrap; word-break:break-word; text-align:left; }
-.feedback-panel { border:1px solid #e5e7eb; border-radius:14px; padding:16px; background:#f9fafb; }
-.feedback-summary-card { background:#fff; border:1px solid #e5e7eb; border-radius:14px; padding:18px; display:flex; flex-direction:column; gap:12px; box-shadow:0 4px 14px rgba(15,23,42,0.04); align-items:flex-start; }
-.feedback-head { display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap; }
-.feedback-subtext { font-size:13px; color:#6b7280; }
+<?php echo response_timeline_styles(); ?>
 .pill { display:inline-flex; align-items:center; gap:8px; padding:6px 10px; border-radius:999px; font-weight:700; font-size:13px; }
+.pill.small { padding:4px 8px; font-size:11px; }
+.pill.very_satisfied { background:#fef3c7; color:#92400e; }
 .pill.satisfied { background:#dcfce7; color:#065f46; }
 .pill.neutral { background:#f3f4f6; color:#374151; }
-.pill.not_satisfied { background:#fee2e2; color:#b91c1c; }
+.pill.not_satisfied { background:#ffedd5; color:#9a3412; }
+.pill.very_unsatisfied { background:#fee2e2; color:#b91c1c; }
+.feedback-panel { border:1px solid #e5e7eb; border-radius:12px; padding:10px; background:#f9fafb; }
+.feedback-summary-card { background:#fff; border:1px solid #e5e7eb; border-radius:12px; padding:10px 12px; display:flex; flex-direction:column; gap:8px; box-shadow:0 2px 8px rgba(15,23,42,0.04); align-items:stretch; }
+.feedback-summary-top { display:flex; align-items:center; gap:10px; width:100%; }
+.feedback-avatar { width:40px; height:40px; border-radius:999px; display:inline-flex; align-items:center; justify-content:center; overflow:hidden; background:#6b46c1; color:#fff; font-weight:700; font-size:14px; border:1px solid #eef2ff; flex-shrink:0; }
+.feedback-avatar img { width:100%; height:100%; object-fit:cover; }
+.feedback-summary-info { flex:1; min-width:0; }
+.feedback-title { font-weight:700;color:#111827; font-size:13px; line-height:1.3; }
+.feedback-head { display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap; }
+.feedback-subtext { font-size:11.5px; color:#6b7280; line-height:1.3; }
+.feedback-comment-bubble { display:inline-block; max-width:100%; background:#f8fafc; border:1px solid #eef2ff; border-radius:10px; padding:7px 10px; font-size:12px; color:#374151; line-height:1.5; white-space:pre-wrap; word-break:break-word; margin-left:50px; }
 @media (max-width: 1024px) { .main { margin-left:0; } .grid { grid-template-columns:1fr; } }
+.scroll-top-btn { position: fixed; right: 24px; bottom: 24px; width: 44px; height: 44px; border-radius: 999px; background: #6b46c1; color: #fff; border: none; display: none; align-items: center; justify-content: center; cursor: pointer; box-shadow: 0 10px 24px rgba(107, 70, 193, 0.35); z-index: 500; transition: background .15s ease, transform .15s ease, opacity .2s ease; opacity: 0; transform: translateY(8px); }
+.scroll-top-btn.visible { display: flex; opacity: 1; transform: translateY(0); }
+.scroll-top-btn:hover { background: #5b3aa8; }
+.scroll-top-btn i { font-size: 22px; }
 </style>
 </head>
 <body>
@@ -241,23 +223,28 @@ body { background: #f4f6fb; }
     <?php if ($suggestion): ?>
         <?php
             $status = strtolower(trim((string)($suggestion['status'] ?? '')));
-            $statusMap = [
-                'new' => 'Open',
-                'open' => 'Open',
-                'under_review' => 'Under review',
-                'reviewed' => 'Reviewed',
-                'resolved' => 'Resolved',
+            $viewOnlyStatusMeta = suggestion_status_meta($status);
+            $statusLabel = $viewOnlyStatusMeta['label'];
+            $statusColorMap = [
+                'status-review' => 'background:#f59e0b;color:#1f2937;',
+                'status-needs-info' => 'background:#fde68a;color:#78350f;',
+                'status-accepted' => 'background:#dbeafe;color:#1d4ed8;',
+                'status-planned' => 'background:#e0e7ff;color:#3730a3;',
+                'status-progress' => 'background:#ede9fe;color:#5b21b6;',
+                'status-implemented' => 'background:#dcfce7;color:#065f46;',
+                'status-declined' => 'background:#fee2e2;color:#b91c1c;',
             ];
-            $statusLabel = $statusMap[$status] ?? 'Under review';
-            $statusColor = 'background:#f59e0b;color:#1f2937;';
-            if ($status === 'reviewed') { $statusColor = 'background:#dcfce7;color:#065f46;'; }
-            elseif ($status === 'under_review') { $statusColor = 'background:#f59e0b;color:#1f2937;'; }
-            elseif ($status === 'new' || $status === 'open') { $statusColor = 'background:#fee2e2;color:#b91c1c;'; }
+            $statusColor = $statusColorMap[$viewOnlyStatusMeta['badge']] ?? 'background:#f3f4f6;color:#374151;';
         ?>
         <div class="ticket-header card">
-            <div>
-                <div style="font-weight:700;font-size:18px;">Suggestion <?php echo e((string)($suggestion['ticket_no'] ?? '')); ?></div>
-                <div class="muted">Category: <?php echo e((string)($suggestion['category_name'] ?? '')); ?> · Submitted <?php echo e(!empty($suggestion['created_at']) ? date('M d, Y h:i A', strtotime((string)$suggestion['created_at'])) : ''); ?></div>
+            <div class="ticket-header-left">
+                <a href="admin_suggestions.php?tab=view_only" id="recordBackBtn" class="document-back-btn" aria-label="Back to Suggestions" title="Back to Suggestions">
+                    <i class='bx bx-arrow-back'></i>
+                </a>
+                <div>
+                    <div style="font-weight:700;font-size:18px;">Suggestion Details</div>
+                    <div class="muted">Category: <?php echo e((string)($suggestion['category_name'] ?? '')); ?> &middot; Submitted <?php echo e(!empty($suggestion['created_at']) ? date('M d, Y h:i A', strtotime((string)$suggestion['created_at'])) : ''); ?></div>
+                </div>
             </div>
             <div style="display:flex;align-items:center;gap:10px;">
                 <span class="status-pill" style="<?php echo $statusColor; ?>"><?php echo e($statusLabel); ?></span>
@@ -280,7 +267,7 @@ body { background: #f4f6fb; }
                 }
             ?>
 
-            <div class="details-grid">
+            <div class="grid">
                 <div class="detail-item">
                     <div class="label">Submitted By</div>
                     <div class="detail-value"><?php echo e(((int)$suggestion['is_anonymous'] === 1) ? 'Anonymous Student' : trim((string)($suggestion['first_name'] ?? '') . ' ' . (string)($suggestion['last_name'] ?? ''))); ?></div>
@@ -331,79 +318,183 @@ body { background: #f4f6fb; }
             </div>
         </div>
 
-        <div class="card">
-            <div style="font-weight:700;margin-bottom:16px;color:#111827;">Official Remark</div>
-            <?php if ($deanRemark): ?>
-                <?php
-                    $remarkRole = strtolower(trim((string)($deanRemark['sender_role'] ?? '')));
-                    $remarkSenderId = isset($deanRemark['sender_id']) ? (int)$deanRemark['sender_id'] : 0;
-                    $remarkPerson = $remarkSenderId > 0 ? get_person_display($pdo, $remarkRole, $remarkSenderId) : ['name' => ucfirst($remarkRole), 'photo' => null];
-                    $remarkName = $remarkPerson['name'] ?? ucfirst($remarkRole);
-                    $remarkPhoto = !empty($remarkPerson['photo']) ? ('../' . ltrim($remarkPerson['photo'], '/')) : null;
-                    $remarkInitial = strtoupper(substr(trim($remarkName), 0, 1));
-                    $remarkRoleLabel = $remarkRole === 'dean' ? 'College Dean' : ($remarkRole === 'admin' ? 'Administrator' : 'Student');
-                    $remarkCurrentUser = $remarkRole === 'dean';
-                ?>
-                <div class="timeline-entry">
-                    <div class="timeline-avatar">
-                        <?php if ($remarkPhoto): ?>
-                            <img src="<?php echo e($remarkPhoto); ?>" alt="<?php echo e($remarkName); ?>">
+        <!-- Combined Response Timeline (read-only: official remark, replies, feedback - no reply box) -->
+        <?php
+            $timelineReplies = [];
+            $officialRemark = null;
+            foreach ($replies as $replyItem) {
+                $replyRoleRaw = strtolower((string)($replyItem['sender_role'] ?? ''));
+                $entry = [
+                    'kind' => 'thread',
+                    'created_at' => (string)($replyItem['created_at'] ?? ''),
+                    'message' => (string)($replyItem['message'] ?? ''),
+                    'sender_id' => isset($replyItem['sender_id']) ? (int)$replyItem['sender_id'] : 0,
+                    'sender_role' => $replyRoleRaw,
+                ];
+                if (($replyRoleRaw === 'dean' || $replyRoleRaw === 'admin') && $officialRemark === null) {
+                    $officialRemark = $entry;
+                } else {
+                    $timelineReplies[] = $entry;
+                }
+            }
+
+            foreach ($feedbackReplies as $feedbackReply) {
+                $timelineReplies[] = [
+                    'kind' => 'feedback',
+                    'created_at' => (string)($feedbackReply['created_at'] ?? ''),
+                    'message' => (string)($feedbackReply['message'] ?? ''),
+                    'sender_id' => isset($feedbackReply['replier_id']) ? (int)$feedbackReply['replier_id'] : 0,
+                    'sender_role' => strtolower((string)($feedbackReply['replier_role'] ?? '')),
+                ];
+            }
+
+            usort($timelineReplies, function ($a, $b) {
+                $ta = strtotime((string)($a['created_at'] ?? ''));
+                $tb = strtotime((string)($b['created_at'] ?? ''));
+                return ($ta === $tb) ? 0 : (($ta < $tb) ? -1 : 1);
+            });
+
+            $hasFeedback = !empty($feedback);
+        ?>
+        <?php if ($officialRemark || $hasFeedback || !empty($timelineReplies)): ?>
+        <div class="card" style="padding:0;margin-bottom:18px;">
+            <div style="display:flex;align-items:center;padding:12px 16px;border-bottom:1px solid #eef2ff;">
+                <div style="font-weight:700;flex:1;">Response Timeline</div>
+            </div>
+            <div style="padding:16px;">
+                <div class="timeline-shell">
+                    <div class="ticket-section">
+                        <div class="section-title">Responses</div>
+                        <?php if ($officialRemark): ?>
+                            <?php
+                                $officialRole = strtolower((string)($officialRemark['sender_role'] ?? ''));
+                                $officialSenderId = isset($officialRemark['sender_id']) ? (int)$officialRemark['sender_id'] : 0;
+                                $officialPerson = $officialSenderId > 0 ? get_person_display($pdo, $officialRole, $officialSenderId) : ['name' => ucfirst($officialRole), 'photo' => null];
+                                $officialName = $officialPerson['name'] ?? (ucfirst($officialRole) ?: 'Staff');
+                                $officialPhoto = !empty($officialPerson['photo']) ? ('../' . ltrim($officialPerson['photo'], '/')) : null;
+                                $officialRoleLabel = $officialRole === 'dean' ? 'College Dean' : ($officialRole === 'admin' ? 'Administrator' : 'Student');
+                                echo response_timeline_entry([
+                                    'name' => $officialName,
+                                    'role_label' => $officialRoleLabel,
+                                    'is_current_user' => ($officialRole === 'admin'),
+                                    'photo' => $officialPhoto,
+                                    'time_text' => date('M d, Y h:i A', strtotime((string)$officialRemark['created_at'])),
+                                    'message_html' => nl2br(e((string)$officialRemark['message'])),
+                                    'reply_target_id' => null,
+                                ]);
+                            ?>
                         <?php else: ?>
-                            <?php echo e($remarkInitial); ?>
+                            <div class="empty-card">No official remark has been posted yet.</div>
+                        <?php endif; ?>
+
+                        <?php if (!empty($timelineReplies)): ?>
+                            <div class="timeline-replies">
+                                <?php foreach ($timelineReplies as $replyItem): ?>
+                                    <?php
+                                        $replyRoleRaw = strtolower((string)($replyItem['sender_role'] ?? ''));
+                                        $replySenderId = isset($replyItem['sender_id']) ? (int)$replyItem['sender_id'] : 0;
+                                        $replyPerson = $replySenderId > 0 ? get_person_display($pdo, $replyRoleRaw, $replySenderId) : ['name' => ucfirst($replyRoleRaw), 'photo' => null];
+                                        $replyName = $replyPerson['name'] ?? ucfirst($replyRoleRaw);
+                                        $replyPhoto = !empty($replyPerson['photo']) ? ('../' . ltrim($replyPerson['photo'], '/')) : null;
+                                        $replyRoleLabel = $replyRoleRaw === 'dean' ? 'College Dean' : ($replyRoleRaw === 'admin' ? 'Administrator' : 'Student');
+                                        echo response_timeline_entry([
+                                            'name' => $replyName,
+                                            'role_label' => $replyRoleLabel,
+                                            'is_current_user' => ($replyRoleRaw === 'admin'),
+                                            'photo' => $replyPhoto,
+                                            'time_text' => date('M d, Y h:i A', strtotime((string)($replyItem['created_at'] ?? ''))),
+                                            'message_html' => nl2br(e((string)($replyItem['message'] ?? ''))),
+                                            'is_reply' => true,
+                                            'reply_target_id' => null,
+                                        ]);
+                                    ?>
+                                <?php endforeach; ?>
+                            </div>
                         <?php endif; ?>
                     </div>
-                    <div class="timeline-body">
-                        <div class="timeline-heading">
-                            <div class="timeline-name"><?php echo e($remarkName); ?></div>
-                            <div class="timeline-role"><?php echo e($remarkRoleLabel); ?></div>
-                        </div>
-                        <div class="timeline-time"><?php echo e(date('M d, Y h:i A', strtotime((string)$deanRemark['created_at']))); ?></div>
-                        <div class="timeline-card<?php echo $remarkCurrentUser ? ' current-user' : ''; ?>">
-                            <div class="timeline-text"><?php echo nl2br(e((string)$deanRemark['message'])); ?></div>
-                        </div>
-                    </div>
-                </div>
-            <?php else: ?>
-                <div class="empty-card">No official remark has been posted yet.</div>
-            <?php endif; ?>
-        </div>
 
-        <div class="card feedback-section">
-            <div class="feedback-header">
-                <div class="feedback-title">Student Feedback</div>
-                <?php if ($hasFeedback): ?>
-                    <?php $badge = feedback_badge_meta((string)$feedback['satisfaction']); ?>
-                    <span class="pill <?php echo e($badge['class']); ?>"><i class="bx <?php echo e($badge['icon']); ?>"></i><?php echo e($badge['label']); ?></span>
-                <?php endif; ?>
-            </div>
-            <?php if ($hasFeedback): ?>
-                <?php
-                    $studentInfo = get_person_display($pdo, 'student', (int)$suggestion['student_id']);
-                    $studentName = $studentInfo['name'] ?? 'Student';
-                ?>
-                <div class="feedback-panel">
-                    <div class="feedback-summary-card">
-                        <div class="feedback-head">
-                            <div>
-                                <div class="feedback-title"><?php echo e($studentName); ?></div>
-                                <div class="feedback-subtext">Submitted feedback for this response</div>
+                    <?php if ($hasFeedback): ?>
+                    <div class="ticket-section">
+                        <div class="section-title">Student Feedback</div>
+                        <?php
+                            $meta = feedback_option_meta((string)$feedback['satisfaction']);
+                            $studentInfo = get_person_display($pdo, 'student', (int)$suggestion['student_id']);
+                            $studentName = $studentInfo['name'] ?? 'Student';
+                            $stuPhoto = !empty($studentInfo['photo']) ? ('../' . ltrim($studentInfo['photo'], '/')) : null;
+                            $stuInitial = strtoupper(substr(trim($studentName), 0, 1)) ?: 'S';
+                            $stuComment = trim((string)($feedback['comment'] ?? ''));
+                        ?>
+                        <div class="feedback-panel">
+                            <div class="feedback-summary-card">
+                                <div class="feedback-summary-top">
+                                    <div class="feedback-avatar">
+                                        <?php if ($stuPhoto): ?>
+                                            <img src="<?php echo e($stuPhoto); ?>" alt="<?php echo e($studentName); ?>">
+                                        <?php else: ?>
+                                            <?php echo e($stuInitial); ?>
+                                        <?php endif; ?>
+                                    </div>
+                                    <div class="feedback-summary-info">
+                                        <div class="feedback-head">
+                                            <div>
+                                                <div class="feedback-title"><?php echo e($studentName); ?></div>
+                                                <div class="feedback-subtext">Submitted feedback for this response</div>
+                                            </div>
+                                            <span class="pill small <?php echo e((string)$feedback['satisfaction']); ?>">
+                                                <i class='bx <?php echo e($meta['icon']); ?>'></i>
+                                                <?php echo e($meta['label']); ?>
+                                            </span>
+                                        </div>
+                                    </div>
+                                </div>
+                                <?php if ($stuComment !== ''): ?>
+                                <div class="feedback-comment-bubble"><?php echo nl2br(e($stuComment)); ?></div>
+                                <?php endif; ?>
                             </div>
-                            <span class="pill <?php echo e($badge['class']); ?>">
-                                <i class="bx <?php echo e($badge['icon']); ?>"></i>
-                                <?php echo e($badge['label']); ?>
-                            </span>
-                        </div>
-                        <div class="timeline-text" style="display:block;width:100%;font-size:13px;color:#374151;white-space:pre-line;text-align:left;word-break:break-word;margin:0;padding:0;line-height:1.6;">
-                            <?php echo nl2br(e((string)($feedback['comment'] ?? ''))); ?>
                         </div>
                     </div>
+                    <?php endif; ?>
                 </div>
-            <?php else: ?>
-                <div class="empty-card">No student rating or feedback has been recorded for this suggestion.</div>
-            <?php endif; ?>
+            </div>
         </div>
+        <?php endif; ?>
 
     <?php endif; ?>
 </div>
+
+<?php echo response_timeline_script(); ?>
+<button type="button" id="scrollTopBtn" class="scroll-top-btn" aria-label="Scroll to top" title="Back to top">
+    <i class='bx bx-up-arrow-alt'></i>
+</button>
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    var backBtn = document.getElementById('recordBackBtn');
+    if (backBtn) {
+        backBtn.addEventListener('click', function (event) {
+            var cameFromList = document.referrer && document.referrer.indexOf(window.location.origin) === 0;
+            if (cameFromList && window.history.length > 1) {
+                event.preventDefault();
+                window.history.back();
+            }
+        });
+    }
+
+    var scrollTopBtn = document.getElementById('scrollTopBtn');
+    if (scrollTopBtn) {
+        var toggleScrollTopBtn = function () {
+            if (window.scrollY > 300) {
+                scrollTopBtn.classList.add('visible');
+            } else {
+                scrollTopBtn.classList.remove('visible');
+            }
+        };
+        window.addEventListener('scroll', toggleScrollTopBtn, { passive: true });
+        toggleScrollTopBtn();
+        scrollTopBtn.addEventListener('click', function () {
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+        });
+    }
+});
+</script>
 </body>
 </html>

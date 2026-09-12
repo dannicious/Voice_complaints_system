@@ -36,6 +36,16 @@ if (!function_exists('e')) {
     }
 }
 
+if (!function_exists('topbar_is_new_notification')) {
+    // "New" is purely age-based: a notification counts as New for 24 hours
+    // after it's created, then moves to "Earlier" regardless of read state.
+    function topbar_is_new_notification(array $notification): bool
+    {
+        $ts = strtotime((string)($notification['created_at'] ?? ''));
+        return $ts !== false && $ts >= (time() - 86400);
+    }
+}
+
 function topbar_icon_for_type(string $type): string
 {
     if ($type === 'new_complaint') {
@@ -57,8 +67,12 @@ function topbar_icon_for_type(string $type): string
     return 'bx-bell';
 }
 
-function topbar_link_for_type(string $type): string
+function topbar_link_for_type(string $type, string $ticketType = '', int $ticketId = 0): string
 {
+    if (($type === 'complaint_update' || $type === 'suggestion_update' || $type === 'call_slip_issued') && $ticketId > 0) {
+        $resolvedType = $ticketType !== '' ? $ticketType : ($type === 'suggestion_update' ? 'suggestion' : 'complaint');
+        return 'ticket_detail.php?type=' . urlencode($resolvedType) . '&id=' . $ticketId;
+    }
     if ($type === 'new_complaint') {
         return 'student_complaints.php';
     }
@@ -70,6 +84,35 @@ function topbar_link_for_type(string $type): string
     }
 
     return 'student_dashboard.php';
+}
+
+if (!function_exists('topbar_call_slip_link')) {
+    // A "call slip issued" notification goes to two different people: the
+    // student who filed the complaint (who already has full access to their
+    // own ticket) and the student being summoned (who does not file it, and
+    // shouldn't see who filed it or the incident details - only the call
+    // slip itself). Route each to the right page.
+    function topbar_call_slip_link(PDO $pdo, int $viewerStudentId, string $ticketType, int $ticketId): string
+    {
+        if ($ticketId <= 0) {
+            return 'student_mysubmission.php';
+        }
+        $ticketType = $ticketType !== '' ? $ticketType : 'complaint';
+
+        try {
+            $table = $ticketType === 'complaint' ? 'complaints' : 'suggestions';
+            $ownerStmt = $pdo->prepare("SELECT student_id FROM {$table} WHERE id = :id LIMIT 1");
+            $ownerStmt->execute([':id' => $ticketId]);
+            $ownerId = (int)($ownerStmt->fetchColumn() ?: 0);
+
+            if ($ownerId > 0 && $ownerId === $viewerStudentId) {
+                return 'ticket_detail.php?type=' . urlencode($ticketType) . '&id=' . $ticketId;
+            }
+        } catch (PDOException $e) {
+        }
+
+        return 'call_slip_view.php?type=' . urlencode($ticketType) . '&id=' . $ticketId;
+    }
 }
 
 if (!function_exists('resolve_student_photo')) {
@@ -90,15 +133,189 @@ if (!function_exists('resolve_student_photo')) {
     }
 }
 
+if (!function_exists('topbar_render_notification_item')) {
+    // Renders one notification row. Pulled into a function so it can be
+    // called once per "New" (unread) item and once per "Earlier" (read) item
+    // without duplicating the markup.
+    function topbar_render_notification_item(PDO $pdo, array $notification, int $viewerStudentId = 0): void
+    {
+        $notifType = (string)$notification['type'];
+        if ($notifType === 'call_slip_issued') {
+            $notifAvatar = topbar_call_slip_avatar($pdo, (string)($notification['ticket_type'] ?? 'complaint'), (int)($notification['ticket_id'] ?? 0));
+        } elseif ($notifType === 'complaint_update' || $notifType === 'suggestion_update') {
+            $notifAvatar = topbar_responder_avatar(
+                $pdo,
+                (string)($notification['ticket_type'] ?? ($notifType === 'suggestion_update' ? 'suggestion' : 'complaint')),
+                (int)($notification['ticket_id'] ?? 0)
+            );
+        } else {
+            $notifAvatar = '';
+        }
+        $isUnread = (int)$notification['is_read'] === 0;
+        $href = $notifType === 'call_slip_issued'
+            ? topbar_call_slip_link($pdo, $viewerStudentId, (string)($notification['ticket_type'] ?? 'complaint'), (int)($notification['ticket_id'] ?? 0))
+            : topbar_link_for_type($notifType, (string)($notification['ticket_type'] ?? ''), (int)($notification['ticket_id'] ?? 0));
+        ?>
+        <a href="<?php echo htmlspecialchars($href, ENT_QUOTES, 'UTF-8'); ?>" class="notification-item <?php echo $isUnread ? 'unread' : ''; ?>" data-notification-id="<?php echo (int)$notification['id']; ?>">
+            <div class="notif-icon">
+                <?php if ($notifAvatar !== ''): ?>
+                    <img src="<?php echo e($notifAvatar); ?>" alt="">
+                <?php else: ?>
+                    <i class='bx <?php echo topbar_icon_for_type($notifType); ?>'></i>
+                <?php endif; ?>
+            </div>
+            <div class="notif-content">
+                <div class="notif-text"><?php echo htmlspecialchars((string)$notification['message'], ENT_QUOTES, 'UTF-8'); ?></div>
+                <div class="notif-time"><?php echo topbar_time_ago((string)$notification['created_at']); ?></div>
+            </div>
+        </a>
+        <?php
+    }
+}
+
+if (!function_exists('topbar_call_slip_avatar')) {
+    // For a "call slip issued" notification, show the picture of the dean/admin
+    // who issued it (falling back to the default avatar) instead of a generic
+    // icon, so the notification reads like it came from a person.
+    function topbar_call_slip_avatar(PDO $pdo, string $ticketType, int $ticketId): string
+    {
+        if ($ticketId <= 0) {
+            return '';
+        }
+
+        try {
+            $issuerStmt = $pdo->prepare(
+                'SELECT issued_by_role, issued_by_user_id FROM call_slips
+                 WHERE ticket_type = :ticket_type AND ticket_id = :ticket_id
+                 ORDER BY issued_at DESC LIMIT 1'
+            );
+            $issuerStmt->execute([':ticket_type' => $ticketType, ':ticket_id' => $ticketId]);
+            $issuer = $issuerStmt->fetch(PDO::FETCH_ASSOC);
+            if (!$issuer || empty($issuer['issued_by_user_id'])) {
+                return '';
+            }
+
+            $role = (string)$issuer['issued_by_role'];
+            $userId = (int)$issuer['issued_by_user_id'];
+
+            if ($role === 'dean') {
+                $photoStmt = $pdo->prepare(
+                    'SELECT dp.profile_photo, u.profile_pic FROM dean_profiles dp
+                     LEFT JOIN users u ON u.id = dp.user_id WHERE dp.user_id = :user_id LIMIT 1'
+                );
+            } elseif ($role === 'admin') {
+                $photoStmt = $pdo->prepare(
+                    'SELECT u.profile_pic FROM admin_profiles ap
+                     LEFT JOIN users u ON u.id = ap.user_id WHERE ap.user_id = :user_id LIMIT 1'
+                );
+            } else {
+                return '';
+            }
+            $photoStmt->execute([':user_id' => $userId]);
+            $photoRow = $photoStmt->fetch(PDO::FETCH_ASSOC);
+            if (!$photoRow) {
+                return '';
+            }
+
+            $storedPath = trim((string)($photoRow['profile_photo'] ?? ''));
+            if ($storedPath === '') {
+                $storedPath = trim((string)($photoRow['profile_pic'] ?? ''));
+            }
+            return resolve_student_photo($storedPath);
+        } catch (PDOException $e) {
+            return '';
+        }
+    }
+}
+
+if (!function_exists('topbar_responder_avatar')) {
+    // For a "complaint/suggestion update" notification, show the picture of
+    // whoever most recently responded (dean/admin/staff) instead of a
+    // generic icon - same treatment as the call-slip avatar above, but
+    // looking at the latest reply across both reply tables instead of a
+    // call slip record.
+    function topbar_responder_avatar(PDO $pdo, string $ticketType, int $ticketId): string
+    {
+        if ($ticketId <= 0) {
+            return '';
+        }
+
+        try {
+            $stmt = $pdo->prepare(
+                "SELECT sender_id AS actor_id, sender_role AS actor_role, created_at
+                 FROM ticket_replies
+                 WHERE ticket_type = :ticket_type1 AND ticket_id = :ticket_id1 AND sender_role IN ('dean', 'admin', 'staff')
+                 UNION ALL
+                 SELECT replier_id AS actor_id, replier_role AS actor_role, created_at
+                 FROM ticket_feedback_replies
+                 WHERE ticket_type = :ticket_type2 AND ticket_id = :ticket_id2 AND replier_role IN ('dean', 'admin', 'staff')
+                 ORDER BY created_at DESC
+                 LIMIT 1"
+            );
+            $stmt->execute([
+                ':ticket_type1' => $ticketType, ':ticket_id1' => $ticketId,
+                ':ticket_type2' => $ticketType, ':ticket_id2' => $ticketId,
+            ]);
+            $actor = $stmt->fetch(PDO::FETCH_ASSOC);
+            if (!$actor) {
+                return '';
+            }
+
+            $role = (string)$actor['actor_role'];
+            $actorId = (int)$actor['actor_id'];
+            $storedPath = '';
+
+            if ($role === 'dean') {
+                $photoStmt = $pdo->prepare(
+                    'SELECT dp.profile_photo, u.profile_pic FROM dean_profiles dp
+                     LEFT JOIN users u ON u.id = dp.user_id WHERE dp.id = :id LIMIT 1'
+                );
+                $photoStmt->execute([':id' => $actorId]);
+                $row = $photoStmt->fetch(PDO::FETCH_ASSOC);
+                if ($row) {
+                    $storedPath = trim((string)($row['profile_photo'] ?? '')) ?: trim((string)($row['profile_pic'] ?? ''));
+                }
+            } elseif ($role === 'admin') {
+                $photoStmt = $pdo->prepare(
+                    'SELECT u.profile_pic FROM admin_profiles ap
+                     LEFT JOIN users u ON u.id = ap.user_id WHERE ap.id = :id LIMIT 1'
+                );
+                $photoStmt->execute([':id' => $actorId]);
+                $row = $photoStmt->fetch(PDO::FETCH_ASSOC);
+                if ($row) {
+                    $storedPath = trim((string)($row['profile_pic'] ?? ''));
+                }
+            } elseif ($role === 'staff') {
+                // Staff replies store the raw users.id as sender/replier id,
+                // unlike dean/admin which store their role-profile id.
+                $photoStmt = $pdo->prepare('SELECT profile_pic FROM users WHERE id = :id LIMIT 1');
+                $photoStmt->execute([':id' => $actorId]);
+                $row = $photoStmt->fetch(PDO::FETCH_ASSOC);
+                if ($row) {
+                    $storedPath = trim((string)($row['profile_pic'] ?? ''));
+                }
+            }
+
+            if ($storedPath === '') {
+                return '';
+            }
+            return resolve_student_photo($storedPath);
+        } catch (PDOException $e) {
+            return '';
+        }
+    }
+}
+
 $topbarNotifications = [];
 $topbarUnreadCount = 0;
 $studentName = 'Student';
 $studentEmail = '';
 $studentPhoto = '../assets/images/default-avatar.svg';
 $studentProfileId = 0;
-$schoolYearCurrent = sy_current();
+$schoolYearCurrent = sy_current($pdo);
 $schoolYearSelected = $schoolYearCurrent;
-$schoolYearOptions = [];
+$semesterCurrent = semester_current();
+$semesterSelected = $semesterCurrent;
 
 if (isset($_SESSION['user_id']) && isset($pdo)) {
     try {
@@ -130,7 +347,7 @@ if (isset($_SESSION['user_id']) && isset($pdo)) {
         
         // Fetch notifications
         $stmt = $pdo->prepare(
-            'SELECT id, type, message, is_read, created_at
+            'SELECT id, type, message, ticket_type, ticket_id, is_read, created_at
              FROM notifications
              WHERE user_id = :user_id
              ORDER BY created_at DESC
@@ -150,11 +367,12 @@ if (isset($_SESSION['user_id']) && isset($pdo)) {
     }
 
     if ($studentProfileId > 0) {
-        $schoolYearOptions = sy_list_for_student($pdo, $studentProfileId);
         $schoolYearSelected = sy_get_selected($pdo, $studentProfileId);
+        $semesterSelected = semester_get_selected();
     }
 }
 $isPastSchoolYear = $schoolYearSelected !== $schoolYearCurrent;
+$isPastSemester = $semesterSelected !== $semesterCurrent;
 ?>
 <link href='https://unpkg.com/boxicons@2.1.4/css/boxicons.min.css' rel='stylesheet'>
 
@@ -222,35 +440,72 @@ $isPastSchoolYear = $schoolYearSelected !== $schoolYearCurrent;
     gap: 8px;
 }
 
-.topbar-sy-select {
-    appearance: none;
-    -webkit-appearance: none;
+.topbar-sy-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
     background: rgba(255,255,255,0.14);
     border: 1px solid rgba(255,255,255,0.35);
     color: #fff;
     font-family: 'Poppins', sans-serif;
     font-size: 13px;
-    font-weight: 500;
-    padding: 7px 30px 7px 12px;
+    font-weight: 600;
+    padding: 7px 12px;
     border-radius: 8px;
     cursor: pointer;
     outline: none;
-    background-image: url("data:image/svg+xml;charset=UTF-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='white'%3E%3Cpath d='M7 10l5 5 5-5z'/%3E%3C/svg%3E");
-    background-repeat: no-repeat;
-    background-position: right 8px center;
-    background-size: 16px;
     transition: 0.2s;
 }
 
-.topbar-sy-select:hover,
-.topbar-sy-select:focus {
+.topbar-sy-pill:hover,
+.topbar-sy-pill:focus {
     background-color: rgba(255,255,255,0.24);
 }
 
-.topbar-sy-select option {
-    color: #1f2937;
+.topbar-sy-pill i {
+    font-size: 14px;
+}
+
+/* ===== SCHOOL YEAR / SEMESTER MODAL ===== */
+.school-period-modal { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; z-index: 9998; padding: 20px; }
+.school-period-modal.visible { display: flex; }
+.school-period-backdrop { position: absolute; inset: 0; background: rgba(15, 23, 42, 0.48); }
+.school-period-sheet { position: relative; z-index: 1; width: min(420px, 100%); background: #fff; border-radius: 14px; box-shadow: 0 30px 60px rgba(15, 23, 42, 0.25); padding: 20px; }
+.school-period-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; padding-bottom: 14px; border-bottom: 1px solid #e5e7eb; }
+.school-period-head > div:first-child { font-weight: 700; font-size: 16px; color: #111827; font-family: 'Poppins', sans-serif; }
+.school-period-close { background: transparent; border: none; cursor: pointer; color: #6b7280; font-size: 20px; display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 8px; flex-shrink: 0; }
+.school-period-close:hover { background: #f3f4f6; color: #111827; }
+.school-period-fields { display: flex; gap: 14px; margin-bottom: 18px; }
+.school-period-field { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.school-period-field label { font-size: 11px; font-weight: 700; color: #6b7280; text-transform: uppercase; letter-spacing: .06em; font-family: 'Poppins', sans-serif; }
+.school-period-field label .required { color: #ef4444; }
+.school-period-field input,
+.school-period-field select {
+    height: 42px;
+    padding: 8px 12px;
+    border: 1px solid #d1d5db;
+    border-radius: 10px;
+    font-size: 14px;
+    font-family: 'Poppins', sans-serif;
+    color: #111827;
+    outline: none;
     background: #fff;
 }
+.school-period-field input:focus,
+.school-period-field select:focus { border-color: #6b46c1; box-shadow: 0 0 0 3px rgba(107,70,193,0.12); }
+.school-period-submit {
+    width: 100%;
+    height: 44px;
+    border: none;
+    border-radius: 10px;
+    background: #6b46c1;
+    color: #fff;
+    font-weight: 700;
+    font-size: 14px;
+    cursor: pointer;
+    font-family: 'Poppins', sans-serif;
+}
+.school-period-submit:hover { background: #5b3aa8; }
 
 .topbar-sy-badge {
     display: inline-flex;
@@ -380,14 +635,74 @@ $isPastSchoolYear = $schoolYearSelected !== $schoolYearCurrent;
     color: #1c1e21;
 }
 
-.notif-header a {
+.notif-menu-btn {
+    border: none;
+    background: transparent;
+    color: #65676b;
+    font-size: 20px;
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    flex-shrink: 0;
+}
+
+.notif-menu-btn:hover {
+    background: #f2f2f2;
+}
+
+
+.notif-tabs {
+    display: flex;
+    gap: 8px;
+    padding: 10px 16px;
+    border-bottom: 1px solid #eef0f5;
+}
+
+.notif-tab {
+    border: none;
+    background: transparent;
+    padding: 6px 14px;
+    border-radius: 20px;
+    font-size: 14px;
+    font-weight: 600;
+    color: #65676b;
+    cursor: pointer;
+}
+
+.notif-tab.active {
+    background: #ede9fe;
+    color: #6d28d9;
+}
+
+.notif-tab:hover:not(.active) {
+    background: #f2f2f2;
+}
+
+.notif-section-label {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 16px 6px;
+}
+
+.notif-section-label span {
+    font-size: 15px;
+    font-weight: 700;
+    color: #1c1e21;
+}
+
+.notif-section-label a {
     font-size: 13px;
     color: #6d28d9;
     text-decoration: none;
     font-weight: 500;
 }
 
-.notif-header a:hover {
+.notif-section-label a:hover {
     text-decoration: underline;
 }
 
@@ -433,8 +748,17 @@ $isPastSchoolYear = $schoolYearSelected !== $schoolYearCurrent;
     transform: translateY(-50%);
     width: 10px;
     height: 10px;
-    background-color: #ffc107;
+    background-color: #6d28d9;
     border-radius: 50%;
+}
+
+.notification-item.unread .notif-time {
+    color: #6d28d9;
+    font-weight: 600;
+}
+
+.notif-section + .notif-section {
+    border-top: 1px solid #eef0f5;
 }
 
 /* Icon / Avatar */
@@ -480,24 +804,6 @@ $isPastSchoolYear = $schoolYearSelected !== $schoolYearCurrent;
     font-size: 12px;
     color: #65676b;
     font-weight: 500;
-}
-
-/* Card Footer */
-.notif-footer {
-    text-align: center;
-    padding: 12px;
-    border-top: 1px solid #eef0f5;
-}
-
-.notif-footer a {
-    color: #6d28d9;
-    font-size: 14px;
-    font-weight: 600;
-    text-decoration: none;
-}
-
-.notif-footer a:hover {
-    text-decoration: underline;
 }
 
 /* ===== RESPONSIVE ===== */
@@ -549,35 +855,65 @@ $isPastSchoolYear = $schoolYearSelected !== $schoolYearCurrent;
 
     <div class="topbar-right">
 
-        <?php if ($studentProfileId > 0 && count($schoolYearOptions) > 0): ?>
+        <?php if ($studentProfileId > 0): ?>
             <div class="topbar-sy">
-                <form method="POST" action="set_school_year.php" id="schoolYearForm">
-                    <input type="hidden" name="redirect_to" value="<?php echo e($_SERVER['REQUEST_URI'] ?? 'student_dashboard.php'); ?>">
-                    <label for="schoolYearSelect" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);">School Year</label>
-                    <select name="school_year" id="schoolYearSelect" class="topbar-sy-select" onchange="document.getElementById('schoolYearForm').submit()">
-                        <?php foreach ($schoolYearOptions as $sy): ?>
-                            <option value="<?php echo e($sy); ?>" <?php echo $sy === $schoolYearSelected ? 'selected' : ''; ?>>
-                                SY <?php echo e($sy); ?><?php echo $sy === $schoolYearCurrent ? ' (Current)' : ''; ?>
-                            </option>
-                        <?php endforeach; ?>
-                    </select>
-                </form>
-                <?php if ($isPastSchoolYear): ?>
-                    <span class="topbar-sy-badge" title="You're viewing a past school year. These records are read-only.">
+                <button type="button" class="topbar-sy-pill" id="schoolPeriodPillBtn" title="Change school year / semester">
+                    <i class='bx bx-calendar'></i>
+                    <?php echo e($schoolYearSelected); ?> &middot; <?php echo e(semester_display_label($semesterSelected)); ?>
+                </button>
+                <?php if ($isPastSchoolYear || $isPastSemester): ?>
+                    <span class="topbar-sy-badge" title="You're viewing a past school year/semester. These records are read-only.">
                         <i class='bx bx-lock-alt'></i><span class="sy-badge-label">Read-only</span>
                     </span>
                 <?php endif; ?>
+            </div>
+
+            <div id="schoolPeriodModal" class="school-period-modal" aria-hidden="true" role="dialog" aria-modal="true">
+                <div class="school-period-backdrop" onclick="closeSchoolPeriodModal()"></div>
+                <div class="school-period-sheet" onclick="event.stopPropagation();">
+                    <div class="school-period-head">
+                        <div>Change School Year</div>
+                        <button type="button" class="school-period-close" onclick="closeSchoolPeriodModal()" aria-label="Close"><i class='bx bx-x'></i></button>
+                    </div>
+                    <form method="POST" action="set_school_year.php" id="schoolYearForm">
+                        <input type="hidden" name="redirect_to" value="<?php echo e($_SERVER['REQUEST_URI'] ?? 'student_dashboard.php'); ?>">
+                        <div class="school-period-fields">
+                            <div class="school-period-field">
+                                <label for="schoolYearSelect">School Year <span class="required">*</span></label>
+                                <input type="text" name="school_year" id="schoolYearSelect"
+                                       inputmode="numeric" maxlength="9" autocomplete="off"
+                                       placeholder="e.g. 2024" value="<?php echo e($schoolYearSelected); ?>"
+                                       oninput="formatSchoolYearInput(this, false, event)" onkeydown="schoolYearInputKeydown(event, this)">
+                            </div>
+                            <div class="school-period-field">
+                                <label for="semesterSelect">Semester <span class="required">*</span></label>
+                                <select name="semester" id="semesterSelect">
+                                    <option value="1" <?php echo $semesterSelected === '1' ? 'selected' : ''; ?>>1st Semester</option>
+                                    <option value="2" <?php echo $semesterSelected === '2' ? 'selected' : ''; ?>>2nd Semester</option>
+                                </select>
+                            </div>
+                        </div>
+                        <button type="submit" class="school-period-submit">Change School Year</button>
+                    </form>
+                </div>
             </div>
         <?php endif; ?>
 
         <div class="topbar-bell" id="bellIcon">
             <i class='bx bx-bell'></i>
-            
+            <?php if ($topbarUnreadCount > 0): ?>
+                <span class="notification-badge" id="notificationBadge"><?php echo $topbarUnreadCount > 99 ? '99+' : $topbarUnreadCount; ?></span>
+            <?php endif; ?>
+
             <div class="notification-dropdown" id="notificationDropdown">
                 
                 <div class="notif-header">
                     <h3>Notifications</h3>
-                    <a href="#" id="markAllRead">Mark all as read</a>
+                    <button type="button" class="notif-menu-btn" aria-label="Notification options" title="Notification options"><i class='bx bx-dots-horizontal-rounded'></i></button>
+                </div>
+                <div class="notif-tabs">
+                    <button type="button" class="notif-tab active" data-filter="all">All</button>
+                    <button type="button" class="notif-tab" data-filter="unread">Unread</button>
                 </div>
 
                 <div class="notif-body">
@@ -590,22 +926,29 @@ $isPastSchoolYear = $schoolYearSelected !== $schoolYearCurrent;
                             </div>
                         </div>
                     <?php else: ?>
-                        <?php foreach ($topbarNotifications as $notification): ?>
-                            <a href="<?php echo htmlspecialchars(topbar_link_for_type((string)$notification['type']), ENT_QUOTES, 'UTF-8'); ?>" class="notification-item <?php echo (int)$notification['is_read'] === 0 ? 'unread' : ''; ?>" data-notification-id="<?php echo (int)$notification['id']; ?>">
-                                <div class="notif-icon">
-                                    <i class='bx <?php echo topbar_icon_for_type((string)$notification['type']); ?>'></i>
+                        <?php
+                            $topbarNewList = array_filter($topbarNotifications, 'topbar_is_new_notification');
+                            $topbarEarlierList = array_filter($topbarNotifications, function ($n) { return !topbar_is_new_notification($n); });
+                        ?>
+                        <?php if ($topbarNewList): ?>
+                            <div class="notif-section notif-section-new">
+                                <div class="notif-section-label">
+                                    <span>New</span>
+                                    <a href="student_notifications.php">See all</a>
                                 </div>
-                                <div class="notif-content">
-                                    <div class="notif-text"><?php echo htmlspecialchars((string)$notification['message'], ENT_QUOTES, 'UTF-8'); ?></div>
-                                    <div class="notif-time"><?php echo topbar_time_ago((string)$notification['created_at']); ?></div>
+                                <?php foreach ($topbarNewList as $notification): topbar_render_notification_item($pdo, $notification, $studentProfileId); endforeach; ?>
+                            </div>
+                        <?php endif; ?>
+                        <?php if ($topbarEarlierList): ?>
+                            <div class="notif-section notif-section-earlier">
+                                <div class="notif-section-label">
+                                    <span>Earlier</span>
+                                    <?php if (!$topbarNewList): ?><a href="student_notifications.php">See all</a><?php endif; ?>
                                 </div>
-                            </a>
-                        <?php endforeach; ?>
+                                <?php foreach ($topbarEarlierList as $notification): topbar_render_notification_item($pdo, $notification, $studentProfileId); endforeach; ?>
+                            </div>
+                        <?php endif; ?>
                     <?php endif; ?>
-                </div>
-
-                <div class="notif-footer">
-                    <a href="student_mysubmission.php">See all notifications</a>
                 </div>
 
             </div>
@@ -623,15 +966,20 @@ $isPastSchoolYear = $schoolYearSelected !== $schoolYearCurrent;
 // Toggle Notifications
 document.getElementById('bellIcon').addEventListener('click', function(e) {
     const notifDropdown = document.getElementById('notificationDropdown');
+
+    // The dropdown panel lives inside #bellIcon, so clicks on things inside it
+    // (the All/Unread tabs, etc.) bubble up here too. Only toggle when the
+    // click actually landed on the bell trigger itself, not inside the panel.
+    if (e.target.closest('#notificationDropdown')) {
+        e.stopPropagation();
+        return;
+    }
+
     const profileDropdown = document.getElementById('profileDropdown');
-    
+
     if (profileDropdown) profileDropdown.style.display = 'none';
     notifDropdown.style.display = notifDropdown.style.display === 'block' ? 'none' : 'block';
     e.stopPropagation();
-
-    if (notifDropdown.style.display === 'block') {
-        markAllNotificationsRead();
-    }
 });
 
 // Toggle Profile
@@ -678,28 +1026,83 @@ function logout() {
     window.location.href = "../../student/log_out.php";
 }
 
-function markAllNotificationsRead() {
-    const unreadItems = document.querySelectorAll('.notification-item.unread');
-    if (unreadItems.length === 0) return;
-
-    fetch('../mark_notifications_read.php', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
-        body: 'scope=all'
-    }).then(() => {
-        unreadItems.forEach(item => item.classList.remove('unread'));
-    }).catch(() => {});
+function markNotificationRead(id) {
+    const body = 'scope=single&notification_id=' + encodeURIComponent(id);
+    if (navigator.sendBeacon) {
+        navigator.sendBeacon('../mark_notifications_read.php', new Blob([body], { type: 'application/x-www-form-urlencoded;charset=UTF-8' }));
+    } else {
+        fetch('../mark_notifications_read.php', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+            body: body,
+            keepalive: true
+        }).catch(() => {});
+    }
 }
 
-const markAllLink = document.getElementById('markAllRead');
-if (markAllLink) {
-    markAllLink.addEventListener('click', function(e) {
-        e.preventDefault();
-        markAllNotificationsRead();
+function decrementNotificationBadge() {
+    const badge = document.getElementById('notificationBadge');
+    if (!badge) return;
+    const remaining = parseInt(badge.textContent, 10) - 1;
+    if (remaining > 0) {
+        badge.textContent = remaining;
+    } else {
+        badge.remove();
+    }
+}
+
+document.querySelectorAll('.notification-item[data-notification-id]').forEach(function (item) {
+    item.addEventListener('click', function () {
+        if (!item.classList.contains('unread')) return;
+        markNotificationRead(item.dataset.notificationId);
+        item.classList.remove('unread');
+        decrementNotificationBadge();
     });
-}
+});
+
+document.querySelectorAll('.notif-tab').forEach(function (tab) {
+    tab.addEventListener('click', function () {
+        document.querySelectorAll('.notif-tab').forEach(function (t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        const filter = tab.dataset.filter;
+        // "New" vs "Earlier" is purely age-based, so either section can hold
+        // a mix of read/unread items. Filter items individually, then hide
+        // whichever section (if any) is left with nothing visible.
+        document.querySelectorAll('.notif-section').forEach(function (section) {
+            let anyVisible = false;
+            section.querySelectorAll('.notification-item').forEach(function (item) {
+                const show = filter === 'all' || item.classList.contains('unread');
+                item.style.display = show ? '' : 'none';
+                if (show) anyVisible = true;
+            });
+            section.style.display = anyVisible ? '' : 'none';
+        });
+    });
+});
 
 document.querySelectorAll('.sidebar .menu a').forEach(link => {
     link.addEventListener('click', closeSidebar);
 });
+
+function openSchoolPeriodModal() {
+    const modal = document.getElementById('schoolPeriodModal');
+    if (modal) {
+        modal.classList.add('visible');
+        modal.setAttribute('aria-hidden', 'false');
+    }
+}
+
+function closeSchoolPeriodModal() {
+    const modal = document.getElementById('schoolPeriodModal');
+    if (modal) {
+        modal.classList.remove('visible');
+        modal.setAttribute('aria-hidden', 'true');
+    }
+}
+
+const schoolPeriodPillBtn = document.getElementById('schoolPeriodPillBtn');
+if (schoolPeriodPillBtn) {
+    schoolPeriodPillBtn.addEventListener('click', openSchoolPeriodModal);
+}
 </script>
+<?php echo sy_smart_input_script(); ?>

@@ -5,7 +5,12 @@ if (!isset($_SESSION['csrf_token'])) {
 }
 require_once __DIR__ . '/../db_connection.php';
 require_once __DIR__ . '/../complaint_age_helpers.php';
+require_once __DIR__ . '/../complaint_ai_helpers.php';
 require_once __DIR__ . '/../ticket_flow.php';
+require_once __DIR__ . '/../school_year_helpers.php';
+require_once __DIR__ . '/../response_timeline_ui.php';
+
+ai_ensure_ai_tables($pdo);
 
 function e(string $value): string
 {
@@ -16,6 +21,10 @@ $flashMsg = '';
 $flashType = '';
 
 auto_close_expired_tickets($pdo);
+
+// Opportunistic SLA check - notifies the handling dean/admin once a
+// complaint has sat untouched for 24+ hours. Best-effort, runs on page load.
+check_and_send_complaint_overdue_notifications($pdo);
 
 $deanUserId = isset($_SESSION['user_id']) ? (int)$_SESSION['user_id'] : 0;
 $deanCollegeId = null;
@@ -42,13 +51,19 @@ if ($deanCollegeId === null) {
 // Filter variables
 $q = trim((string)($_GET['q'] ?? ''));
 $statusFilter = strtolower(trim((string)($_GET['status'] ?? 'all')));
+$schoolYearFilter = trim((string)($_GET['school_year'] ?? ''));
+$semesterFilter = trim((string)($_GET['semester'] ?? ''));
 $viewMode = strtolower(trim((string)($_GET['view'] ?? 'all'))); // 'all' or 'new'
 $departmentFilter = (int)($_GET['department'] ?? 0);
 $dateFrom = trim((string)($_GET['date_from'] ?? ''));
 $dateTo = trim((string)($_GET['date_to'] ?? ''));
+$sortBy = (string)($_GET['sort'] ?? '') === 'urgency' ? 'urgency' : 'date';
 $allowedStatusFilters = ['all', 'under_review', 'resolved', 'dismissed'];
 if (!in_array($statusFilter, $allowedStatusFilters, true)) {
     $statusFilter = 'all';
+}
+if (!in_array($semesterFilter, ['', '1', '2'], true)) {
+    $semesterFilter = '';
 }
 
 $departments = [];
@@ -56,6 +71,10 @@ if ($deanCollegeId !== null) {
     $departmentsStmt = $pdo->prepare('SELECT id, name FROM programs WHERE college_id = :college_id AND status = "active" ORDER BY name');
     $departmentsStmt->execute([':college_id' => $deanCollegeId]);
     $departments = $departmentsStmt->fetchAll();
+}
+$availableSchoolYears = $deanCollegeId !== null ? sy_list_for_college($pdo, $deanCollegeId) : [];
+if ($schoolYearFilter !== '' && (!sy_is_valid_label($schoolYearFilter) || !in_array($schoolYearFilter, $availableSchoolYears, true))) {
+    $schoolYearFilter = '';
 }
 $departmentIds = array_map(static fn(array $department): int => (int)$department['id'], $departments);
 if ($departmentFilter <= 0 || !in_array($departmentFilter, $departmentIds, true)) {
@@ -192,6 +211,9 @@ try {
             c.desired_outcome,
             c.attachments,
             c.status,
+            c.urgency_level,
+            c.urgency_score,
+            c.ai_detected_language,
             c.is_anonymous,
             c.complainant_name,
             c.complainant_address,
@@ -223,6 +245,21 @@ try {
         $params[':department'] = $departmentFilter;
     }
 
+    if ($schoolYearFilter !== '') {
+        $sql .= ' AND c.school_year = :school_year';
+        $params[':school_year'] = $schoolYearFilter;
+    }
+
+    if ($semesterFilter === '1') {
+        $sql .= " AND (DATE_FORMAT(c.created_at, '%m-%d') >= :semester_start OR DATE_FORMAT(c.created_at, '%m-%d') < :semester_end)";
+        $params[':semester_start'] = '08-01';
+        $params[':semester_end'] = '01-01';
+    } elseif ($semesterFilter === '2') {
+        $sql .= " AND DATE_FORMAT(c.created_at, '%m-%d') >= :semester_start AND DATE_FORMAT(c.created_at, '%m-%d') < :semester_end";
+        $params[':semester_start'] = '01-01';
+        $params[':semester_end'] = '08-01';
+    }
+
     if ($dateFrom !== '') {
         $sql .= ' AND c.created_at >= :date_from';
         $params[':date_from'] = $dateFrom . ' 00:00:00';
@@ -246,7 +283,9 @@ try {
         $params[':q'] = '%' . $q . '%';
     }
 
-    $sql .= ' ORDER BY CASE WHEN c.status = "flagged" THEN 0 ELSE 1 END, c.created_at DESC';
+    $sql .= $sortBy === 'urgency'
+        ? ' ORDER BY CASE WHEN c.status = "flagged" THEN 0 ELSE 1 END, c.urgency_score DESC, c.created_at DESC'
+        : ' ORDER BY CASE WHEN c.status = "flagged" THEN 0 ELSE 1 END, c.created_at DESC';
 
     $stmt = $pdo->prepare($sql);
     $stmt->execute($params);
@@ -397,6 +436,19 @@ body {
     cursor: pointer;
 }
 
+.filter-box input[name="school_year"] {
+    height: 43px;
+    width: 100%;
+    padding: 10px 14px;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    font-size: 13px;
+    font-family: 'Poppins', sans-serif;
+    outline: none;
+    background: #fff;
+    color: #1f2937;
+}
+
 .filter-box {
     flex: 0 1 160px;
 }
@@ -427,7 +479,8 @@ body {
 }
 
 .date-filter input:focus,
-.filter-box select:focus {
+.filter-box select:focus,
+.filter-box input[name="school_year"]:focus {
     border-color: #8b5cf6;
     box-shadow: 0 0 0 2px rgba(139, 92, 246, .12);
 }
@@ -439,7 +492,7 @@ body {
 
 .controls-left {
     display: grid;
-    grid-template-columns: minmax(260px, 2fr) repeat(4, minmax(135px, 1fr)) auto;
+    grid-template-columns: minmax(220px, 2fr) repeat(6, minmax(105px, 1fr)) auto;
     align-items: end;
     gap: 12px;
     width: 100%;
@@ -760,6 +813,19 @@ textarea.form-control { resize: vertical; min-height: 100px; }
     word-wrap: break-word;
 }
 
+.timeline-list { display:flex; flex-direction:column; gap:14px; }
+.timeline-entry { display:flex; gap:12px; align-items:flex-start; }
+.timeline-avatar { width:44px; height:44px; border-radius:999px; display:inline-flex; align-items:center; justify-content:center; overflow:hidden; background:#6b46c1; color:#fff; font-weight:700; font-size:14px; border:1px solid #eef2ff; flex-shrink:0; }
+.timeline-avatar img { width:100%; height:100%; object-fit:cover; }
+.timeline-body { flex:1; min-width:0; display:flex; flex-direction:column; }
+.timeline-card { display:inline-block; width:fit-content; max-width:min(85%, 640px); padding:12px 14px; border-radius:14px; border:1px solid #e5e7eb; background:#fff; box-shadow:0 1px 2px rgba(15,23,42,0.06); }
+.timeline-card.current-user { background:#f3f0ff; border-color:#c4b5fd; }
+.timeline-heading { display:flex; align-items:baseline; gap:8px; flex-wrap:wrap; margin-bottom:2px; }
+.timeline-name { font-weight:700; color:#111827; font-size:13px; }
+.timeline-role { font-size:11.5px; color:#6b7280; font-weight:600; }
+.timeline-card .timeline-text { color:#111827; font-size:14px; line-height:1.55; white-space:pre-wrap; word-break:break-word; }
+<?php echo response_timeline_styles(); ?>
+
 .flash-msg {
     margin-bottom: 16px;
     padding: 10px 12px;
@@ -792,8 +858,14 @@ textarea.form-control { resize: vertical; min-height: 100px; }
     .search-filter { grid-column: auto; }
     .btn-search, .btn-clear { width: 100%; text-align: center; }
 }
+.scroll-top-btn { position: fixed; right: 24px; bottom: 24px; width: 44px; height: 44px; border-radius: 999px; background: #6b46c1; color: #fff; border: none; display: none; align-items: center; justify-content: center; cursor: pointer; box-shadow: 0 10px 24px rgba(107, 70, 193, 0.35); z-index: 500; transition: background .15s ease, transform .15s ease, opacity .2s ease; opacity: 0; transform: translateY(8px); }
+.scroll-top-btn.visible { display: flex; opacity: 1; transform: translateY(0); }
+.scroll-top-btn:hover { background: #5b3aa8; }
+.scroll-top-btn i { font-size: 22px; }
 </style>
 <?php echo complaint_age_styles(); ?>
+<?php echo ai_urgency_styles(); ?>
+<?php echo groq_language_styles(); ?>
 </head>
 
 <body>
@@ -824,7 +896,7 @@ textarea.form-control { resize: vertical; min-height: 100px; }
                         <span>Search</span>
                         <div class="search-box">
                             <i class='bx bx-search'></i>
-                            <input type="text" name="q" value="<?php echo e($q); ?>" placeholder="Search by Ticket ID, Subject, Category">
+                            <input type="text" name="q" value="<?php echo e($q); ?>" placeholder="Search by Subject, Category">
                         </div>
                     </div>
                     <div class="filter-box">
@@ -834,6 +906,27 @@ textarea.form-control { resize: vertical; min-height: 100px; }
                             <option value="under_review" <?php echo $statusFilter === 'under_review' ? 'selected' : ''; ?>>Under Review</option>
                             <option value="resolved" <?php echo $statusFilter === 'resolved' ? 'selected' : ''; ?>>Resolved</option>
                             <option value="dismissed" <?php echo $statusFilter === 'dismissed' ? 'selected' : ''; ?>>Dismissed</option>
+                        </select>
+                    </div>
+                    <div class="filter-box">
+                        <span>Sort By</span>
+                        <select name="sort">
+                            <option value="date" <?php echo $sortBy === 'date' ? 'selected' : ''; ?>>Newest First</option>
+                            <option value="urgency" <?php echo $sortBy === 'urgency' ? 'selected' : ''; ?>>Most Urgent First</option>
+                        </select>
+                    </div>
+                    <div class="filter-box">
+                        <span>School Year</span>
+                        <input type="text" name="school_year" inputmode="numeric" maxlength="9" autocomplete="off"
+                               placeholder="All School Years (e.g. 2024)" value="<?php echo e($schoolYearFilter); ?>"
+                               oninput="formatSchoolYearInput(this, true, event)" onkeydown="schoolYearInputKeydown(event, this)">
+                    </div>
+                    <div class="filter-box">
+                        <span>Semester</span>
+                        <select name="semester">
+                            <option value="">All Semesters</option>
+                            <option value="1" <?php echo $semesterFilter === '1' ? 'selected' : ''; ?>>1st Semester</option>
+                            <option value="2" <?php echo $semesterFilter === '2' ? 'selected' : ''; ?>>2nd Semester</option>
                         </select>
                     </div>
                     <div class="filter-box">
@@ -853,7 +946,7 @@ textarea.form-control { resize: vertical; min-height: 100px; }
                         <span>To Date</span>
                         <input type="date" name="date_to" value="<?php echo e($dateTo); ?>">
                     </label>
-                    <?php if ($q !== '' || $statusFilter !== 'all' || $departmentFilter > 0 || $dateFrom !== '' || $dateTo !== ''): ?>
+                    <?php if ($q !== '' || $statusFilter !== 'all' || $schoolYearFilter !== '' || $semesterFilter !== '' || $departmentFilter > 0 || $dateFrom !== '' || $dateTo !== ''): ?>
                         <a href="dean_complaints.php" class="btn-clear">Clear</a>
                     <?php endif; ?>
                 </div>
@@ -901,9 +994,20 @@ textarea.form-control { resize: vertical; min-height: 100px; }
                                     $statusLabel = 'Flagged';
                                 }
 
+                                // Still untouched: stop calling it "New" once it no longer
+                                // is - fall back to a short elapsed-time label instead, and
+                                // let the badge color escalate the same way the age chip does.
+                                $newLabel = complaint_new_status_label((string)$row['created_at'], $status);
+                                if ($newLabel !== null) {
+                                    $statusLabel = $newLabel;
+                                    $statusClass = complaint_new_status_badge_class((string)$row['created_at'], $status) ?? $statusClass;
+                                }
+
+                                $yearLevel = (int)($row['year_level'] ?? 0);
+                                $yearLabel = [1 => '1st', 2 => '2nd', 3 => '3rd', 4 => '4th'][$yearLevel] ?? (string)$yearLevel;
                                 $submitter = ((int)$row['is_anonymous'] === 1)
                                     ? 'Anonymous Student'
-                                    : trim((string)$row['first_name'] . ' ' . (string)$row['last_name']) . ((string)$row['year_level'] !== '' ? ' (' . (int)$row['year_level'] . 'th Year)' : '');
+                                    : trim((string)$row['first_name'] . ' ' . (string)$row['last_name']) . ((string)$row['year_level'] !== '' ? ' (' . $yearLabel . ' Year)' : '');
                                 $description = trim((string)$row['narrative_report']) !== '' ? (string)$row['narrative_report'] : 'No description provided.';
                                 $attachment = trim((string)$row['attachments']) !== '' ? (string)$row['attachments'] : '';
                             ?>
@@ -913,10 +1017,10 @@ textarea.form-control { resize: vertical; min-height: 100px; }
                                     <div class="subject-text"><?php echo e((string)$row['act_complained_of']); ?></div>
                                     <div class="small-text"><?php echo e($submitter); ?></div>
                                 </td>
-                                <td><?php echo e((string)$row['category_name']); ?></td>
+                                <td><?php echo e((string)$row['category_name']); ?><?php echo groq_language_chip($row['ai_detected_language'] ?? null); ?></td>
                                 <td>
                                     <span class="status-badge <?php echo e($statusClass); ?>"><?php echo e($statusLabel); ?></span>
-                                    <div><?php echo complaint_age_badge((string)$row['created_at'], (string)$row['status']); ?></div>
+                                    <div><?php echo complaint_age_badge((string)$row['created_at'], (string)$row['status']); ?><?php echo ai_urgency_chip($row['urgency_level'] ?? null); ?></div>
                                 </td>
                                 <td>
                                     <a href="dean_ticket_detail.php?id=<?php echo (int)$row['id']; ?>" class="btn-manage" style="text-decoration:none;display:inline-flex;align-items:center;gap:6px;"><i class='bx bx-edit-alt'></i> Manage</a>
@@ -1299,6 +1403,87 @@ function getAvatarHtml(name, photo) {
     `;
 }
 
+function formatSenderRole(role) {
+    const normalized = String(role || '').trim().toLowerCase();
+    switch (normalized) {
+        case 'student':
+            return 'Student';
+        case 'dean':
+            return 'College Dean';
+        case 'admin':
+            return 'Administrator';
+        default:
+            return normalized ? normalized.charAt(0).toUpperCase() + normalized.slice(1) : 'Staff';
+    }
+}
+
+function buildTimelineEntry(reply, isReply) {
+    const timelineItem = document.createElement('div');
+    timelineItem.className = 'timeline-entry';
+
+    const avatarWrap = document.createElement('div');
+    avatarWrap.innerHTML = getAvatarHtml(reply.sender_name || reply.sender_role || 'Dean', reply.sender_photo);
+    const avatar = avatarWrap.firstElementChild;
+    if (avatar) {
+        avatar.classList.add('timeline-avatar');
+        if (isReply) avatar.classList.add('is-small');
+    }
+
+    const body = document.createElement('div');
+    body.className = 'timeline-body';
+
+    const card = document.createElement('div');
+    card.className = 'timeline-card';
+
+    const heading = document.createElement('div');
+    heading.className = 'timeline-heading';
+
+    const nameDiv = document.createElement('div');
+    nameDiv.className = 'timeline-name';
+    nameDiv.textContent = String(reply.sender_name || reply.sender_role || 'Dean').trim();
+
+    const roleDiv = document.createElement('div');
+    roleDiv.className = 'timeline-role';
+    roleDiv.textContent = formatSenderRole(reply.sender_role);
+
+    heading.appendChild(nameDiv);
+    heading.appendChild(roleDiv);
+
+    const messageDiv = document.createElement('div');
+    messageDiv.className = 'timeline-text';
+    messageDiv.textContent = reply.message || '';
+
+    card.appendChild(heading);
+    card.appendChild(messageDiv);
+
+    const metaRow = document.createElement('div');
+    metaRow.className = 'timeline-meta-row';
+
+    const timeSpan = document.createElement('span');
+    timeSpan.className = 'timeline-time';
+    timeSpan.textContent = reply.created_at;
+    metaRow.appendChild(timeSpan);
+
+    const replyBtn = document.createElement('button');
+    replyBtn.type = 'button';
+    replyBtn.className = 'timeline-reply-link';
+    replyBtn.textContent = 'Reply';
+    replyBtn.addEventListener('click', function () {
+        const target = document.getElementById('modalRemarksTextarea');
+        if (target) {
+            target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            target.focus({ preventScroll: true });
+        }
+    });
+    metaRow.appendChild(replyBtn);
+
+    body.appendChild(card);
+    body.appendChild(metaRow);
+    if (avatar) timelineItem.appendChild(avatar);
+    timelineItem.appendChild(body);
+    return timelineItem;
+}
+
 function renderTicketReplies(replies) {
     const repliesContainer = document.getElementById('modalRepliesContainer');
     const noRepliesMessage = document.getElementById('modalNoReplies');
@@ -1315,99 +1500,18 @@ function renderTicketReplies(replies) {
     repliesContainer.style.gap = '18px';
     noRepliesMessage.style.display = 'none';
 
-    replies.forEach((reply) => {
-        const timelineItem = document.createElement('div');
-        timelineItem.className = 'timeline-item';
-        timelineItem.style.display = 'flex';
-        timelineItem.style.gap = '12px';
-        timelineItem.style.alignItems = 'flex-start';
-        timelineItem.style.marginBottom = '18px';
+    // First message is the anchor response; anything after it is shown
+    // indented underneath, like replies under a comment.
+    repliesContainer.appendChild(buildTimelineEntry(replies[0], false));
 
-        // Timeline dot
-        const dotContainer = document.createElement('div');
-        dotContainer.className = 'timeline-dot-container';
-        dotContainer.style.width = '40px';
-        dotContainer.style.flex = '0 0 40px';
-        dotContainer.style.display = 'flex';
-        dotContainer.style.justifyContent = 'center';
-        dotContainer.innerHTML = '<div class="timeline-dot" style="width:12px;height:12px;border-radius:999px;background:#6b46c1;margin-top:6px;"></div>';
-
-        // Content container
-        const contentContainer = document.createElement('div');
-        contentContainer.style.flex = '1';
-
-        // Card with message
-        const card = document.createElement('div');
-        card.className = 'card';
-        card.style.padding = '12px';
-        card.style.border = '1px solid #e5e7eb';
-        card.style.borderRadius = '12px';
-        card.style.background = '#ffffff';
-        card.style.boxShadow = '0 1px 2px rgba(15, 23, 42, 0.06)';
-
-        // Inner content with avatar and text
-        const innerContent = document.createElement('div');
-        innerContent.style.display = 'flex';
-        innerContent.style.gap = '12px';
-        innerContent.style.alignItems = 'flex-start';
-
-        // Avatar
-        const avatarDiv = document.createElement('div');
-        avatarDiv.style.flex = '0 0 48px';
-        avatarDiv.innerHTML = getAvatarHtml(reply.sender_name || reply.sender_role || 'Dean', reply.sender_photo);
-
-        // Text content
-        const textContent = document.createElement('div');
-        textContent.style.flex = '1';
-
-        // Header with name and date
-        const header = document.createElement('div');
-        header.style.display = 'flex';
-        header.style.justifyContent = 'space-between';
-        header.style.gap = '12px';
-        header.style.alignItems = 'flex-start';
-        header.style.marginBottom = '8px';
-
-        const nameDiv = document.createElement('div');
-        nameDiv.className = 'reply-sender-name';
-        nameDiv.style.fontSize = '13px';
-        nameDiv.style.fontWeight = '700';
-        nameDiv.style.color = '#111827';
-        nameDiv.textContent = reply.sender_name || reply.sender_role || 'Dean';
-
-        const timeDiv = document.createElement('div');
-        timeDiv.className = 'reply-timestamp';
-        timeDiv.style.fontSize = '12px';
-        timeDiv.style.color = '#6b7280';
-        timeDiv.style.whiteSpace = 'nowrap';
-        timeDiv.textContent = reply.created_at;
-
-        header.appendChild(nameDiv);
-        header.appendChild(timeDiv);
-
-        // Message text
-        const messageDiv = document.createElement('div');
-        messageDiv.className = 'reply-message';
-        messageDiv.style.fontSize = '14px';
-        messageDiv.style.color = '#374151';
-        messageDiv.style.whiteSpace = 'pre-wrap';
-        messageDiv.style.wordWrap = 'break-word';
-        messageDiv.textContent = reply.message;
-
-        textContent.appendChild(header);
-        textContent.appendChild(messageDiv);
-
-        innerContent.appendChild(avatarDiv);
-        innerContent.appendChild(textContent);
-
-        card.appendChild(innerContent);
-
-        contentContainer.appendChild(card);
-        timelineItem.appendChild(dotContainer);
-        timelineItem.appendChild(contentContainer);
-
-        repliesContainer.appendChild(timelineItem);
-    });
+    if (replies.length > 1) {
+        const repliesWrap = document.createElement('div');
+        repliesWrap.className = 'timeline-replies';
+        for (let i = 1; i < replies.length; i++) {
+            repliesWrap.appendChild(buildTimelineEntry(replies[i], true));
+        }
+        repliesContainer.appendChild(repliesWrap);
+    }
 }
 
 async function loadTicketReplies(ticketType, ticketId) {
@@ -1567,7 +1671,7 @@ if (deanComplaintFiltersForm) {
         });
     }
 
-    deanComplaintFiltersForm.querySelectorAll('select[name="status"], select[name="department"], input[name="date_from"], input[name="date_to"]').forEach((filter) => {
+    deanComplaintFiltersForm.querySelectorAll('select[name="status"], select[name="sort"], select[name="semester"], select[name="department"], input[name="date_from"], input[name="date_to"]').forEach((filter) => {
         filter.addEventListener('change', () => {
             window.sessionStorage.removeItem(focusKey);
             deanComplaintFiltersForm.submit();
@@ -1575,6 +1679,29 @@ if (deanComplaintFiltersForm) {
     });
 }
 </script>
+
+<button type="button" id="scrollTopBtn" class="scroll-top-btn" aria-label="Scroll to top" title="Back to top">
+    <i class='bx bx-up-arrow-alt'></i>
+</button>
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    var scrollTopBtn = document.getElementById('scrollTopBtn');
+    if (!scrollTopBtn) return;
+    var toggleScrollTopBtn = function () {
+        if (window.scrollY > 300) {
+            scrollTopBtn.classList.add('visible');
+        } else {
+            scrollTopBtn.classList.remove('visible');
+        }
+    };
+    window.addEventListener('scroll', toggleScrollTopBtn, { passive: true });
+    toggleScrollTopBtn();
+    scrollTopBtn.addEventListener('click', function () {
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+    });
+});
+</script>
+<?php echo sy_smart_input_script(); ?>
 
 </body>
 </html>

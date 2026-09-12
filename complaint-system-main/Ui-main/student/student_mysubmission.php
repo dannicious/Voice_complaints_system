@@ -1,6 +1,7 @@
 <?php
 session_start();
 require_once __DIR__ . '/../db_connection.php';
+require_once __DIR__ . '/../suggestion_flow.php';
 require_once __DIR__ . '/../school_year_helpers.php';
 
 function e(string $value): string
@@ -10,9 +11,12 @@ function e(string $value): string
 
 $submissions = [];
 $loadError = '';
-$schoolYearCurrent = sy_current();
+$schoolYearCurrent = sy_current($pdo);
 $schoolYearSelected = $schoolYearCurrent;
 $isPastSchoolYear = false;
+$semesterCurrent = semester_current();
+$semesterSelected = $semesterCurrent;
+$isPastSemester = false;
 
 if (!isset($_SESSION['user_id']) || (string)($_SESSION['role'] ?? '') !== 'student') {
     $loadError = 'Please log in as a student to view your submissions.';
@@ -33,11 +37,12 @@ if (!isset($_SESSION['user_id']) || (string)($_SESSION['role'] ?? '') !== 'stude
             $studentProfileId = (int)$student['id'];
             $schoolYearSelected = sy_get_selected($pdo, $studentProfileId);
             $isPastSchoolYear = $schoolYearSelected !== $schoolYearCurrent;
+            $semesterSelected = semester_get_selected();
+            $isPastSemester = $semesterSelected !== $semesterCurrent;
 
             $sql = "
                 SELECT
-                    c.id AS ticket_id,
-                    c.ticket_no AS ticket_no,
+                    c.id AS record_id,
                     'complaint' AS type,
                     c.act_complained_of AS subject,
                     COALESCE(cc.name, 'Uncategorized') AS category_name,
@@ -45,13 +50,12 @@ if (!isset($_SESSION['user_id']) || (string)($_SESSION['role'] ?? '') !== 'stude
                     c.status AS raw_status
                 FROM complaints c
                 LEFT JOIN complaint_categories cc ON cc.id = c.category_id
-                                WHERE c.student_id = :student_id_complaint AND c.school_year = :school_year_complaint
+                                WHERE c.student_id = :student_id_complaint AND c.school_year = :school_year_complaint AND c.semester = :semester_complaint
 
                 UNION ALL
 
                 SELECT
-                    s.id AS ticket_id,
-                    s.ticket_no AS ticket_no,
+                    s.id AS record_id,
                     'suggestion' AS type,
                     s.subject AS subject,
                     COALESCE(sc.name, 'Uncategorized') AS category_name,
@@ -59,7 +63,7 @@ if (!isset($_SESSION['user_id']) || (string)($_SESSION['role'] ?? '') !== 'stude
                     s.status AS raw_status
                 FROM suggestions s
                 LEFT JOIN suggestion_categories sc ON sc.id = s.category_id
-                WHERE s.student_id = :student_id_suggestion AND s.school_year = :school_year_suggestion
+                WHERE s.student_id = :student_id_suggestion AND s.school_year = :school_year_suggestion AND s.semester = :semester_suggestion
 
                 ORDER BY submitted_at DESC
             ";
@@ -68,8 +72,10 @@ if (!isset($_SESSION['user_id']) || (string)($_SESSION['role'] ?? '') !== 'stude
             $stmt->execute([
                 ':student_id_complaint' => $studentProfileId,
                 ':school_year_complaint' => $schoolYearSelected,
+                ':semester_complaint' => $semesterSelected,
                 ':student_id_suggestion' => $studentProfileId,
                 ':school_year_suggestion' => $schoolYearSelected,
+                ':semester_suggestion' => $semesterSelected,
             ]);
             $rows = $stmt->fetchAll();
 
@@ -77,47 +83,56 @@ if (!isset($_SESSION['user_id']) || (string)($_SESSION['role'] ?? '') !== 'stude
                 $type = (string)$row['type'];
                 $status = strtolower((string)$row['raw_status']);
 
-                $statusClass = 'status-review';
-                $statusIcon = 'bx-search-alt-2';
-                $statusLabel = 'Under Review';
-
-                if (in_array($status, ['new', 'pending'], true)) {
-                    $statusClass = 'status-pending';
-                    $statusIcon = 'bx-time-five';
-                    $statusLabel = 'Pending';
-                } elseif (in_array($status, ['under_review', 'review', 'flagged'], true)) {
+                if ($type === 'suggestion') {
+                    // Suggestions use their own decision/implementation status
+                    // vocabulary (needs_info, accepted, planned, in_progress, ...)
+                    // - see suggestion_flow.php for the single source of truth.
+                    $suggestionMeta = suggestion_status_meta($status);
+                    $statusClass = $suggestionMeta['badge'];
+                    $statusLabel = $suggestionMeta['label'];
+                    $statusIcon = $suggestionMeta['locked'] ? 'bx-check-circle' : 'bx-search-alt-2';
+                } else {
                     $statusClass = 'status-review';
                     $statusIcon = 'bx-search-alt-2';
                     $statusLabel = 'Under Review';
-                } elseif (in_array($status, ['resolved'], true)) {
-                    $statusClass = 'status-resolved';
-                    $statusIcon = 'bx-check-circle';
-                    $statusLabel = 'Resolved';
-                } elseif (in_array($status, ['dismissed'], true)) {
-                    $statusClass = 'status-dismissed';
-                    $statusIcon = 'bx-x-circle';
-                    $statusLabel = 'Dismissed';
-                } elseif (in_array($status, ['approved'], true)) {
-                    $statusClass = 'status-approved';
-                    $statusIcon = 'bx-check-circle';
-                    $statusLabel = 'Approved';
-                } elseif (in_array($status, ['reviewed'], true)) {
-                    $statusClass = 'status-reviewed';
-                    $statusIcon = 'bx-check-circle';
-                    $statusLabel = 'Reviewed';
-                } elseif (in_array($status, ['declined', 'rejected', 'inactive'], true)) {
-                    $statusClass = 'status-pending';
-                    $statusIcon = 'bx-x-circle';
-                    $statusLabel = ucfirst($status);
-                } else {
-                    $statusClass = 'status-review';
-                    $statusIcon = 'bx-question-mark';
-                    $statusLabel = ucfirst(str_replace('_', ' ', $status));
+
+                    if (in_array($status, ['new', 'pending'], true)) {
+                        $statusClass = 'status-pending';
+                        $statusIcon = 'bx-time-five';
+                        $statusLabel = 'Pending';
+                    } elseif (in_array($status, ['under_review', 'review', 'flagged'], true)) {
+                        $statusClass = 'status-review';
+                        $statusIcon = 'bx-search-alt-2';
+                        $statusLabel = 'Under Review';
+                    } elseif (in_array($status, ['resolved'], true)) {
+                        $statusClass = 'status-resolved';
+                        $statusIcon = 'bx-check-circle';
+                        $statusLabel = 'Resolved';
+                    } elseif (in_array($status, ['dismissed'], true)) {
+                        $statusClass = 'status-dismissed';
+                        $statusIcon = 'bx-x-circle';
+                        $statusLabel = 'Dismissed';
+                    } elseif (in_array($status, ['approved'], true)) {
+                        $statusClass = 'status-approved';
+                        $statusIcon = 'bx-check-circle';
+                        $statusLabel = 'Approved';
+                    } elseif (in_array($status, ['reviewed'], true)) {
+                        $statusClass = 'status-reviewed';
+                        $statusIcon = 'bx-check-circle';
+                        $statusLabel = 'Reviewed';
+                    } elseif (in_array($status, ['declined', 'rejected', 'inactive'], true)) {
+                        $statusClass = 'status-pending';
+                        $statusIcon = 'bx-x-circle';
+                        $statusLabel = ucfirst($status);
+                    } else {
+                        $statusClass = 'status-review';
+                        $statusIcon = 'bx-question-mark';
+                        $statusLabel = ucfirst(str_replace('_', ' ', $status));
+                    }
                 }
 
                 $submissions[] = [
-                    'ticket_id' => (int)$row['ticket_id'],
-                    'ticket_no' => (string)$row['ticket_no'],
+                    'record_id' => (int)$row['record_id'],
                     'type' => $type,
                     'type_badge_class' => $type === 'complaint' ? 'badge-type-complaint' : 'badge-type-suggestion',
                     'type_label' => $type === 'complaint' ? 'Complaint' : 'Suggestion',
@@ -253,6 +268,12 @@ tr:hover td {
 .status-dismissed { color: #6b7280; font-weight: 600; display: flex; align-items: center; gap: 5px; }
 .status-approved { color: #0f766e; font-weight: 600; display: flex; align-items: center; gap: 5px; }
 .status-reviewed { color: #047857; font-weight: 600; display: flex; align-items: center; gap: 5px; }
+.status-needs-info { color: #92400e; font-weight: 600; display: flex; align-items: center; gap: 5px; }
+.status-accepted { color: #1d4ed8; font-weight: 600; display: flex; align-items: center; gap: 5px; }
+.status-planned { color: #3730a3; font-weight: 600; display: flex; align-items: center; gap: 5px; }
+.status-progress { color: #5b21b6; font-weight: 600; display: flex; align-items: center; gap: 5px; }
+.status-implemented { color: #065f46; font-weight: 600; display: flex; align-items: center; gap: 5px; }
+.status-declined { color: #b91c1c; font-weight: 600; display: flex; align-items: center; gap: 5px; }
 .status-closed { color: #6b7280; font-weight: 600; display: flex; align-items: center; gap: 5px; }
 
 /* Action Button */
@@ -288,6 +309,11 @@ tr:hover td {
     font-size: 13px;
 }
 
+.scroll-top-btn { position: fixed; right: 24px; bottom: 24px; width: 44px; height: 44px; border-radius: 999px; background: #6b46c1; color: #fff; border: none; display: none; align-items: center; justify-content: center; cursor: pointer; box-shadow: 0 10px 24px rgba(107, 70, 193, 0.35); z-index: 500; transition: background .15s ease, transform .15s ease, opacity .2s ease; opacity: 0; transform: translateY(8px); }
+.scroll-top-btn.visible { display: flex; opacity: 1; transform: translateY(0); }
+.scroll-top-btn:hover { background: #5b3aa8; }
+.scroll-top-btn i { font-size: 22px; }
+
 </style>
 </head>
 
@@ -301,13 +327,14 @@ tr:hover td {
 
     <h2 class="page-title">My Tracking List</h2>
 
-    <?php if ($isPastSchoolYear): ?>
+    <?php if ($isPastSchoolYear || $isPastSemester): ?>
         <div class="sy-readonly-banner">
             <i class='bx bx-lock-alt'></i>
             <span>
-                You're viewing School Year <strong><?php echo e($schoolYearSelected); ?></strong> (read-only).
-                Filing new complaints and suggestions is only available for the current school year
-                (<strong><?php echo e($schoolYearCurrent); ?></strong>).
+                You're viewing School Year <strong><?php echo e($schoolYearSelected); ?></strong>,
+                <strong><?php echo e(semester_display_label($semesterSelected)); ?></strong> (read-only).
+                Filing new complaints and suggestions is only available for the current school year and semester
+                (<strong><?php echo e($schoolYearCurrent); ?></strong>, <strong><?php echo e(semester_display_label($semesterCurrent)); ?></strong>).
             </span>
         </div>
     <?php endif; ?>
@@ -330,7 +357,7 @@ tr:hover td {
                     </tr>
                 <?php elseif (count($submissions) === 0): ?>
                     <tr>
-                        <td colspan="5">No submissions yet.</td>
+                        <td colspan="5">No submission data for this semester.</td>
                     </tr>
                 <?php else: ?>
                     <?php foreach ($submissions as $item): ?>
@@ -342,7 +369,7 @@ tr:hover td {
                             </td>
                             <td><span class="date-text"><?php echo e($item['date_text']); ?></span></td>
                             <td><span class="<?php echo e($item['status_class']); ?>"><?php echo e($item['status_label']); ?></span></td>
-                            <td><a class="btn-view" href="ticket_detail.php?type=<?php echo e($item['type']); ?>&id=<?php echo e((string)$item['ticket_id']); ?>">View <i class='bx bx-right-arrow-alt'></i></a></td>
+                            <td><a class="btn-view" href="ticket_detail.php?type=<?php echo e($item['type']); ?>&id=<?php echo e((string)$item['record_id']); ?>">View <i class='bx bx-right-arrow-alt'></i></a></td>
                         </tr>
                     <?php endforeach; ?>
                 <?php endif; ?>
@@ -351,6 +378,28 @@ tr:hover td {
     </div>
 
 </div>
+
+<button type="button" id="scrollTopBtn" class="scroll-top-btn" aria-label="Scroll to top" title="Back to top">
+    <i class='bx bx-up-arrow-alt'></i>
+</button>
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    var scrollTopBtn = document.getElementById('scrollTopBtn');
+    if (!scrollTopBtn) return;
+    var toggleScrollTopBtn = function () {
+        if (window.scrollY > 300) {
+            scrollTopBtn.classList.add('visible');
+        } else {
+            scrollTopBtn.classList.remove('visible');
+        }
+    };
+    window.addEventListener('scroll', toggleScrollTopBtn, { passive: true });
+    toggleScrollTopBtn();
+    scrollTopBtn.addEventListener('click', function () {
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+    });
+});
+</script>
 
 </body>
 </html>

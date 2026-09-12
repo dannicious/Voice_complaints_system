@@ -364,8 +364,8 @@ try {
     // to a ticket from a past school year, even if it's still "open".
     if ($role === 'student') {
         $ticketSy = (string)($row['school_year'] ?? '');
-        $ticketSy = sy_is_valid_label($ticketSy) ? $ticketSy : sy_current();
-        if ($ticketSy !== sy_current()) {
+        $ticketSy = sy_is_valid_label($ticketSy) ? $ticketSy : sy_current($pdo);
+        if ($ticketSy !== sy_current($pdo)) {
             http_response_code(403);
             header('Content-Type: application/json');
             echo json_encode(['status' => 'error', 'message' => 'This ticket is from a past school year (' . $ticketSy . ') and is read-only.']);
@@ -392,12 +392,24 @@ try {
 
 try {
     save_ticket_feedback_reply($pdo, $ticketType, $ticketId, $studentId, $feedbackHistoryId, $actorProfileId, $role, $message);
+
+    // Let the other side know a reply came in - the student when a
+    // dean/admin replies, or the handling dean/admin/staff when the
+    // student replies.
+    $actorName = get_actor_display_name($pdo, $role, $actorProfileId);
+    $notifType = $ticketType === 'complaint' ? 'complaint_update' : 'suggestion_update';
+    if ($role === 'student') {
+        notify_ticket_handlers($pdo, $ticketType, $ticketId, $notifType, $actorName . ' replied regarding their ' . $ticketType . '.');
+    } else {
+        notify_ticket_owner($pdo, $ticketType, $ticketId, $studentId, $notifType, $actorName . ' replied to your ' . $ticketType . '.');
+    }
+
     header('Content-Type: application/json');
     echo json_encode([
         'status' => 'ok',
         'reply' => [
             'replier_role' => $role,
-            'replier_name' => get_actor_display_name($pdo, $role, $actorProfileId),
+            'replier_name' => $actorName,
             'message' => $message,
             'created_at' => date('M d, Y h:i A'),
         ],

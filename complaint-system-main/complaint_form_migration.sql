@@ -22,7 +22,7 @@ DROP TABLE complaints;
 -- =====================================================
 CREATE TABLE `complaints` (
   `id` int(11) NOT NULL,
-  `ticket_no` varchar(20) NOT NULL UNIQUE,
+  `ticket_no` varchar(20) DEFAULT NULL UNIQUE,
   
   -- Complainant (Person Filing)
   `student_id` int(11) DEFAULT NULL,

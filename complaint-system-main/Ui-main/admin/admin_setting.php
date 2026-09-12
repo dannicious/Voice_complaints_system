@@ -4,6 +4,7 @@ require_once __DIR__ . '/../db_connection.php';
 require_once __DIR__ . '/../ticket_flow.php';
 require_once __DIR__ . '/../student_bulk_upload.php';
 require_once __DIR__ . '/../faculty_helpers.php';
+require_once __DIR__ . '/../school_year_helpers.php';
 
 if (!isset($_SESSION['csrf_token'])) {
     $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
@@ -56,7 +57,7 @@ function log_admin_activity(PDO $pdo, int $userId, string $action, ?string $targ
 }
 
 $activeTab = (string)($_GET['tab'] ?? 'faq');
-$allowedTabs = ['faq', 'bulk_upload', 'profile', 'logs'];
+$allowedTabs = ['faq', 'types', 'bulk_upload', 'school_year', 'profile', 'logs'];
 if (!in_array($activeTab, $allowedTabs, true)) {
     $activeTab = 'faq';
 }
@@ -160,131 +161,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
 
             redirect_settings('bulk_upload', $result['ok'] ? 'success' : 'error', $result['message']);
-        }
-
-        if ($action === 'update_chatbot_identity') {
-            $botName = trim((string)($_POST['bot_name'] ?? ''));
-            $welcomeMessage = trim((string)($_POST['welcome_message'] ?? ''));
-
-            if ($botName === '' || $welcomeMessage === '') {
-                redirect_settings('chatbot', 'error', 'Bot name and welcome message are required.');
-            }
-
-            $rowStmt = $pdo->query('SELECT id FROM chatbot_settings ORDER BY id ASC LIMIT 1');
-            $row = $rowStmt->fetch();
-
-            if ($row) {
-                $stmt = $pdo->prepare(
-                    'UPDATE chatbot_settings
-                     SET bot_name = :bot_name, welcome_message = :welcome_message
-                     WHERE id = :id'
-                );
-                $stmt->execute([
-                    ':bot_name' => $botName,
-                    ':welcome_message' => $welcomeMessage,
-                    ':id' => (int)$row['id'],
-                ]);
-            } else {
-                $stmt = $pdo->prepare(
-                    'INSERT INTO chatbot_settings (bot_name, welcome_message, fallback_message, is_active)
-                     VALUES (:bot_name, :welcome_message, :fallback_message, :is_active)'
-                );
-                $stmt->execute([
-                    ':bot_name' => $botName,
-                    ':welcome_message' => $welcomeMessage,
-                    ':fallback_message' => "I'm not sure about that. Please file a formal complaint.",
-                    ':is_active' => 1,
-                ]);
-            }
-
-            if ($adminUserId > 0) {
-                log_admin_activity($pdo, $adminUserId, 'Updated chatbot identity settings', 'chatbot_settings', 1);
-            }
-
-            redirect_settings('chatbot', 'success', 'Chatbot identity updated successfully.');
-        }
-
-        if ($action === 'update_chatbot_runtime') {
-            $fallbackMessage = trim((string)($_POST['fallback_message'] ?? ''));
-            $isActive = (string)($_POST['chatbot_status'] ?? '1') === '1' ? 1 : 0;
-
-            if ($fallbackMessage === '') {
-                redirect_settings('chatbot', 'error', 'Default fallback response is required.');
-            }
-
-            $rowStmt = $pdo->query('SELECT id, bot_name, welcome_message FROM chatbot_settings ORDER BY id ASC LIMIT 1');
-            $row = $rowStmt->fetch();
-
-            if ($row) {
-                $stmt = $pdo->prepare(
-                    'UPDATE chatbot_settings
-                     SET fallback_message = :fallback_message, is_active = :is_active
-                     WHERE id = :id'
-                );
-                $stmt->execute([
-                    ':fallback_message' => $fallbackMessage,
-                    ':is_active' => $isActive,
-                    ':id' => (int)$row['id'],
-                ]);
-            } else {
-                $stmt = $pdo->prepare(
-                    'INSERT INTO chatbot_settings (bot_name, welcome_message, fallback_message, is_active)
-                     VALUES (:bot_name, :welcome_message, :fallback_message, :is_active)'
-                );
-                $stmt->execute([
-                    ':bot_name' => 'VOICE Assistant',
-                    ':welcome_message' => "Hi! I'm the VOICE Assistant. How can I help you today?",
-                    ':fallback_message' => $fallbackMessage,
-                    ':is_active' => $isActive,
-                ]);
-            }
-
-            if ($adminUserId > 0) {
-                log_admin_activity($pdo, $adminUserId, 'Updated chatbot runtime settings', 'chatbot_settings', 1);
-            }
-
-            redirect_settings('chatbot', 'success', 'Chatbot runtime settings saved.');
-        }
-
-        if ($action === 'add_trigger') {
-            $keywords = trim((string)($_POST['keywords'] ?? ''));
-            $response = trim((string)($_POST['response'] ?? ''));
-
-            if ($keywords === '' || $response === '') {
-                redirect_settings('chatbot', 'error', 'Keywords and response are required.');
-            }
-
-            $stmt = $pdo->prepare(
-                'INSERT INTO chatbot_triggers (keywords, response, is_active)
-                 VALUES (:keywords, :response, :is_active)'
-            );
-            $stmt->execute([
-                ':keywords' => $keywords,
-                ':response' => $response,
-                ':is_active' => 1,
-            ]);
-
-            if ($adminUserId > 0) {
-                log_admin_activity($pdo, $adminUserId, 'Added chatbot trigger', 'chatbot_triggers', (int)$pdo->lastInsertId());
-            }
-
-            redirect_settings('chatbot', 'success', 'New chatbot trigger added.');
-        }
-
-        if ($action === 'delete_trigger') {
-            $triggerId = (int)($_POST['trigger_id'] ?? 0);
-            if ($triggerId <= 0) {
-                redirect_settings('chatbot', 'error', 'Invalid trigger selected.');
-            }
-
-            $stmt = $pdo->prepare('DELETE FROM chatbot_triggers WHERE id = :id');
-            $stmt->execute([':id' => $triggerId]);
-
-            if ($adminUserId > 0) {
-                log_admin_activity($pdo, $adminUserId, 'Deleted chatbot trigger', 'chatbot_triggers', $triggerId);
-            }
-
-            redirect_settings('chatbot', 'success', 'Trigger removed successfully.');
         }
 
         if ($action === 'update_profile') {
@@ -426,6 +302,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             redirect_settings('profile', 'success', 'Password updated successfully.');
         }
 
+        if ($action === 'set_school_year_override') {
+            $overrideValue = trim((string)($_POST['school_year_override'] ?? ''));
+
+            if (!sy_is_valid_label($overrideValue)) {
+                redirect_settings('school_year', 'error', 'Enter a school year like 2026-2027.');
+            }
+
+            sy_set_override($pdo, $overrideValue);
+            log_admin_activity($pdo, $adminUserId, 'Set school year override to ' . $overrideValue, 'system_settings');
+            redirect_settings('school_year', 'success', 'The app now treats ' . $overrideValue . ' as the current school year.');
+        }
+
+        if ($action === 'clear_school_year_override') {
+            sy_clear_override($pdo);
+            log_admin_activity($pdo, $adminUserId, 'Cleared school year override', 'system_settings');
+            redirect_settings('school_year', 'success', 'Override removed - the school year is calculated automatically again.');
+        }
+
         redirect_settings($activeTab, 'error', 'Unknown action requested.');
     } catch (PDOException $e) {
         if ($pdo->inTransaction()) {
@@ -435,13 +329,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
-$chatbot = [
-    'bot_name' => 'VOICE Assistant',
-    'welcome_message' => "Hi! I'm the VOICE Assistant. How can I help you today?",
-    'fallback_message' => "I'm not sure about that. Please file a formal complaint.",
-    'is_active' => 1,
-];
-$triggers = [];
 $profile = [
     'name' => 'Super Admin',
     'email' => 'admin@voice-system.edu',
@@ -450,18 +337,6 @@ $profile = [
 $logs = [];
 
 try {
-    $chatbotStmt = $pdo->query('SELECT * FROM chatbot_settings ORDER BY id ASC LIMIT 1');
-    $chatbotRow = $chatbotStmt->fetch();
-    if ($chatbotRow) {
-        $chatbot['bot_name'] = (string)$chatbotRow['bot_name'];
-        $chatbot['welcome_message'] = (string)$chatbotRow['welcome_message'];
-        $chatbot['fallback_message'] = (string)$chatbotRow['fallback_message'];
-        $chatbot['is_active'] = (int)$chatbotRow['is_active'];
-    }
-
-    $triggerStmt = $pdo->query('SELECT id, keywords, response FROM chatbot_triggers ORDER BY id DESC');
-    $triggers = $triggerStmt->fetchAll();
-
     if ($adminUserId > 0) {
         $profileStmt = $pdo->prepare(
             'SELECT u.email, u.profile_pic, COALESCE(ap.name, u.username) AS display_name
@@ -497,7 +372,7 @@ try {
     }
 }
 
-$profileImage = trim($profile['profile_pic']) !== '' ? '../' . ltrim($profile['profile_pic'], '/') : 'https://i.pravatar.cc/150?img=12';
+$profileImage = trim($profile['profile_pic']) !== '' ? '../' . ltrim($profile['profile_pic'], '/') : '../assets/images/default-avatar.svg';
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -899,7 +774,9 @@ $profileImage = trim($profile['profile_pic']) !== '' ? '../' . ltrim($profile['p
         <div class="nav-header">
             <div class="nav-tabs">
                 <button class="tab-btn <?php echo $activeTab === 'faq' ? 'active' : ''; ?>" onclick="switchTab(event, 'faq')">FAQ Management</button>
+                <button class="tab-btn <?php echo $activeTab === 'types' ? 'active' : ''; ?>" onclick="switchTab(event, 'types')">Types</button>
                 <button class="tab-btn <?php echo $activeTab === 'bulk_upload' ? 'active' : ''; ?>" onclick="switchTab(event, 'bulk_upload')">Bulk Upload</button>
+                <button class="tab-btn <?php echo $activeTab === 'school_year' ? 'active' : ''; ?>" onclick="switchTab(event, 'school_year')">School Year</button>
                 <button class="tab-btn <?php echo $activeTab === 'profile' ? 'active' : ''; ?>" onclick="switchTab(event, 'profile')">My Profile</button>
                 <button class="tab-btn <?php echo $activeTab === 'logs' ? 'active' : ''; ?>" onclick="switchTab(event, 'logs')">Activity Logs</button>
             </div>
@@ -916,123 +793,8 @@ $profileImage = trim($profile['profile_pic']) !== '' ? '../' . ltrim($profile['p
                 <iframe src="admin_faq.php?embedded=1" title="FAQ Management" style="display:block;width:100%;height:calc(100vh - 150px);min-height:720px;border:0;border-radius:10px;background:#f8fafc;"></iframe>
             </div>
 
-            <div id="chatbot" class="tab-panel <?php echo $activeTab === 'chatbot' ? 'active' : ''; ?>">
-                <div class="section-header">
-                    <h1>VOICE Assistant Intelligence</h1>
-                    <p>Configure how the automated assistant handles student inquiries.</p>
-                </div>
-                <div class="card-grid">
-                    <div class="form-card">
-                        <form method="POST">
-                            <input type="hidden" name="csrf_token" value="<?php echo e($_SESSION['csrf_token']); ?>">
-                            <input type="hidden" name="action" value="update_chatbot_identity">
-                            <div class="form-group">
-                                <label><i class='bx bx-bot'></i> VOICE Assistant Display Name</label>
-                                <input type="text" class="input-field" name="bot_name" value="<?php echo e($chatbot['bot_name']); ?>" required>
-                            </div>
-                            <div class="form-group">
-                                <label><i class='bx bx-message-rounded-dots'></i> Welcome Message</label>
-                                <textarea class="input-field" name="welcome_message" rows="3" required><?php echo e($chatbot['welcome_message']); ?></textarea>
-                            </div>
-                            <button class="btn-primary" type="submit">Update Profile</button>
-                        </form>
-                    </div>
-                    <div class="form-card">
-                        <form method="POST">
-                            <input type="hidden" name="csrf_token" value="<?php echo e($_SESSION['csrf_token']); ?>">
-                            <input type="hidden" name="action" value="update_chatbot_runtime">
-                            <div class="form-group">
-                                <label><i class='bx bx-error'></i> Default Response (No Match)</label>
-                                <textarea class="input-field" name="fallback_message" rows="3" required><?php echo e($chatbot['fallback_message']); ?></textarea>
-                            </div>
-                            <div class="form-group">
-                                <label><i class='bx bx-power-off'></i> Operational Status</label>
-                                <select class="input-field" name="chatbot_status">
-                                    <option value="1" <?php echo (int)$chatbot['is_active'] === 1 ? 'selected' : ''; ?>>Active / Online</option>
-                                    <option value="0" <?php echo (int)$chatbot['is_active'] === 0 ? 'selected' : ''; ?>>Offline / Maintenance</option>
-                                </select>
-                            </div>
-                            <button class="btn-primary" type="submit">Save Settings</button>
-                        </form>
-                    </div>
-                </div>
-
-                <div class="table-container">
-                    <table>
-                        <thead>
-                            <tr>
-                                <th width="350">Keywords</th>
-                                <th>Automated Response</th>
-                                <th width="100">Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <?php if (count($triggers) === 0): ?>
-                                <tr>
-                                    <td colspan="3">No VOICE Assistant triggers yet.</td>
-                                </tr>
-                            <?php else: ?>
-                                <?php foreach ($triggers as $trigger): ?>
-                                    <tr>
-                                        <td>
-                                            <?php
-                                                $chips = preg_split('/\s*,\s*/', (string)$trigger['keywords']);
-                                                foreach ($chips as $chip):
-                                                    $chip = trim($chip);
-                                                    if ($chip === '') {
-                                                        continue;
-                                                    }
-                                            ?>
-                                                <span class="keyword-chip"><?php echo e($chip); ?></span>
-                                            <?php endforeach; ?>
-                                        </td>
-                                        <td><?php echo e((string)$trigger['response']); ?></td>
-                                        <td>
-                                            <form method="POST" class="inline-form" onsubmit="return confirm('Are you sure you want to delete this trigger?');">
-                                                <input type="hidden" name="csrf_token" value="<?php echo e($_SESSION['csrf_token']); ?>">
-                                                <input type="hidden" name="action" value="delete_trigger">
-                                                <input type="hidden" name="trigger_id" value="<?php echo (int)$trigger['id']; ?>">
-                                                <button class="btn-delete" type="submit" title="Delete"><i class='bx bx-trash'></i></button>
-                                            </form>
-                                        </td>
-                                    </tr>
-                                <?php endforeach; ?>
-                            <?php endif; ?>
-                        </tbody>
-                    </table>
-                    <div style="padding: 20px; text-align: right; background: var(--card-bg); border-top: 1px solid var(--border);">
-                        <button class="btn-primary" style="background: var(--success);" onclick="openTriggerModal()" type="button">
-                            <i class='bx bx-plus-circle'></i> Add New Trigger
-                        </button>
-                    </div>
-                </div>
-
-                <div class="modal-overlay" id="triggerModal" onclick="if (event.target.id === 'triggerModal') closeTriggerModal();">
-                    <div class="modal-card">
-                        <div class="modal-header">
-                            <h3 class="modal-title">Add New Trigger</h3>
-                            <button type="button" class="modal-close" onclick="closeTriggerModal()">&times;</button>
-                        </div>
-                        <form method="POST">
-                            <input type="hidden" name="csrf_token" value="<?php echo e($_SESSION['csrf_token']); ?>">
-                            <input type="hidden" name="action" value="add_trigger">
-                            <div class="form-group">
-                                <label><i class='bx bx-purchase-tag'></i> Keywords (comma separated)</label>
-                                <input type="text" class="input-field" name="keywords" id="modalKeywords" placeholder="e.g. tuition, fees, payment" required>
-                            </div>
-                            <div class="form-group">
-                                <label><i class='bx bx-message-rounded-detail'></i> Automated Response</label>
-                                <textarea class="input-field" name="response" id="modalResponse" rows="4" placeholder="Type the response users will receive" required></textarea>
-                            </div>
-                            <div class="modal-actions">
-                                <button type="button" class="btn-secondary" onclick="closeTriggerModal()">Cancel</button>
-                                <button type="submit" class="btn-primary" style="background: var(--success);">
-                                    <i class='bx bx-save'></i> Save Trigger
-                                </button>
-                            </div>
-                        </form>
-                    </div>
-                </div>
+            <div id="types" class="tab-panel <?php echo $activeTab === 'types' ? 'active' : ''; ?>">
+                <iframe src="admin_types.php?embedded=1" title="Complaint and Suggestion Types" style="display:block;width:100%;height:calc(100vh - 150px);min-height:720px;border:0;border-radius:10px;background:#f8fafc;"></iframe>
             </div>
 
             <div id="bulk_upload" class="tab-panel <?php echo $activeTab === 'bulk_upload' ? 'active' : ''; ?>">
@@ -1143,6 +905,55 @@ $profileImage = trim($profile['profile_pic']) !== '' ? '../' . ltrim($profile['p
                                 </table>
                             </div>
                         </div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="school_year" class="tab-panel <?php echo $activeTab === 'school_year' ? 'active' : ''; ?>">
+                <?php
+                    $sySettingAutomatic = sy_label_for_date(date('Y-m-d'));
+                    $sySettingOverride = sy_get_override($pdo);
+                    $sySettingEffective = $sySettingOverride !== '' ? $sySettingOverride : $sySettingAutomatic;
+                ?>
+                <div class="section-header">
+                    <h1>School Year</h1>
+                    <p>The school year used everywhere in VOICE (new submissions, the student switcher, reports) is calculated automatically from today's date - August 1 through July 31 counts as one school year. Only set an override below if the actual academic calendar needs to differ from that for some reason (e.g. a delayed start).</p>
+                </div>
+                <div class="card-grid">
+                    <div class="form-card">
+                        <h2 style="font-size: 16px; margin-bottom: 6px; display: flex; align-items: center; gap: 8px;">
+                            <i class='bx bx-calendar-check' style="color: var(--primary); font-size: 20px;"></i> Currently in effect
+                        </h2>
+                        <p style="font-size: 28px; font-weight: 700; color: #111827; margin: 10px 0 4px;"><?php echo e($sySettingEffective); ?></p>
+                        <p style="font-size: 13px; color: #6b7280; margin-bottom: 0;">
+                            <?php if ($sySettingOverride !== ''): ?>
+                                Set manually by an admin. Without this override, today's date would calculate to <strong><?php echo e($sySettingAutomatic); ?></strong>.
+                            <?php else: ?>
+                                Calculated automatically from today's date. No override is set.
+                            <?php endif; ?>
+                        </p>
+                    </div>
+
+                    <div class="form-card">
+                        <h2 style="font-size: 16px; margin-bottom: 20px; display: flex; align-items: center; gap: 8px;">
+                            <i class='bx bx-slider-alt' style="color: var(--primary); font-size: 20px;"></i> Override
+                        </h2>
+                        <form method="POST">
+                            <input type="hidden" name="csrf_token" value="<?php echo e($_SESSION['csrf_token']); ?>">
+                            <input type="hidden" name="action" value="set_school_year_override">
+                            <div class="form-group">
+                                <label>Treat this as the current school year</label>
+                                <input type="text" name="school_year_override" class="input-field" inputmode="numeric" maxlength="9" placeholder="e.g. 2026-2027" value="<?php echo e($sySettingOverride); ?>" oninput="formatSchoolYearInput(this, false, event)">
+                            </div>
+                            <button class="btn-primary" type="submit"><i class='bx bx-save'></i> Save Override</button>
+                        </form>
+                        <?php if ($sySettingOverride !== ''): ?>
+                            <form method="POST" style="margin-top: 10px;">
+                                <input type="hidden" name="csrf_token" value="<?php echo e($_SESSION['csrf_token']); ?>">
+                                <input type="hidden" name="action" value="clear_school_year_override">
+                                <button class="btn-primary" style="background: #e2e8f0; color: #475569;" type="submit"><i class='bx bx-x'></i> Clear Override (use automatic)</button>
+                            </form>
+                        <?php endif; ?>
                     </div>
                 </div>
             </div>
@@ -1271,17 +1082,6 @@ $profileImage = trim($profile['profile_pic']) !== '' ? '../' . ltrim($profile['p
             window.history.replaceState({}, '', 'admin_setting.php?tab=' + encodeURIComponent(tabId));
         }
 
-        function openTriggerModal() {
-            document.getElementById('modalKeywords').value = '';
-            document.getElementById('modalResponse').value = '';
-            document.getElementById('triggerModal').style.display = 'flex';
-            document.getElementById('modalKeywords').focus();
-        }
-
-        function closeTriggerModal() {
-            document.getElementById('triggerModal').style.display = 'none';
-        }
-
         function previewImage(input) {
             if (input.files && input.files[0]) {
                 const preview = document.getElementById('edit-profile-preview');
@@ -1330,6 +1130,7 @@ $profileImage = trim($profile['profile_pic']) !== '' ? '../' . ltrim($profile['p
             toggleButton.setAttribute('aria-label', isPassword ? 'Hide password' : 'Show password');
         }
     </script>
+    <?php echo sy_smart_input_script(); ?>
 
 </body>
 </html>

@@ -85,12 +85,14 @@ function ensure_faculty_tables(PDO $pdo): void
 /**
  * Records a Call Slip issued to a faculty/staff member.
  *
- * Mirrors issue_call_slip() for students, minus the in-app notification -
- * faculty have no account to notify, so the emailed slip is the only delivery.
+ * The faculty member themselves has no student account, so the emailed slip
+ * is their only delivery - but the student who filed the complaint still
+ * gets an in-app notification that it led to a call slip, same as the
+ * student-vs-student case in issue_call_slip().
  *
  * @return array{ok: bool, message: string}
  */
-function issue_faculty_call_slip(PDO $pdo, int $ticketId, int $facultyId, string $issuedByRole, int $issuedByUserId): array
+function issue_faculty_call_slip(PDO $pdo, int $ticketId, int $facultyId, string $issuedByRole, int $issuedByUserId, string $issuedByName = '', string $categoryName = ''): array
 {
     try {
         ensure_faculty_tables($pdo);
@@ -113,6 +115,37 @@ function issue_faculty_call_slip(PDO $pdo, int $ticketId, int $facultyId, string
             ':issued_by_user_id' => $issuedByUserId > 0 ? $issuedByUserId : null,
             ':status' => 'issued',
         ]);
+
+        $complainantStmt = $pdo->prepare('SELECT student_id FROM complaints WHERE id = :id LIMIT 1');
+        $complainantStmt->execute([':id' => $ticketId]);
+        $complainantStudentId = (int)($complainantStmt->fetchColumn() ?: 0);
+
+        if ($complainantStudentId > 0) {
+            $complainantUserStmt = $pdo->prepare('SELECT user_id FROM student_profiles WHERE id = :id LIMIT 1');
+            $complainantUserStmt->execute([':id' => $complainantStudentId]);
+            $complainantUserId = (int)($complainantUserStmt->fetchColumn() ?: 0);
+
+            if ($complainantUserId > 0) {
+                $issuedByName = trim($issuedByName);
+                $categoryName = trim($categoryName);
+                $categorySuffix = $categoryName !== '' ? ' about ' . $categoryName : '';
+                $complainantMessage = $issuedByName !== ''
+                    ? $issuedByName . ' issued a call slip for your complaint' . $categorySuffix . '.'
+                    : 'A call slip has been issued for your complaint.';
+
+                $notifyStmt = $pdo->prepare(
+                    'INSERT INTO notifications (user_id, type, message, ticket_type, ticket_id, is_read)
+                     VALUES (:user_id, :type, :message, :ticket_type, :ticket_id, 0)'
+                );
+                $notifyStmt->execute([
+                    ':user_id' => $complainantUserId,
+                    ':type' => 'call_slip_issued',
+                    ':message' => $complainantMessage,
+                    ':ticket_type' => 'complaint',
+                    ':ticket_id' => $ticketId,
+                ]);
+            }
+        }
 
         return ['ok' => true, 'message' => 'Call Slip issued successfully.'];
     } catch (Throwable $e) {

@@ -30,7 +30,7 @@ SET time_zone = "+00:00";
 CREATE TABLE `activity_logs` (
   `id` int(11) NOT NULL,
   `user_id` int(11) DEFAULT NULL,
-  `role` enum('admin','dean') NOT NULL,
+  `role` enum('admin','dean','staff') NOT NULL,
   `action` varchar(255) NOT NULL,
   `target_type` varchar(50) DEFAULT NULL,
   `target_id` int(11) DEFAULT NULL,
@@ -221,7 +221,7 @@ INSERT INTO `colleges` (`id`, `code`, `name`, `status`, `created_at`) VALUES
 
 CREATE TABLE `complaints` (
   `id` int(11) NOT NULL,
-  `ticket_no` varchar(20) NOT NULL,
+  `ticket_no` varchar(20) DEFAULT NULL,
   `student_id` int(11) DEFAULT NULL,
   `complainant_name` varchar(100) NOT NULL,
   `complainant_address` text NOT NULL,
@@ -250,6 +250,7 @@ CREATE TABLE `complaints` (
   `admin_reviewed_at` timestamp NULL DEFAULT NULL,
   `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
   `school_year` varchar(9) DEFAULT NULL,
+  `semester` enum('1','2') DEFAULT NULL,
   `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
   `is_escalated` tinyint(1) DEFAULT 0,
   `visibility_status` varchar(50) DEFAULT 'private' COMMENT 'private, public'
@@ -370,6 +371,25 @@ INSERT INTO `dean_profiles` (`id`, `user_id`, `first_name`, `last_name`, `colleg
 (6, 11, 'Dan', 'Montes', 1, NULL, NULL, 'active', 'assets/images/profiles/dean_11_1777953464_e7701331.png', '2026-05-05 03:31:27'),
 (7, 12, 'Justine', 'Jaum', 2, NULL, NULL, 'active', NULL, '2026-05-05 03:31:58'),
 (8, 13, 'Grace', 'Erediano', 3, NULL, NULL, 'active', NULL, '2026-05-05 03:33:17');
+
+-- --------------------------------------------------------
+
+--
+-- Table structure for table `staff_profiles`
+--
+
+CREATE TABLE `staff_profiles` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `user_id` int(11) NOT NULL,
+  `office` varchar(100) NOT NULL,
+  `name` varchar(150) DEFAULT NULL,
+  `phone` varchar(30) DEFAULT NULL,
+  `status` enum('active','inactive') NOT NULL DEFAULT 'active',
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_staff_profiles_user` (`user_id`),
+  KEY `idx_staff_profiles_office` (`office`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 -- --------------------------------------------------------
 
@@ -541,10 +561,11 @@ INSERT INTO `student_profiles` (`id`, `user_id`, `student_number`, `first_name`,
 
 CREATE TABLE `suggestions` (
   `id` int(11) NOT NULL,
-  `ticket_no` varchar(20) NOT NULL,
+  `ticket_no` varchar(20) DEFAULT NULL,
   `student_id` int(11) DEFAULT NULL,
   `college_id` int(11) DEFAULT NULL,
   `category_id` int(11) DEFAULT NULL,
+  `office` varchar(100) DEFAULT NULL,
   `date_of_suggestion` date DEFAULT NULL,
   `subject` varchar(255) NOT NULL,
   `description` text NOT NULL,
@@ -561,6 +582,7 @@ CREATE TABLE `suggestions` (
   `admin_reviewed_at` timestamp NULL DEFAULT NULL,
   `visibility_status` varchar(50) DEFAULT 'private' COMMENT 'private, public'
   ,`school_year` varchar(9) DEFAULT NULL
+  ,`semester` enum('1','2') DEFAULT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 -- --------------------------------------------------------
@@ -574,6 +596,7 @@ CREATE TABLE `suggestion_categories` (
   `name` varchar(100) NOT NULL,
   `route` enum('general','college') DEFAULT NULL,
   `category_type` enum('general','college') DEFAULT NULL,
+  `office` varchar(100) DEFAULT NULL,
   `is_active` tinyint(1) DEFAULT 1
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
@@ -596,7 +619,7 @@ CREATE TABLE `ticket_feedback` (
   `ticket_type` enum('complaint','suggestion') NOT NULL,
   `ticket_id` int(11) NOT NULL,
   `student_id` int(11) NOT NULL,
-  `satisfaction` enum('satisfied','neutral','not_satisfied') NOT NULL,
+  `satisfaction` enum('very_satisfied','satisfied','neutral','not_satisfied','very_unsatisfied') NOT NULL,
   `rating_value` int(11) DEFAULT NULL,
   `comment` text DEFAULT NULL,
   `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
@@ -623,7 +646,7 @@ CREATE TABLE `ticket_feedback_history` (
   `ticket_type` enum('complaint','suggestion') NOT NULL,
   `ticket_id` int(11) NOT NULL,
   `student_id` int(11) NOT NULL,
-  `satisfaction` enum('satisfied','neutral','not_satisfied') NOT NULL,
+  `satisfaction` enum('very_satisfied','satisfied','neutral','not_satisfied','very_unsatisfied') NOT NULL,
   `comment` text DEFAULT NULL,
   `archived_at` timestamp NOT NULL DEFAULT current_timestamp()
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
@@ -671,7 +694,7 @@ CREATE TABLE `ticket_replies` (
   `ticket_type` enum('complaint','suggestion') NOT NULL,
   `ticket_id` int(11) NOT NULL,
   `sender_id` int(11) NOT NULL,
-  `sender_role` enum('student','dean','admin') NOT NULL,
+  `sender_role` enum('student','dean','admin','staff') NOT NULL,
   `message` text NOT NULL,
   `is_read` tinyint(1) DEFAULT 0,
   `created_at` timestamp NOT NULL DEFAULT current_timestamp()
@@ -697,7 +720,7 @@ CREATE TABLE `users` (
   `username` varchar(50) NOT NULL,
   `email` varchar(100) NOT NULL,
   `password` varchar(255) NOT NULL,
-  `role` enum('admin','dean','student') NOT NULL,
+  `role` enum('admin','dean','student','staff') NOT NULL,
   `profile_pic` varchar(255) DEFAULT NULL,
   `is_active` tinyint(1) DEFAULT 1,
   `created_at` timestamp NOT NULL DEFAULT current_timestamp(),

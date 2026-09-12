@@ -28,6 +28,62 @@ function topbar_time_ago(string $dateTime): string
     return date('M d, Y', $ts);
 }
 
+/**
+ * The photo + initial of the student who filed the complaint/suggestion a
+ * "new_complaint"/"new_suggestion" notification is about, so the dropdown
+ * can show their avatar on the left instead of a generic icon.
+ *
+ * @return array{photo: ?string, initial: string}
+ */
+function topbar_submitter_avatar(PDO $pdo, string $ticketType, int $ticketId): array
+{
+    $fallback = ['photo' => null, 'initial' => '?'];
+
+    if ($ticketId <= 0 || !in_array($ticketType, ['complaint', 'suggestion'], true)) {
+        return $fallback;
+    }
+
+    $table = $ticketType === 'complaint' ? 'complaints' : 'suggestions';
+
+    try {
+        $stmt = $pdo->prepare(
+            "SELECT sp.first_name, sp.last_name, u.profile_pic
+             FROM {$table} t
+             INNER JOIN student_profiles sp ON sp.id = t.student_id
+             LEFT JOIN users u ON u.id = sp.user_id
+             WHERE t.id = :id
+             LIMIT 1"
+        );
+        $stmt->execute([':id' => $ticketId]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        if (!$row) {
+            return $fallback;
+        }
+
+        $name = trim((string)($row['first_name'] ?? '') . ' ' . (string)($row['last_name'] ?? ''));
+        $initial = $name !== '' ? strtoupper(substr($name, 0, 1)) : '?';
+
+        $photo = trim((string)($row['profile_pic'] ?? ''));
+        $photoSrc = null;
+        if ($photo !== '' && is_file(__DIR__ . '/../' . ltrim($photo, '/'))) {
+            $photoSrc = '../' . ltrim($photo, '/');
+        }
+
+        return ['photo' => $photoSrc, 'initial' => $initial];
+    } catch (PDOException $e) {
+        return $fallback;
+    }
+}
+
+// "New" is purely age-based: a notification counts as New for 24 hours
+// after it's created, then moves to "Earlier" regardless of read state.
+function topbar_is_new_notification(array $notification): bool
+{
+    $ts = strtotime((string)($notification['created_at'] ?? ''));
+    return $ts !== false && $ts >= (time() - 86400);
+}
+
 function topbar_icon_for_type(string $type): string
 {
     if ($type === 'new_complaint') {
@@ -46,10 +102,50 @@ function topbar_icon_for_type(string $type): string
     return 'bx-bell';
 }
 
-function topbar_link_for_type(string $type): string
+// Renders one notification row. Pulled into a function so it can be called
+// once per "New" (unread) item and once per "Earlier" (read) item without
+// duplicating the markup.
+function topbar_render_notification_item(PDO $pdo, array $notification): void
 {
+    $notifType = (string)$notification['type'];
+    $notifAvatar = ['photo' => null, 'initial' => '?'];
+    // "new_complaint"/"new_suggestion" are about a student filing a ticket;
+    // "complaint_update"/"suggestion_update" arriving here are always about
+    // a student action too (they replied, or submitted a rating) - so both
+    // groups show the student's avatar on the left instead of a generic icon.
+    if (in_array($notifType, ['new_complaint', 'new_suggestion', 'complaint_update', 'suggestion_update'], true)) {
+        $notifAvatar = topbar_submitter_avatar($pdo, (string)($notification['ticket_type'] ?? ''), (int)($notification['ticket_id'] ?? 0));
+    }
+    $isUnread = (int)$notification['is_read'] === 0;
+    ?>
+    <a href="<?php echo htmlspecialchars(topbar_link_for_type($notifType, (int)($notification['ticket_id'] ?? 0)), ENT_QUOTES, 'UTF-8'); ?>" class="notification-item <?php echo $isUnread ? 'unread' : ''; ?>" data-notification-id="<?php echo (int)$notification['id']; ?>">
+        <div class="notif-icon">
+            <?php if ($notifAvatar['photo'] !== null): ?>
+                <img src="<?php echo htmlspecialchars($notifAvatar['photo'], ENT_QUOTES, 'UTF-8'); ?>" alt="">
+            <?php elseif (in_array($notifType, ['new_complaint', 'new_suggestion', 'complaint_update', 'suggestion_update'], true)): ?>
+                <span><?php echo htmlspecialchars($notifAvatar['initial'], ENT_QUOTES, 'UTF-8'); ?></span>
+            <?php else: ?>
+                <i class='bx <?php echo topbar_icon_for_type($notifType); ?>'></i>
+            <?php endif; ?>
+        </div>
+        <div class="notif-content">
+            <div class="notif-text"><?php echo htmlspecialchars((string)$notification['message'], ENT_QUOTES, 'UTF-8'); ?></div>
+            <div class="notif-time"><?php echo topbar_time_ago((string)$notification['created_at']); ?></div>
+        </div>
+    </a>
+    <?php
+}
+
+function topbar_link_for_type(string $type, int $ticketId = 0): string
+{
+    if (($type === 'new_complaint' || $type === 'complaint_update') && $ticketId > 0) {
+        return 'admin_complaints_details.php?id=' . $ticketId;
+    }
     if ($type === 'new_complaint' || $type === 'complaint_update') {
         return 'admin_complaints.php';
+    }
+    if (($type === 'new_suggestion' || $type === 'suggestion_update') && $ticketId > 0) {
+        return 'admin_suggestion_detail.php?id=' . $ticketId;
     }
     if ($type === 'new_suggestion' || $type === 'suggestion_update') {
         return 'admin_suggestions.php';
@@ -64,7 +160,9 @@ function topbar_link_for_type(string $type): string
 $topbarNotifications = [];
 $topbarUnreadCount = 0;
 $topbarDisplayName = (string)($_SESSION['full_name'] ?? $_SESSION['username'] ?? 'Admin');
-$topbarProfilePic = 'https://i.pravatar.cc/100';
+// Local placeholder instead of an external service - only overwritten
+// below if the admin actually has a photo on file.
+$topbarProfilePic = '../assets/images/default-avatar.svg';
 
 if (isset($_SESSION['user_id'])) {
     try {
@@ -91,7 +189,7 @@ if (isset($_SESSION['user_id'])) {
         }
 
         $stmt = $pdo->prepare(
-            'SELECT id, type, message, is_read, created_at
+            'SELECT id, type, message, ticket_type, ticket_id, is_read, created_at
              FROM notifications
              WHERE user_id = :user_id
              ORDER BY created_at DESC
@@ -277,14 +375,73 @@ if (isset($_SESSION['user_id'])) {
     color: #1c1e21; /* Facebook dark text */
 }
 
-.notif-header a {
+.notif-menu-btn {
+    border: none;
+    background: transparent;
+    color: #65676b;
+    font-size: 20px;
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    flex-shrink: 0;
+}
+
+.notif-menu-btn:hover {
+    background: #f2f2f2;
+}
+
+.notif-tabs {
+    display: flex;
+    gap: 8px;
+    padding: 10px 16px;
+    border-bottom: 1px solid #eef0f5;
+}
+
+.notif-tab {
+    border: none;
+    background: transparent;
+    padding: 6px 14px;
+    border-radius: 20px;
+    font-size: 14px;
+    font-weight: 600;
+    color: #65676b;
+    cursor: pointer;
+}
+
+.notif-tab.active {
+    background: #ede9fe;
+    color: #6d28d9;
+}
+
+.notif-tab:hover:not(.active) {
+    background: #f2f2f2;
+}
+
+.notif-section-label {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 16px 6px;
+}
+
+.notif-section-label span {
+    font-size: 15px;
+    font-weight: 700;
+    color: #1c1e21;
+}
+
+.notif-section-label a {
     font-size: 13px;
     color: #6d28d9;
     text-decoration: none;
     font-weight: 500;
 }
 
-.notif-header a:hover {
+.notif-section-label a:hover {
     text-decoration: underline;
 }
 
@@ -330,8 +487,17 @@ if (isset($_SESSION['user_id'])) {
     transform: translateY(-50%);
     width: 10px;
     height: 10px;
-    background-color: #ffc107;
+    background-color: #6d28d9;
     border-radius: 50%;
+}
+
+.notification-item.unread .notif-time {
+    color: #6d28d9;
+    font-weight: 600;
+}
+
+.notif-section + .notif-section {
+    border-top: 1px solid #eef0f5;
 }
 
 /* Icon / Avatar */
@@ -356,6 +522,19 @@ if (isset($_SESSION['user_id'])) {
     object-fit: cover;
 }
 
+.notif-icon span {
+    width: 100%;
+    height: 100%;
+    border-radius: 50%;
+    background: #6d28d9;
+    color: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 15px;
+    font-weight: 700;
+}
+
 /* Text Content */
 .notif-content {
     display: flex;
@@ -378,24 +557,6 @@ if (isset($_SESSION['user_id'])) {
     font-size: 12px;
     color: #65676b;
     font-weight: 500;
-}
-
-/* Card Footer */
-.notif-footer {
-    text-align: center;
-    padding: 12px;
-    border-top: 1px solid #eef0f5;
-}
-
-.notif-footer a {
-    color: #6d28d9;
-    font-size: 14px;
-    font-weight: 600;
-    text-decoration: none;
-}
-
-.notif-footer a:hover {
-    text-decoration: underline;
 }
 
 /* ===== RESPONSIVE ===== */
@@ -455,7 +616,11 @@ if (isset($_SESSION['user_id'])) {
                 
                 <div class="notif-header">
                     <h3>Notifications</h3>
-                    <a href="#" id="markAllRead">Mark all as read</a>
+                    <button type="button" class="notif-menu-btn" aria-label="Notification options" title="Notification options"><i class='bx bx-dots-horizontal-rounded'></i></button>
+                </div>
+                <div class="notif-tabs">
+                    <button type="button" class="notif-tab active" data-filter="all">All</button>
+                    <button type="button" class="notif-tab" data-filter="unread">Unread</button>
                 </div>
 
                 <div class="notif-body">
@@ -468,22 +633,29 @@ if (isset($_SESSION['user_id'])) {
                             </div>
                         </div>
                     <?php else: ?>
-                        <?php foreach ($topbarNotifications as $notification): ?>
-                            <a href="<?php echo htmlspecialchars(topbar_link_for_type((string)$notification['type']), ENT_QUOTES, 'UTF-8'); ?>" class="notification-item <?php echo (int)$notification['is_read'] === 0 ? 'unread' : ''; ?>" data-notification-id="<?php echo (int)$notification['id']; ?>">
-                                <div class="notif-icon">
-                                    <i class='bx <?php echo topbar_icon_for_type((string)$notification['type']); ?>'></i>
+                        <?php
+                            $topbarNewList = array_filter($topbarNotifications, 'topbar_is_new_notification');
+                            $topbarEarlierList = array_filter($topbarNotifications, function ($n) { return !topbar_is_new_notification($n); });
+                        ?>
+                        <?php if ($topbarNewList): ?>
+                            <div class="notif-section notif-section-new">
+                                <div class="notif-section-label">
+                                    <span>New</span>
+                                    <a href="admin_notifications.php">See all</a>
                                 </div>
-                                <div class="notif-content">
-                                    <div class="notif-text"><?php echo htmlspecialchars((string)$notification['message'], ENT_QUOTES, 'UTF-8'); ?></div>
-                                    <div class="notif-time"><?php echo topbar_time_ago((string)$notification['created_at']); ?></div>
+                                <?php foreach ($topbarNewList as $notification): topbar_render_notification_item($pdo, $notification); endforeach; ?>
+                            </div>
+                        <?php endif; ?>
+                        <?php if ($topbarEarlierList): ?>
+                            <div class="notif-section notif-section-earlier">
+                                <div class="notif-section-label">
+                                    <span>Earlier</span>
+                                    <?php if (!$topbarNewList): ?><a href="admin_notifications.php">See all</a><?php endif; ?>
                                 </div>
-                            </a>
-                        <?php endforeach; ?>
+                                <?php foreach ($topbarEarlierList as $notification): topbar_render_notification_item($pdo, $notification); endforeach; ?>
+                            </div>
+                        <?php endif; ?>
                     <?php endif; ?>
-                </div>
-
-                <div class="notif-footer">
-                    <a href="admin_complaints.php">See all notifications</a>
                 </div>
 
             </div>
@@ -509,10 +681,6 @@ document.getElementById('bellIcon').addEventListener('click', function(e) {
     // Toggle notification
     notifDropdown.style.display = notifDropdown.style.display === 'block' ? 'none' : 'block';
     e.stopPropagation(); // Stop click from immediately bubbling up to window
-
-    if (notifDropdown.style.display === 'block') {
-        markAllNotificationsRead();
-    }
 });
 
 const adminNotificationDropdown = document.getElementById('notificationDropdown');
@@ -571,31 +739,53 @@ function logout() {
     window.location.href = "../../admin/log_out.php";
 }
 
-function markAllNotificationsRead() {
-    const unreadItems = document.querySelectorAll('.notification-item.unread');
-    if (unreadItems.length === 0) return;
+function markNotificationRead(id) {
+    const body = 'scope=single&notification_id=' + encodeURIComponent(id);
+    if (navigator.sendBeacon) {
+        navigator.sendBeacon('../mark_notifications_read.php', new Blob([body], { type: 'application/x-www-form-urlencoded;charset=UTF-8' }));
+    } else {
+        fetch('../mark_notifications_read.php', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+            body: body,
+            keepalive: true
+        }).catch(() => {});
+    }
+}
 
-    fetch('../mark_notifications_read.php', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
-        body: 'scope=all'
-    }).then(() => {
-        unreadItems.forEach(item => item.classList.remove('unread'));
+document.querySelectorAll('.notification-item[data-notification-id]').forEach(function (item) {
+    item.addEventListener('click', function () {
+        if (!item.classList.contains('unread')) return;
+        markNotificationRead(item.dataset.notificationId);
+        item.classList.remove('unread');
         const badge = document.getElementById('notificationBadge');
         if (badge) {
-            badge.style.display = 'none';
-            badge.textContent = '0';
+            const next = Math.max(0, parseInt(badge.textContent || '0', 10) - 1);
+            badge.textContent = String(next);
+            if (next === 0) badge.style.display = 'none';
         }
-    }).catch(() => {});
-}
-
-const markAllLink = document.getElementById('markAllRead');
-if (markAllLink) {
-    markAllLink.addEventListener('click', function(e) {
-        e.preventDefault();
-        markAllNotificationsRead();
     });
-}
+});
+
+document.querySelectorAll('.notif-tab').forEach(function (tab) {
+    tab.addEventListener('click', function () {
+        document.querySelectorAll('.notif-tab').forEach(function (t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        const filter = tab.dataset.filter;
+        // "New" vs "Earlier" is purely age-based, so either section can hold
+        // a mix of read/unread items. Filter items individually, then hide
+        // whichever section (if any) is left with nothing visible.
+        document.querySelectorAll('.notif-section').forEach(function (section) {
+            let anyVisible = false;
+            section.querySelectorAll('.notification-item').forEach(function (item) {
+                const show = filter === 'all' || item.classList.contains('unread');
+                item.style.display = show ? '' : 'none';
+                if (show) anyVisible = true;
+            });
+            section.style.display = anyVisible ? '' : 'none';
+        });
+    });
+});
 
 document.querySelectorAll('.sidebar .menu a').forEach(link => {
     link.addEventListener('click', closeSidebar);

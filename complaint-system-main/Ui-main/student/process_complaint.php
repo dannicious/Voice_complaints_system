@@ -7,6 +7,7 @@ require_once __DIR__ . '/../db_connection.php';
 require_once __DIR__ . '/../ticket_flow.php';
 require_once __DIR__ . '/../faculty_helpers.php';
 require_once __DIR__ . '/../school_year_helpers.php';
+require_once __DIR__ . '/../complaint_ai_helpers.php';
 
 function back_with_message(string $type, string $msg): void
 {
@@ -16,41 +17,6 @@ function back_with_message(string $type, string $msg): void
     ]);
     header('Location: student_complaints.php?' . $q);
     exit;
-}
-
-function create_ticket_no(PDO $pdo, string $table, string $prefix): string
-{
-    for ($i = 0; $i < 10; $i++) {
-        $ticket = sprintf('%s-%s-%04d', $prefix, date('Y'), random_int(1, 9999));
-        $stmt = $pdo->prepare("SELECT id FROM {$table} WHERE ticket_no = :ticket LIMIT 1");
-        $stmt->execute([':ticket' => $ticket]);
-        if (!$stmt->fetch()) {
-            return $ticket;
-        }
-    }
-
-    throw new RuntimeException('Unable to generate unique ticket number.');
-}
-
-function resolve_category_id(PDO $pdo, string $table, string $submittedValue, array $aliases): ?int
-{
-    $value = strtolower(trim($submittedValue));
-    if ($value === '') {
-        return null;
-    }
-
-    $candidates = $aliases[$value] ?? [$submittedValue, str_replace('_', ' ', $submittedValue)];
-
-    $stmt = $pdo->prepare("SELECT id FROM {$table} WHERE LOWER(name) = LOWER(:name) AND is_active = 1 LIMIT 1");
-    foreach ($candidates as $name) {
-        $stmt->execute([':name' => $name]);
-        $row = $stmt->fetch();
-        if ($row) {
-            return (int)$row['id'];
-        }
-    }
-
-    return null;
 }
 
 function handle_upload(array $file, string $targetFolder): ?string
@@ -193,12 +159,17 @@ if (!$student) {
     back_with_message('error', 'Student profile not found.');
 }
 
-// Defense in depth: filing is only allowed for the current school year, even
-// if this is posted directly while a past school year is selected.
-$schoolYearCurrent = sy_current();
+// Defense in depth: filing is only allowed for the current school year and
+// semester, even if this is posted directly while a past period is selected.
+$schoolYearCurrent = sy_current($pdo);
 $schoolYearSelected = sy_get_selected($pdo, (int)$student['id']);
 if ($schoolYearSelected !== $schoolYearCurrent) {
     back_with_message('error', 'Switch to the current school year (' . $schoolYearCurrent . ') to file a new complaint.');
+}
+$semesterCurrent = semester_current();
+$semesterSelected = semester_get_selected();
+if ($semesterSelected !== $semesterCurrent) {
+    back_with_message('error', 'Switch to the current semester (' . semester_display_label($semesterCurrent) . ') to file a new complaint.');
 }
 
 // Complainant Information
@@ -246,28 +217,80 @@ $desiredOutcome = trim((string)($draft['desired_outcome'] ?? ''));
 // Agreement
 $termsAccepted = !empty($draft['terms_agreement_accepted']) ? 1 : 0;
 
-// Other
-$categoryInput = trim((string)($draft['category'] ?? ''));
-$normalizedCategory = strtolower($categoryInput);
-
-// Validate required fields
-if ($complainantName === '' || $complainantAddress === '' || $complainantSex === '' || 
-    $complainantCivilStatus === '' || $complainantContactDetails === '' || 
-    $personComplainedOf === '' || $dateOfIncident === '' || $placeOfIncident === '' || 
-    $actComplainedOf === '' || $desiredOutcome === '' || 
-    $categoryInput === '' || $termsAccepted === 0) {
+// Validate required fields. Category is no longer part of this - it's no
+// longer a form field at all, the AI classifier assigns it below.
+if ($complainantName === '' || $complainantAddress === '' || $complainantSex === '' ||
+    $complainantCivilStatus === '' || $complainantContactDetails === '' ||
+    $personComplainedOf === '' || $dateOfIncident === '' || $placeOfIncident === '' ||
+    $actComplainedOf === '' || $desiredOutcome === '' ||
+    $termsAccepted === 0) {
     back_with_message('error', 'Please complete all required fields.');
 }
 
-function resolve_direct_category_route(PDO $pdo, string $categoryInput, ?int $studentCollegeId): array
-{
-    $normalized = strtolower(trim($categoryInput));
+// AI triage: the category is no longer picked by the student - the
+// classifier assigns it from the written text (Groq first, handling
+// English/Tagalog/Bisaya/mixed text with no training data needed; falls
+// back to the local classifier if Groq isn't available). This is done
+// before the try block (and before the file upload is finalized below) so
+// a spam-blocked submission never leaves an orphaned uploaded file.
+ai_ensure_ai_tables($pdo);
+$aiCombinedText = trim($actComplainedOf . ' ' . $desiredOutcome);
+if (array_key_exists('ai_category_id', $draft)) {
+    // Reuse the result already computed on the review/preview page for this
+    // exact same text, instead of calling the AI a second time.
+    $aiClassification = [
+        'category_id' => $draft['ai_category_id'],
+        'category_name' => $draft['ai_category_name'] ?? null,
+        'confidence' => (float)($draft['ai_confidence'] ?? 0.0),
+        'language' => $draft['ai_language'] ?? null,
+        'source' => $draft['ai_source'] ?? 'local',
+        'is_spam' => !empty($draft['ai_is_spam']),
+    ];
+    $aiUrgencyResult = ['score' => (int)($draft['ai_urgency_score'] ?? 0), 'level' => $draft['ai_urgency_level'] ?? 'low'];
+} else {
+    $aiClassification = $aiCombinedText !== '' ? ai_classify_text_smart($pdo, $aiCombinedText) : ['category_id' => null, 'category_name' => null, 'confidence' => 0.0, 'language' => null, 'source' => null, 'is_spam' => false];
+    $aiUrgencyResult = $aiCombinedText !== '' ? ai_urgency_score($aiCombinedText) : ['score' => 0, 'level' => 'low'];
+}
 
-    if ($normalized === 'dean') {
-        $collegeId = $studentCollegeId !== null && $studentCollegeId > 0 ? (int)$studentCollegeId : null;
+// Only Groq can judge spam/nonsense (the local fallback always reports
+// is_spam=false, so an outage never blocks a genuine submission). This is
+// the same check already shown to the student on the preview page - this
+// is the server-side enforcement of it, in case that page was bypassed.
+if (!empty($aiClassification['is_spam'])) {
+    back_with_message('error', "This doesn't read like a genuine complaint. Please go back and describe an actual incident, or contact the SAS Office directly if you believe this is a mistake.");
+}
+
+$categoryId = $aiClassification['category_id'] !== null ? (int)$aiClassification['category_id'] : null;
+
+// Student complaints are routed to the dean of the student who filed them.
+// Complaints about faculty/staff continue to go to the SAS Director.
+ensure_faculty_tables($pdo);
+
+$reportedType = (string)($draft['reported_type'] ?? 'student');
+if (!in_array($reportedType, ['student', 'faculty'], true)) {
+    $reportedType = 'student';
+}
+$reportedFacultyIds = array_values(array_filter(array_map('intval', (array)($draft['reported_faculty_ids'] ?? []))));
+
+$routingCollegeId = $student['college_id'] !== null ? (int)$student['college_id'] : null;
+
+try {
+    $attachment = finalize_preview_upload($draft, 'complaints');
+
+    // Routing depends only on who is being reported: a complaint against
+    // faculty/staff always goes to the SAS Director (Admin); a complaint
+    // against a fellow student always goes to that student's own college
+    // dean. This is independent of the AI-assigned category.
+    if ($reportedType === 'faculty') {
+        $recipientRole = 'admin';
         $recipientUserId = 0;
+        $collegeId = null;
+    } else {
+        $recipientRole = 'dean';
+        $recipientUserId = 0;
+        $collegeId = $routingCollegeId;
 
-        if ($collegeId !== null) {
+        if ($routingCollegeId !== null && $routingCollegeId > 0) {
             try {
                 $deanStmt = $pdo->prepare(
                     'SELECT u.id
@@ -279,7 +302,7 @@ function resolve_direct_category_route(PDO $pdo, string $categoryInput, ?int $st
                 $deanStmt->execute([
                     ':role' => 'dean',
                     ':status' => 'active',
-                    ':college_id' => $collegeId,
+                    ':college_id' => $routingCollegeId,
                 ]);
                 $dean = $deanStmt->fetch(PDO::FETCH_ASSOC);
                 if ($dean) {
@@ -288,90 +311,7 @@ function resolve_direct_category_route(PDO $pdo, string $categoryInput, ?int $st
             } catch (PDOException $e) {
             }
         }
-
-        return [
-            'role' => 'dean',
-            'user_id' => $recipientUserId,
-            'college_id' => $collegeId,
-        ];
     }
-
-    return [
-        'role' => 'admin',
-        'user_id' => 0,
-        'college_id' => null,
-    ];
-}
-
-// Who is being reported decides where the complaint goes, so the student
-// filing it never picks an office: a reported student goes to the dean of
-// that student's college, a reported faculty/staff member goes to the SAS
-// Director.
-ensure_faculty_tables($pdo);
-
-$reportedType = (string)($draft['reported_type'] ?? 'student');
-if (!in_array($reportedType, ['student', 'faculty'], true)) {
-    $reportedType = 'student';
-}
-$reportedFacultyIds = array_values(array_filter(array_map('intval', (array)($draft['reported_faculty_ids'] ?? []))));
-
-// A complaint that routes to a dean should go to the dean with jurisdiction
-// over the REPORTED student (who the dean would actually call in) — not the
-// complainant's own dean. Fall back to the complainant's college only when no
-// reported student profile is on record (e.g. the reported party isn't a
-// registered student), preserving the previous behavior for that case.
-$reportedStudentCollegeId = null;
-if (!empty($reportedStudentIds)) {
-    try {
-        $reportedCollegeStmt = $pdo->prepare('SELECT college_id FROM student_profiles WHERE id = :id LIMIT 1');
-        $reportedCollegeStmt->execute([':id' => $reportedStudentIds[0]]);
-        $reportedCollegeIdValue = $reportedCollegeStmt->fetchColumn();
-        if ($reportedCollegeIdValue !== false && $reportedCollegeIdValue !== null) {
-            $reportedStudentCollegeId = (int)$reportedCollegeIdValue;
-        }
-    } catch (PDOException $e) {
-        $reportedStudentCollegeId = null;
-    }
-}
-$routingCollegeId = $reportedStudentCollegeId
-    ?? ($student['college_id'] !== null ? (int)$student['college_id'] : null);
-
-try {
-    $attachment = finalize_preview_upload($draft, 'complaints');
-    $categoryId = null;
-    $recipientRole = 'admin';
-    $recipientUserId = 0;
-    $collegeId = null;
-
-    if ($reportedType === 'faculty') {
-        // Complaints about faculty/staff are handled by the SAS Director.
-        $recipientRole = 'admin';
-        $recipientUserId = 0;
-        $collegeId = null;
-    } elseif (in_array($normalizedCategory, ['dean', 'admin'], true)) {
-        $route = resolve_direct_category_route($pdo, $categoryInput, $routingCollegeId);
-        $recipientRole = (string)$route['role'];
-        $recipientUserId = isset($route['user_id']) ? (int)$route['user_id'] : 0;
-        $collegeId = isset($route['college_id']) ? (int)$route['college_id'] : null;
-    } else {
-        $categoryAliases = [
-            'facilities' => ['Facilities & Maintenance', 'Facilities', 'Campus Facilities'],
-            'academic' => ['Academic Concern', 'Academic Concerns', 'Academics'],
-            'safety' => ['Safety & Security', 'Security & Safety', 'Safety'],
-            'admin' => ['Administrative / Registrar', 'Administrative', 'Registrar'],
-            'other' => ['Other'],
-        ];
-        $categoryId = resolve_category_id($pdo, 'complaint_categories', $categoryInput, $categoryAliases);
-        if ($categoryId === null) {
-            back_with_message('error', 'Selected complaint category is invalid. Please review the form again.');
-        }
-        $route = resolve_ticket_route($pdo, 'complaint', $categoryId, $routingCollegeId);
-        $recipientRole = (string)$route['role'];
-        $recipientUserId = isset($route['user_id']) ? (int)$route['user_id'] : 0;
-        $collegeId = $recipientRole === 'admin' ? null : $routingCollegeId;
-    }
-
-    $ticketNo = create_ticket_no($pdo, 'complaints', 'VOX-C');
 
     $insertStmt = $pdo->prepare(
         'INSERT INTO complaints (
@@ -397,7 +337,14 @@ try {
             status,
             approval_status,
             visibility_status,
+            ai_suggested_category_id,
+            ai_suggestion_confidence,
+            urgency_score,
+            urgency_level,
+            ai_detected_language,
+            ai_classification_source,
             school_year,
+            semester,
             created_at
         ) VALUES (
             :ticket_no,
@@ -422,13 +369,20 @@ try {
             :status,
             :approval_status,
             :visibility_status,
+            :ai_suggested_category_id,
+            :ai_suggestion_confidence,
+            :urgency_score,
+            :urgency_level,
+            :ai_detected_language,
+            :ai_classification_source,
             :school_year,
+            :semester,
             NOW()
         )'
     );
 
     $insertStmt->execute([
-        ':ticket_no' => $ticketNo,
+        ':ticket_no' => generate_ticket_no($pdo, 'complaints', 'VOX-C'),
         ':student_id' => (int)$student['id'],
         ':college_id' => $collegeId,
         ':category_id' => $categoryId,
@@ -450,7 +404,14 @@ try {
         ':status' => 'new',
         ':approval_status' => 'approved',
         ':visibility_status' => 'private',
+        ':ai_suggested_category_id' => $aiClassification['category_id'],
+        ':ai_suggestion_confidence' => $aiClassification['confidence'],
+        ':urgency_score' => $aiUrgencyResult['score'],
+        ':urgency_level' => $aiUrgencyResult['level'],
+        ':ai_detected_language' => $aiClassification['language'] ?? null,
+        ':ai_classification_source' => $aiClassification['source'] ?? null,
         ':school_year' => $schoolYearCurrent,
+        ':semester' => $semesterCurrent,
     ]);
 
     $complaintId = (int)$pdo->lastInsertId();
@@ -488,7 +449,7 @@ try {
             $insertNotif->execute([
                 ':user_id' => (int)$target['id'],
                 ':type' => 'new_complaint',
-                ':message' => 'New general complaint submitted: ' . $ticketNo,
+                ':message' => $complainantName . ' submitted a new complaint.',
                 ':ticket_type' => 'complaint',
                 ':ticket_id' => $complaintId,
                 ':is_read' => 0,
@@ -502,7 +463,7 @@ try {
         $insertNotif->execute([
             ':user_id' => $recipientUserId,
             ':type' => 'new_complaint',
-            ':message' => 'New college complaint submitted: ' . $ticketNo,
+            ':message' => $complainantName . ' submitted a new complaint.',
             ':ticket_type' => 'complaint',
             ':ticket_id' => $complaintId,
             ':is_read' => 0,
@@ -510,7 +471,7 @@ try {
     }
 
     clear_preview_draft('complaint');
-    back_with_message('success', 'Complaint submitted successfully and routed to ' . $recipientLabel . '. Ticket: ' . $ticketNo);
+    back_with_message('success', 'Complaint submitted successfully and routed to ' . $recipientLabel . '.');
 } catch (RuntimeException $e) {
     back_with_message('error', $e->getMessage());
 } catch (PDOException $e) {

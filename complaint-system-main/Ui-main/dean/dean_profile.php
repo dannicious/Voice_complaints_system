@@ -225,7 +225,8 @@ if ($profilePhoto !== '' && (stripos($profilePhoto, 'http://') === 0 || stripos(
 } elseif ($profilePhoto !== '') {
     $profileImageSrc = '../' . ltrim($profilePhoto, '/');
 } else {
-    $profileImageSrc = '';
+    // No photo on file - show the local placeholder instead of a blank box.
+    $profileImageSrc = '../assets/images/default-avatar.svg';
 }
 
 $flashType = trim((string)($_GET['status'] ?? ''));

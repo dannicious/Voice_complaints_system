@@ -3,6 +3,8 @@ session_start();
 require_once __DIR__ . '/../db_connection.php';
 require_once __DIR__ . '/../ticket_flow.php';
 require_once __DIR__ . '/../complaint_age_helpers.php';
+require_once __DIR__ . '/../complaint_ai_helpers.php';
+ai_ensure_ai_tables($pdo);
 
 function require_admin_session(PDO $pdo): void
 {
@@ -41,6 +43,10 @@ if (!isset($_SESSION['csrf_token'])) {
     $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
 }
 
+// Opportunistic SLA check - notifies the handling dean/admin once a
+// complaint has sat untouched for 24+ hours. Best-effort, runs on page load.
+check_and_send_complaint_overdue_notifications($pdo);
+
 function e(string $value): string
 {
     return htmlspecialchars($value, ENT_QUOTES, 'UTF-8');
@@ -71,7 +77,7 @@ function normalize_complaint_category_type(?string $value): string
     return in_array($normalized, ['general', 'college'], true) ? $normalized : 'general';
 }
 
-function fetch_complaints_by_category_type(PDO $pdo, string $categoryType, string $q, string $dateFrom, string $dateTo, int $college, int $department, string $status): array
+function fetch_complaints_by_category_type(PDO $pdo, string $categoryType, string $q, string $dateFrom, string $dateTo, int $college, int $department, string $status, string $sortBy = 'date'): array
 {
     $sql = <<<'SQL'
 SELECT
@@ -82,6 +88,9 @@ SELECT
     c.narrative_report,
     c.attachments,
     c.status,
+    c.urgency_level,
+    c.urgency_score,
+    c.ai_detected_language,
     c.is_anonymous,
     c.admin_notes,
     c.admin_reviewed_at,
@@ -159,7 +168,9 @@ $params = [];
         $params[':status'] = $status;
     }
 
-    $sql .= ' ORDER BY c.created_at DESC';
+    $sql .= $sortBy === 'urgency'
+        ? ' ORDER BY c.urgency_score DESC, c.created_at DESC'
+        : ' ORDER BY c.created_at DESC';
 
     $stmt = $pdo->prepare($sql);
     $stmt->execute($params);
@@ -246,7 +257,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             $notifStmt->execute([
                                 ':user_id' => $studentUserId,
                                 ':type' => 'complaint_update',
-                                ':message' => 'Your complaint ' . (string)$row['ticket_no'] . ' has a new response. Current status: ' . strtoupper(str_replace('_', ' ', $status)) . '.',
+                                ':message' => 'Your complaint has a new response. Current status: ' . strtoupper(str_replace('_', ' ', $status)) . '.',
                                 ':ticket_type' => 'complaint',
                                 ':ticket_id' => $complaintId,
                                 ':is_read' => 0,
@@ -266,7 +277,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $notifStmt->execute([
                             ':user_id' => $studentUserId,
                             ':type' => 'complaint_update',
-                            ':message' => 'Your complaint ' . (string)$row['ticket_no'] . ' has a new response. Current status: ' . strtoupper(str_replace('_', ' ', $status)) . '.',
+                            ':message' => 'Your complaint has a new response. Current status: ' . strtoupper(str_replace('_', ' ', $status)) . '.',
                             ':ticket_type' => 'complaint',
                             ':ticket_id' => $complaintId,
                             ':is_read' => 0,
@@ -333,6 +344,7 @@ if ($college <= 0) {
     $department = 0;
 }
 $status = trim((string)($_GET['status'] ?? ''));
+$sortBy = (string)($_GET['sort'] ?? '') === 'urgency' ? 'urgency' : 'date';
 $activeTab = strtolower(trim((string)($_GET['tab'] ?? 'manageable')));
 if (!in_array($activeTab, ['manageable', 'view_only'], true)) {
     $activeTab = 'manageable';
@@ -355,8 +367,8 @@ try {
         }
     }
 
-    $manageableComplaints = fetch_complaints_by_category_type($pdo, 'general', $q, $dateFrom, $dateTo, $college, $department, $status);
-    $viewOnlyComplaints = fetch_complaints_by_category_type($pdo, 'college', $q, $dateFrom, $dateTo, $college, $department, $status);
+    $manageableComplaints = fetch_complaints_by_category_type($pdo, 'general', $q, $dateFrom, $dateTo, $college, $department, $status, $sortBy);
+    $viewOnlyComplaints = fetch_complaints_by_category_type($pdo, 'college', $q, $dateFrom, $dateTo, $college, $department, $status, $sortBy);
 } catch (PDOException $e) {
     if ($flashMessage === '') {
         $flashMessage = 'Unable to load complaints right now.';
@@ -1100,8 +1112,14 @@ tbody tr:hover { background-color: #fcfcfc; }
         gap: 20px;
     }
 }
+.scroll-top-btn { position: fixed; right: 24px; bottom: 24px; width: 44px; height: 44px; border-radius: 999px; background: #6b46c1; color: #fff; border: none; display: none; align-items: center; justify-content: center; cursor: pointer; box-shadow: 0 10px 24px rgba(107, 70, 193, 0.35); z-index: 500; transition: background .15s ease, transform .15s ease, opacity .2s ease; opacity: 0; transform: translateY(8px); }
+.scroll-top-btn.visible { display: flex; opacity: 1; transform: translateY(0); }
+.scroll-top-btn:hover { background: #5b3aa8; }
+.scroll-top-btn i { font-size: 22px; }
 </style>
 <?php echo complaint_age_styles(); ?>
+<?php echo ai_urgency_styles(); ?>
+<?php echo groq_language_styles(); ?>
 </head>
 
 <body>
@@ -1182,6 +1200,13 @@ tbody tr:hover { background-color: #fcfcfc; }
                         <option value="under_review" <?php echo $status === 'under_review' ? 'selected' : ''; ?>>Under Review</option>
                         <option value="resolved" <?php echo $status === 'resolved' ? 'selected' : ''; ?>>Resolved</option>
                         <option value="dismissed" <?php echo $status === 'dismissed' ? 'selected' : ''; ?>>Dismissed</option>
+                    </select>
+                </div>
+                <div class="filter-group">
+                    <label>Sort By</label>
+                    <select name="sort" class="filter-select">
+                        <option value="date" <?php echo $sortBy === 'date' ? 'selected' : ''; ?>>Newest First</option>
+                        <option value="urgency" <?php echo $sortBy === 'urgency' ? 'selected' : ''; ?>>Most Urgent First</option>
                     </select>
                 </div>
                 <a class="btn-reset" href="admin_complaints.php?tab=<?php echo e($activeTab); ?>">Reset</a>
@@ -1271,8 +1296,14 @@ tbody tr:hover { background-color: #fcfcfc; }
                                                 </div>
                                             </td>
                                             <td class="cell-college"><?php echo e((string)$row['college_code']); ?></td>
-                                            <td class="cell-category"><?php echo e((string)$row['category_name']); ?></td>
-                                            <td class="cell-status"><span class="status-badge <?php echo complaint_status_badge((string)$row['status']); ?>"><?php echo e(ucfirst(str_replace('_', ' ', (string)$row['status']))); ?></span><div><?php echo complaint_age_badge((string)$row['created_at'], (string)$row['status']); ?></div></td>
+                                            <td class="cell-category"><?php echo e((string)$row['category_name']); ?><?php echo groq_language_chip($row['ai_detected_language'] ?? null); ?></td>
+                                            <?php
+                                                $rowCreatedAt = (string)$row['created_at'];
+                                                $rowStatus = (string)$row['status'];
+                                                $rowStatusBadgeClass = complaint_new_status_badge_class($rowCreatedAt, $rowStatus) ?? complaint_status_badge($rowStatus);
+                                                $rowStatusLabel = complaint_new_status_label($rowCreatedAt, $rowStatus) ?? ucfirst(str_replace('_', ' ', $rowStatus));
+                                            ?>
+                                            <td class="cell-status"><span class="status-badge <?php echo e($rowStatusBadgeClass); ?>"><?php echo e($rowStatusLabel); ?></span><div><?php echo complaint_age_badge($rowCreatedAt, $rowStatus); ?><?php echo ai_urgency_chip($row['urgency_level'] ?? null); ?></div></td>
                                             <td class="cell-action">
                                                 <button class="btn-manage btn-view" type="button"
                                                     data-id="<?php echo (int)$row['id']; ?>"
@@ -1317,13 +1348,19 @@ tbody tr:hover { background-color: #fcfcfc; }
                                                 ?>
                                             </td>
                                             <td><?php echo e((string)$row['college_code']); ?></td>
-                                            <td><?php echo e((string)$row['category_name']); ?></td>
+                                            <td><?php echo e((string)$row['category_name']); ?><?php echo groq_language_chip($row['ai_detected_language'] ?? null); ?></td>
                                             <td><?php echo e(date('M d, Y', strtotime((string)$row['created_at']))); ?></td>
+                                            <?php
+                                                $rowCreatedAt = (string)$row['created_at'];
+                                                $rowStatus = (string)$row['status'];
+                                                $rowStatusBadgeClass = complaint_new_status_badge_class($rowCreatedAt, $rowStatus) ?? complaint_status_badge($rowStatus);
+                                                $rowStatusLabel = complaint_new_status_label($rowCreatedAt, $rowStatus) ?? ucfirst(str_replace('_', ' ', $rowStatus));
+                                            ?>
                                             <td>
-                                                <span class="status-badge <?php echo complaint_status_badge((string)$row['status']); ?>">
-                                                    <?php echo e(ucfirst(str_replace('_', ' ', (string)$row['status']))); ?>
+                                                <span class="status-badge <?php echo e($rowStatusBadgeClass); ?>">
+                                                    <?php echo e($rowStatusLabel); ?>
                                                 </span>
-                                                <div><?php echo complaint_age_badge((string)$row['created_at'], (string)$row['status']); ?></div>
+                                                <div><?php echo complaint_age_badge($rowCreatedAt, $rowStatus); ?><?php echo ai_urgency_chip($row['urgency_level'] ?? null); ?></div>
                                             </td>
                                             <td>
                                                 <span class="badge-inline badge-dean">
@@ -1435,7 +1472,7 @@ tbody tr:hover { background-color: #fcfcfc; }
             <fieldset style="border: 1px solid #e5e7eb; border-radius: 8px; padding: 15px; margin-bottom: 20px;">
                 <legend style="font-weight: 600; color: #333; padding: 0 10px; font-size: 14px;">Incident Details</legend>
                 <div class="form-group">
-                    <label style="font-size: 12px; color: #666; font-weight: 500;">Ticket Number</label>
+                    <label style="font-size: 12px; color: #666; font-weight: 500;">Complaint ID</label>
                     <p id="viewTicketNo" style="font-size: 14px; margin: 5px 0; padding: 8px 0; font-weight: 600; color: #4F8CFF;">N/A</p>
                 </div>
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
@@ -1882,7 +1919,7 @@ if (complaintFiltersForm) {
         });
     }
 
-    complaintFiltersForm.querySelectorAll('input[name="date_from"], input[name="date_to"], select[name="college"], select[name="department"], select[name="status"]').forEach((filter) => {
+    complaintFiltersForm.querySelectorAll('input[name="date_from"], input[name="date_to"], select[name="college"], select[name="department"], select[name="status"], select[name="sort"]').forEach((filter) => {
         filter.addEventListener('change', () => {
             window.sessionStorage.removeItem(searchFocusKey);
             complaintFiltersForm.submit();
@@ -1926,6 +1963,28 @@ document.querySelectorAll('.btn-icon.btn-view[data-can-manage="1"], .btn-icon.bt
             btn.dataset.feedbackComment || '',
             btn.dataset.feedbackCreatedAt || ''
         );
+    });
+});
+</script>
+
+<button type="button" id="scrollTopBtn" class="scroll-top-btn" aria-label="Scroll to top" title="Back to top">
+    <i class='bx bx-up-arrow-alt'></i>
+</button>
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    var scrollTopBtn = document.getElementById('scrollTopBtn');
+    if (!scrollTopBtn) return;
+    var toggleScrollTopBtn = function () {
+        if (window.scrollY > 300) {
+            scrollTopBtn.classList.add('visible');
+        } else {
+            scrollTopBtn.classList.remove('visible');
+        }
+    };
+    window.addEventListener('scroll', toggleScrollTopBtn, { passive: true });
+    toggleScrollTopBtn();
+    scrollTopBtn.addEventListener('click', function () {
+        window.scrollTo({ top: 0, behavior: 'smooth' });
     });
 });
 </script>

@@ -5,6 +5,7 @@ declare(strict_types=1);
 session_start();
 require_once __DIR__ . '/../db_connection.php';
 require_once __DIR__ . '/../ticket_flow.php';
+require_once __DIR__ . '/../suggestion_flow.php';
 require_once __DIR__ . '/../school_year_helpers.php';
 
 function back_with_message(string $type, string $msg): void
@@ -15,41 +16,6 @@ function back_with_message(string $type, string $msg): void
     ]);
     header('Location: student_complaints.php?mode=suggestion&' . $q);
     exit;
-}
-
-function create_ticket_no(PDO $pdo, string $table, string $prefix): string
-{
-    for ($i = 0; $i < 10; $i++) {
-        $ticket = sprintf('%s-%s-%04d', $prefix, date('Y'), random_int(1, 9999));
-        $stmt = $pdo->prepare("SELECT id FROM {$table} WHERE ticket_no = :ticket LIMIT 1");
-        $stmt->execute([':ticket' => $ticket]);
-        if (!$stmt->fetch()) {
-            return $ticket;
-        }
-    }
-
-    throw new RuntimeException('Unable to generate unique ticket number.');
-}
-
-function resolve_category_id(PDO $pdo, string $table, string $submittedValue, array $aliases): ?int
-{
-    $value = strtolower(trim($submittedValue));
-    if ($value === '') {
-        return null;
-    }
-
-    $candidates = $aliases[$value] ?? [$submittedValue, str_replace('_', ' ', $submittedValue)];
-
-    $stmt = $pdo->prepare("SELECT id FROM {$table} WHERE LOWER(name) = LOWER(:name) AND is_active = 1 LIMIT 1");
-    foreach ($candidates as $name) {
-        $stmt->execute([':name' => $name]);
-        $row = $stmt->fetch();
-        if ($row) {
-            return (int)$row['id'];
-        }
-    }
-
-    return null;
 }
 
 function handle_upload(array $file, string $targetFolder): ?string
@@ -174,19 +140,11 @@ if ($draftToken === '' || !hash_equals(get_preview_token('suggestion'), $draftTo
 
 $subject = trim((string)($draft['subject'] ?? ''));
 $description = trim((string)($draft['description'] ?? ''));
-$categoryInput = trim((string)($draft['category'] ?? ''));
+$officeInput = trim((string)($draft['office'] ?? ''));
 
-if ($subject === '' || $description === '' || $categoryInput === '') {
+if ($subject === '' || $description === '' || $officeInput === '') {
     back_with_message('error', 'Please complete all required fields.');
 }
-
-$categoryAliases = [
-    'campus_life' => ['Campus Life & Events', 'Campus Life Improvements', 'Student Events'],
-    'facilities' => ['Facilities & Infrastructure', 'Facilities', 'Campus Facilities'],
-    'academics' => ['Academics & Curriculum', 'Academic Concerns', 'Academics'],
-    'technology' => ['Technology & Digital Services', 'Mobile App Features', 'Technology'],
-    'other' => ['Other Ideas', 'Other'],
-];
 
 function suggestion_recipient_role(): string
 {
@@ -194,8 +152,11 @@ function suggestion_recipient_role(): string
 }
 
 try {
+    ensure_suggestion_status_enum($pdo);
+    ensure_suggestion_tracking_columns($pdo);
+
     $studentStmt = $pdo->prepare(
-        'SELECT id, college_id
+        'SELECT id, college_id, first_name, last_name
          FROM student_profiles
          WHERE user_id = :user_id
          LIMIT 1'
@@ -207,23 +168,47 @@ try {
         back_with_message('error', 'Student profile not found.');
     }
 
-    // Defense in depth: filing is only allowed for the current school year,
-    // even if this is posted directly while a past school year is selected.
-    $schoolYearCurrent = sy_current();
+    $studentDisplayName = trim((string)($student['first_name'] ?? '') . ' ' . (string)($student['last_name'] ?? ''));
+    if ($studentDisplayName === '') {
+        $studentDisplayName = 'A student';
+    }
+
+    // Defense in depth: filing is only allowed for the current school year
+    // and semester, even if this is posted directly while a past period is selected.
+    $schoolYearCurrent = sy_current($pdo);
     $schoolYearSelected = sy_get_selected($pdo, (int)$student['id']);
     if ($schoolYearSelected !== $schoolYearCurrent) {
         back_with_message('error', 'Switch to the current school year (' . $schoolYearCurrent . ') to send a new suggestion.');
     }
+    $semesterCurrent = semester_current();
+    $semesterSelected = semester_get_selected();
+    if ($semesterSelected !== $semesterCurrent) {
+        back_with_message('error', 'Switch to the current semester (' . semester_display_label($semesterCurrent) . ') to send a new suggestion.');
+    }
 
     $attachment = finalize_preview_upload($draft, 'suggestions');
-    $categoryId = resolve_category_id($pdo, 'suggestion_categories', $categoryInput, $categoryAliases);
-    if ($categoryId === null) {
-        back_with_message('error', 'Selected suggestion category is invalid. Please review the form again.');
+
+    // The student now picks the office directly instead of a category.
+    // Derive a category for reporting/filtering purposes from whichever
+    // category (if any) is configured to route to that same office;
+    // suggestions with no matching category are simply left uncategorized.
+    $categoryId = null;
+    $categoryLookupStmt = $pdo->prepare(
+        'SELECT id FROM suggestion_categories WHERE is_active = 1 AND LOWER(TRIM(office)) = LOWER(TRIM(:office)) LIMIT 1'
+    );
+    $categoryLookupStmt->execute([':office' => $officeInput]);
+    $categoryRow = $categoryLookupStmt->fetch();
+    if ($categoryRow) {
+        $categoryId = (int)$categoryRow['id'];
     }
-    $ticketNo = create_ticket_no($pdo, 'suggestions', 'VOX-S');
-    $route = resolve_ticket_route($pdo, 'suggestion', $categoryId, $student['college_id'] !== null ? (int)$student['college_id'] : null);
+
+    $categoryOffice = $officeInput;
+    $route = $categoryOffice !== ''
+        ? ['role' => 'staff', 'user_id' => 0]
+        : resolve_ticket_route($pdo, 'suggestion', $categoryId, $student['college_id'] !== null ? (int)$student['college_id'] : null);
     $recipientRole = (string)$route['role'];
     $recipientUserId = isset($route['user_id']) ? (int)$route['user_id'] : 0;
+    // Office-routed suggestions use the office column and stay outside admin/dean scopes.
     // Set college_id based on routing: if routed to admin/general, store NULL so
     // the suggestion is not visible in dean scopes. If routed to dean, store
     // the student's college id.
@@ -235,57 +220,76 @@ try {
             student_id,
             college_id,
             category_id,
+            office,
             date_of_suggestion,
             subject,
             description,
             expected_outcome,
             attachment,
             status,
-            school_year
+            school_year,
+            semester
         ) VALUES (
             :ticket_no,
             :student_id,
             :college_id,
             :category_id,
+            :office,
             :date_of_suggestion,
             :subject,
             :description,
             :expected_outcome,
             :attachment,
             :status,
-            :school_year
+            :school_year,
+            :semester
         )'
     );
 
     $insertStmt->execute([
-        ':ticket_no' => $ticketNo,
+        ':ticket_no' => generate_ticket_no($pdo, 'suggestions', 'VOX-S'),
         ':student_id' => (int)$student['id'],
         ':college_id' => $collegeId,
         ':category_id' => $categoryId,
-        ':date_of_suggestion' => trim((string)($draft['date_of_suggestion'] ?? '')),
+        ':office' => $categoryOffice !== '' ? $categoryOffice : null,
+        ':date_of_suggestion' => date('Y-m-d'),
         ':subject' => $subject,
         ':description' => $description,
         ':expected_outcome' => trim((string)($draft['expected_outcome'] ?? '')),
         ':attachment' => $attachment,
-        ':status' => 'approved',
+        ':status' => 'under_review',
         ':school_year' => $schoolYearCurrent,
+        ':semester' => $semesterCurrent,
     ]);
 
     $suggestionId = (int)$pdo->lastInsertId();
 
-    $recipientLabel = $recipientRole === 'dean' ? 'your college dean' : 'admin';
+    $recipientLabel = $recipientRole === 'staff' ? $categoryOffice : ($recipientRole === 'dean' ? 'your college dean' : 'admin');
     $insertNotif = $pdo->prepare(
         'INSERT INTO notifications (user_id, type, message, ticket_type, ticket_id, is_read)
          VALUES (:user_id, :type, :message, :ticket_type, :ticket_id, :is_read)'
     );
 
-    if ($recipientRole === 'admin') {
+    if ($recipientRole === 'staff') {
+        $staffStmt = $pdo->prepare("SELECT u.id FROM users u INNER JOIN staff_profiles sp ON sp.user_id = u.id WHERE u.role = 'staff' AND u.is_active = 1 AND sp.status = 'active' AND LOWER(TRIM(sp.office)) = LOWER(TRIM(:office))");
+        $staffStmt->execute([':office' => $categoryOffice]);
+        foreach ($staffStmt->fetchAll() as $target) {
+            $insertNotif->execute([
+                ':user_id' => (int)$target['id'],
+                ':type' => 'new_suggestion',
+                ':message' => $studentDisplayName . ' submitted a new suggestion.',
+                ':ticket_type' => 'suggestion',
+                ':ticket_id' => $suggestionId,
+                ':is_read' => 0,
+            ]);
+        }
+    } elseif ($recipientRole === 'admin') {
         $adminStmt = $pdo->query("SELECT id FROM users WHERE role = 'admin' AND is_active = 1");
         foreach ($adminStmt->fetchAll() as $target) {
             $insertNotif->execute([
                 ':user_id' => (int)$target['id'],
                 ':type' => 'new_suggestion',
-                ':message' => 'New general suggestion submitted: ' . $ticketNo,
+                ':message' => $studentDisplayName . ' submitted a new suggestion.',
                 ':ticket_type' => 'suggestion',
                 ':ticket_id' => $suggestionId,
                 ':is_read' => 0,
@@ -295,7 +299,7 @@ try {
         $insertNotif->execute([
             ':user_id' => $recipientUserId,
             ':type' => 'new_suggestion',
-            ':message' => 'New college suggestion submitted: ' . $ticketNo,
+            ':message' => $studentDisplayName . ' submitted a new suggestion.',
             ':ticket_type' => 'suggestion',
             ':ticket_id' => $suggestionId,
             ':is_read' => 0,
@@ -303,7 +307,7 @@ try {
     }
 
     clear_preview_draft('suggestion');
-    back_with_message('success', 'Suggestion submitted successfully and routed to ' . $recipientLabel . '. Ticket: ' . $ticketNo);
+    back_with_message('success', 'Suggestion submitted successfully and routed to ' . $recipientLabel . '.');
 } catch (RuntimeException $e) {
     back_with_message('error', $e->getMessage());
 } catch (PDOException $e) {

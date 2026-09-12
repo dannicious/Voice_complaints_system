@@ -3,6 +3,8 @@
 session_start();
 require_once __DIR__ . '/../db_connection.php';
 require_once __DIR__ . '/../ticket_flow.php';
+require_once __DIR__ . '/../suggestion_flow.php';
+require_once __DIR__ . '/../response_timeline_ui.php';
 ini_set('display_errors', '0');
 error_reporting(E_ALL & ~E_NOTICE & ~E_WARNING);
 if (empty($_SESSION['csrf_token'])) {
@@ -90,35 +92,61 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     $newStatus = trim((string)($_POST['status'] ?? ''));
     $remark = trim((string)($_POST['remark'] ?? ''));
     $remarkId = isset($_POST['remark_id']) ? (int)$_POST['remark_id'] : 0;
-    $allowed = ['new','under_review','reviewed'];
-    if ($postedId <= 0 || !in_array($newStatus,$allowed,true)) {
-        $flashMessage = 'Invalid request.'; $flashType = 'error';
+
+    $currentStatus = '';
+    if ($postedId > 0) {
+        $currentStmt = $pdo->prepare('SELECT status FROM suggestions WHERE id = :id AND college_id IS NULL LIMIT 1');
+        $currentStmt->execute([':id' => $postedId]);
+        $currentStatus = (string)($currentStmt->fetchColumn() ?: '');
+    }
+    $allowedNext = suggestion_allowed_next_statuses($currentStatus);
+    $isFinalizingStep = in_array($newStatus, ['accepted', 'not_feasible', 'implemented'], true);
+
+    if ($postedId <= 0 || $currentStatus === '') {
+        $flashMessage = 'Suggestion not found.'; $flashType = 'error';
+    } elseif (suggestion_thread_is_locked($currentStatus)) {
+        $flashMessage = 'This suggestion is already closed and can no longer be updated.'; $flashType = 'error';
+    } elseif (!array_key_exists($newStatus, $allowedNext)) {
+        $flashMessage = 'Invalid status for this suggestion\'s current stage.'; $flashType = 'error';
+    } elseif ($isFinalizingStep && $remark === '' && $remarkId <= 0) {
+        $flashMessage = 'Please provide Official Remarks before finalizing this status.'; $flashType = 'error';
     } else {
-        if ($newStatus === 'reviewed' && $remark === '' && $remarkId <= 0) {
-            $flashMessage = 'Please provide Official Remarks before marking Reviewed.'; $flashType='error';
-        } else {
-            try {
-                $update = $pdo->prepare('UPDATE suggestions SET status = :status WHERE id = :id');
-                $update->execute([':status'=>$newStatus, ':id'=>$postedId]);
-                if ($remarkId > 0 && $remark !== '') {
-                    $up = $pdo->prepare('UPDATE ticket_replies SET message = :message WHERE id = :id AND sender_role = :role');
-                    $up->execute([':message'=>$remark, ':id'=>$remarkId, ':role'=>'admin']);
-                } elseif ($remarkId <= 0 && $remark !== '') {
-                    $ins = $pdo->prepare('INSERT INTO ticket_replies (ticket_type, ticket_id, sender_id, sender_role, message, created_at) VALUES ("suggestion", :ticket_id, :sender_id, "admin", :message, NOW())');
-                    $ins->execute([':ticket_id'=>$postedId, ':sender_id'=>$adminProfileId, ':message'=>$remark]);
-                }
-                header('Location: ?id='.$postedId);
-                exit;
-            } catch (Throwable $e) {
-                $flashMessage = 'Unable to save.';
-                $flashType='error';
+        try {
+            set_suggestion_status($pdo, $postedId, $newStatus);
+            if ($remarkId > 0 && $remark !== '') {
+                $up = $pdo->prepare('UPDATE ticket_replies SET message = :message WHERE id = :id AND sender_role = :role');
+                $up->execute([':message'=>$remark, ':id'=>$remarkId, ':role'=>'admin']);
+            } elseif ($remarkId <= 0 && $remark !== '') {
+                $ins = $pdo->prepare('INSERT INTO ticket_replies (ticket_type, ticket_id, sender_id, sender_role, message, created_at) VALUES ("suggestion", :ticket_id, :sender_id, "admin", :message, NOW())');
+                $ins->execute([':ticket_id'=>$postedId, ':sender_id'=>$adminProfileId, ':message'=>$remark]);
             }
+
+            // Let the student know their suggestion was updated.
+            $ownerStmt = $pdo->prepare('SELECT student_id FROM suggestions WHERE id = :id LIMIT 1');
+            $ownerStmt->execute([':id' => $postedId]);
+            $suggestionStudentId = (int)($ownerStmt->fetchColumn() ?: 0);
+            if ($suggestionStudentId > 0) {
+                $actorInfo = get_person_display($pdo, 'admin', $adminProfileId);
+                $actorName = $actorInfo['name'] ?? 'Admin';
+                $statusLabel = suggestion_status_meta($newStatus)['label'];
+                $updateMessage = $remark !== ''
+                    ? $actorName . ' posted an official remark and updated your suggestion status to ' . $statusLabel . '.'
+                    : $actorName . ' updated your suggestion status to ' . $statusLabel . '.';
+                notify_ticket_owner($pdo, 'suggestion', $postedId, $suggestionStudentId, 'suggestion_update', $updateMessage);
+            }
+
+            header('Location: ?id='.$postedId);
+            exit;
+        } catch (Throwable $e) {
+            $flashMessage = 'Unable to save.';
+            $flashType='error';
         }
     }
 }
 
 // load suggestion (admin scope: only suggestions routed to admin have college_id NULL)
 $suggestion = null;
+$suggestionFound = false;
 $replies = [];
 $feedback = null;
 $feedbackReplies = [];
@@ -127,6 +155,7 @@ try {
     $stmt = $pdo->prepare('SELECT s.*, sc.name AS category_name, sp.first_name, sp.last_name FROM suggestions s LEFT JOIN suggestion_categories sc ON sc.id = s.category_id LEFT JOIN student_profiles sp ON sp.id = s.student_id WHERE s.id = :id AND s.college_id IS NULL LIMIT 1');
     $stmt->execute([':id'=>$suggestionId]);
     $suggestion = $stmt->fetch(PDO::FETCH_ASSOC);
+    $suggestionFound = (bool)$suggestion;
     if (!$suggestion) { $flashMessage = 'Suggestion not found.'; $flashType='error'; }
     else {
         $r = $pdo->prepare('SELECT id,sender_id,sender_role,message,created_at FROM ticket_replies WHERE ticket_type = "suggestion" AND ticket_id = :id ORDER BY created_at ASC, id ASC');
@@ -186,10 +215,24 @@ body { background: #f4f6fb; }
 .timeline-card { display:inline-block; width:fit-content; max-width:min(78%, 720px); padding:16px 18px; border-radius:14px; border:1px solid #e5e7eb; background:#fff; box-shadow:0 6px 18px rgba(15,23,42,0.04); }
 .timeline-card.current-user { background:#f3f0ff; border-color:#c4b5fd; }
 .timeline-card .timeline-text { color:#111827; font-size:14px; line-height:1.6; white-space:pre-wrap; word-break:break-word; text-align:left; }
+<?php echo response_timeline_styles(); ?>
 .pill { display:inline-flex; align-items:center; gap:8px; padding:6px 10px; border-radius:999px; font-weight:700; font-size:13px; }
+.pill.very_satisfied { background:#fef3c7; color:#92400e; }
 .pill.satisfied { background:#dcfce7; color:#065f46; }
 .pill.neutral { background:#f3f4f6; color:#374151; }
-.pill.not_satisfied { background:#fee2e2; color:#b91c1c; }
+.pill.not_satisfied { background:#ffedd5; color:#9a3412; }
+.pill.very_unsatisfied { background:#fee2e2; color:#b91c1c; }
+.pill.small { padding:4px 8px; font-size:11px; }
+.feedback-panel { border:1px solid #e5e7eb; border-radius:12px; padding:10px; background:#f9fafb; }
+.feedback-summary-card { background:#fff; border:1px solid #e5e7eb; border-radius:12px; padding:10px 12px; display:flex; flex-direction:column; gap:8px; box-shadow:0 2px 8px rgba(15,23,42,0.04); align-items:stretch; }
+.feedback-summary-top { display:flex; align-items:center; gap:10px; width:100%; }
+.feedback-avatar { width:40px; height:40px; border-radius:999px; display:inline-flex; align-items:center; justify-content:center; overflow:hidden; background:#6b46c1; color:#fff; font-weight:700; font-size:14px; border:1px solid #eef2ff; flex-shrink:0; }
+.feedback-avatar img { width:100%; height:100%; object-fit:cover; }
+.feedback-summary-info { flex:1; min-width:0; }
+.feedback-head { display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap; }
+.feedback-title { font-weight:700; color:#111827; font-size:13px; line-height:1.3; }
+.feedback-subtext { font-size:11.5px; color:#6b7280; line-height:1.3; }
+.feedback-comment-bubble { display:inline-block; max-width:100%; background:#f8fafc; border:1px solid #eef2ff; border-radius:10px; padding:7px 10px; font-size:12px; color:#374151; line-height:1.5; white-space:pre-wrap; word-break:break-word; margin-left:50px; }
 .empty-card { background:#f9fafb; border:1px dashed #d1d5db; border-radius:12px; padding:14px; color:#6b7280; font-size:13px; }
 .reply-box-card { border:1px solid #e5e7eb; border-radius:14px; padding:16px; background:#fff; box-shadow:0 4px 14px rgba(15,23,42,0.06); }
 .reply-box-card textarea { width:100%; min-height:120px; border-radius:12px; padding:14px; border:1px solid #d1d5db; resize:vertical; background:#fff; font-size:14px; line-height:1.5; }
@@ -217,25 +260,26 @@ body { background: #f4f6fb; }
         <div class="notice <?php echo e($flashType); ?>"><?php echo e($flashMessage); ?></div>
     <?php endif; ?>
 
+    <?php if ($suggestionFound): ?>
     <div class="ticket-header card" style="display:flex;justify-content:space-between;align-items:center;gap:16px;margin-bottom:16px;">
         <div>
-            <div style="font-weight:700;font-size:18px;">Suggestion <?php echo e((string)($suggestion['ticket_no'] ?? '')); ?></div>
+            <div style="font-weight:700;font-size:18px;">Suggestion Details</div>
             <div class="muted">Category: <?php echo e((string)($suggestion['category_name'] ?? '')); ?> · Submitted <?php echo e(!empty($suggestion['created_at']) ? date('M d, Y h:i A', strtotime((string)$suggestion['created_at'])) : ''); ?></div>
         </div>
         <?php
             $status = strtolower(trim((string)($suggestion['status'] ?? '')));
-            $statusMap = [
-                'new' => 'Open',
-                'open' => 'Open',
-                'under_review' => 'Under review',
-                'reviewed' => 'Reviewed',
-                'resolved' => 'Resolved',
+            $statusMeta = suggestion_status_meta($status);
+            $statusLabel = $statusMeta['label'];
+            $statusColorMap = [
+                'status-review' => 'background:#f59e0b;color:#1f2937;',
+                'status-needs-info' => 'background:#fde68a;color:#78350f;',
+                'status-accepted' => 'background:#dbeafe;color:#1d4ed8;',
+                'status-planned' => 'background:#e0e7ff;color:#3730a3;',
+                'status-progress' => 'background:#ede9fe;color:#5b21b6;',
+                'status-implemented' => 'background:#dcfce7;color:#065f46;',
+                'status-declined' => 'background:#fee2e2;color:#b91c1c;',
             ];
-            $statusLabel = $statusMap[$status] ?? 'Under review';
-            $statusColor = 'background:#f59e0b;color:#1f2937;';
-            if ($status === 'reviewed') { $statusColor = 'background:#dcfce7;color:#065f46;'; }
-            elseif ($status === 'under_review') { $statusColor = 'background:#f59e0b;color:#1f2937;'; }
-            elseif ($status === 'new' || $status === 'open') { $statusColor = 'background:#fee2e2;color:#b91c1c;'; }
+            $statusColor = $statusColorMap[$statusMeta['badge']] ?? 'background:#f3f4f6;color:#374151;';
         ?>
         <div style="display:flex;align-items:center;gap:10px;">
             <span style="padding:8px 12px;border-radius:999px;font-weight:700;<?php echo $statusColor; ?>"><?php echo e($statusLabel); ?></span>
@@ -281,6 +325,10 @@ body { background: #f4f6fb; }
     <div class="card status-remarks-card" style="margin-bottom:18px;">
         <div style="font-weight:700;margin-bottom:12px;color:#111827;">Update Status & Official Remarks</div>
 
+        <?php $suggestionAllowedNext = suggestion_allowed_next_statuses((string)($suggestion['status'] ?? '')); ?>
+        <?php if ($statusMeta['locked'] || empty($suggestionAllowedNext)): ?>
+            <div class="empty-card">This suggestion has reached its final status (<?php echo e($statusLabel); ?>) and can no longer be updated.</div>
+        <?php else: ?>
         <form method="POST">
             <input type="hidden" name="action" value="update_suggestion">
             <input type="hidden" name="suggestion_id" value="<?php echo (int)$suggestionId; ?>">
@@ -292,8 +340,9 @@ body { background: #f4f6fb; }
             <div class="form-group">
                 <label for="statusSelect">Suggestion Status</label>
                 <select id="statusSelect" name="status" class="form-control">
-                    <option value="under_review" <?php echo ((string)$suggestion['status'] === 'under_review') ? 'selected' : ''; ?>>Under Review</option>
-                    <option value="reviewed" <?php echo ((string)$suggestion['status'] === 'reviewed') ? 'selected' : ''; ?>>Reviewed</option>
+                    <?php foreach ($suggestionAllowedNext as $statusValue => $statusOptionLabel): ?>
+                        <option value="<?php echo e($statusValue); ?>" <?php echo ((string)$suggestion['status'] === $statusValue) ? 'selected' : ''; ?>><?php echo e($statusOptionLabel); ?></option>
+                    <?php endforeach; ?>
                 </select>
             </div>
 
@@ -329,6 +378,7 @@ body { background: #f4f6fb; }
                 </div>
             <?php endif; ?>
         </form>
+        <?php endif; ?>
     </div>
 
     <script>
@@ -374,6 +424,10 @@ body { background: #f4f6fb; }
                 if (wrapper && form.id !== 'feedbackReplyForm') {
                     wrapper.style.display = 'none';
                 }
+                // Reload so the reply is picked up from the database and the
+                // whole thread (and anyone else's view of it) stays in sync,
+                // same as the student side already does.
+                setTimeout(() => window.location.reload(), 600);
             } else {
                 statusEl.innerHTML = '<span style="color:#b91c1c;">Unable to send reply. Please try again.</span>';
             }
@@ -389,44 +443,31 @@ body { background: #f4f6fb; }
     }
 
     function appendAdminReply(form, reply) {
-        if (!reply || typeof reply !== 'object') {
+        if (!reply || typeof reply !== 'object' || !window.VoiceTimeline) {
             return;
         }
 
-        const wrapper = form.closest('.reply-form-wrapper');
-        if (!wrapper) {
-            return;
-        }
+        const roleRaw = String(reply.replier_role || '').toLowerCase();
+        const roleLabel = roleRaw === 'dean' ? 'College Dean' : (roleRaw === 'admin' ? 'Administrator' : 'Student');
+        const box = document.getElementById('globalReplyBox');
 
-        const newReply = document.createElement('div');
-        newReply.className = 'feedback-reply current-user-reply';
-        newReply.style.cssText = 'border:1px solid #e5e7eb;border-radius:10px;padding:14px;display:flex;gap:12px;align-items:flex-start;width:100%;max-width:880px;background:#fff;margin-left:0;';
-        newReply.innerHTML = `
-            <div class="avatar-circle" style="width:36px;height:36px;flex-shrink:0;background:#4f46e5;">
-                <span style="font-size:16px;color:#fff;">${escapeHtml((reply.replier_name || 'You').charAt(0).toUpperCase())}</span>
-            </div>
-            <div style="flex:1;min-width:0;">
-                <div style="display:flex;flex-direction:column;gap:4px;margin-bottom:6px;">
-                    <div style="font-weight:700;font-size:13px;color:#111827;">${escapeHtml(reply.replier_name || 'You')}</div>
-                    <div style="font-size:12px;color:#6b7280;">${escapeHtml(reply.replier_role ? reply.replier_role.charAt(0).toUpperCase() + reply.replier_role.slice(1) : 'Responder')}</div>
-                </div>
-                <div style="font-size:11px;color:#6b7280;margin-bottom:6px;">${escapeHtml(reply.created_at || '')}</div>
-                <div style="font-size:13px;color:#111827;white-space:pre-wrap;">${escapeHtml(reply.message || '')}</div>
-            </div>
-        `;
-
-        if (wrapper.parentNode) {
-            wrapper.parentNode.insertBefore(newReply, wrapper);
-        } else {
-            wrapper.insertAdjacentElement('afterend', newReply);
-        }
+        window.VoiceTimeline.appendReply({
+            name: reply.replier_name || 'You',
+            roleLabel: roleLabel,
+            isCurrentUser: true,
+            photo: null,
+            timeText: reply.created_at || '',
+            messageHtml: escapeHtml(reply.message || '').replace(/\n/g, '<br>'),
+            replyTargetId: box ? box.id : null,
+        });
     }
 
     document.addEventListener('DOMContentLoaded', function () {
         const status = document.getElementById('statusSelect');
         const remark = document.getElementById('remarkTextarea');
         if (status && remark) {
-            function toggleRequired() { remark.required = status.value === 'reviewed'; }
+            const finalizingStatuses = ['accepted', 'not_feasible', 'implemented'];
+            function toggleRequired() { remark.required = finalizingStatuses.includes(status.value); }
             status.addEventListener('change', toggleRequired);
             toggleRequired();
         }
@@ -489,7 +530,7 @@ body { background: #f4f6fb; }
             <?php else: ?>
                 <div class="timeline-shell">
                     <div class="ticket-section">
-                        <div class="section-title">Official Remark</div>
+                        <div class="section-title">Responses</div>
                         <?php if ($officialRemark): ?>
                             <?php
                                 $officialRole = strtolower((string)($officialRemark['sender_role'] ?? ''));
@@ -497,31 +538,46 @@ body { background: #f4f6fb; }
                                 $officialPerson = $officialSenderId > 0 ? get_person_display($pdo, $officialRole, $officialSenderId) : ['name' => ucfirst($officialRole), 'photo' => null];
                                 $officialName = $officialPerson['name'] ?? (ucfirst($officialRole) ?: 'Staff');
                                 $officialPhoto = !empty($officialPerson['photo']) ? ('../' . ltrim($officialPerson['photo'], '/')) : null;
-                                $officialInitial = strtoupper(substr(trim($officialName), 0, 1));
                                 $officialRoleLabel = $officialRole === 'dean' ? 'College Dean' : ($officialRole === 'admin' ? 'Administrator' : 'Student');
                                 $officialCurrentUser = ($officialRole === 'admin');
+                                echo response_timeline_entry([
+                                    'name' => $officialName,
+                                    'role_label' => $officialRoleLabel,
+                                    'is_current_user' => $officialCurrentUser,
+                                    'photo' => $officialPhoto,
+                                    'time_text' => date('M d, Y h:i A', strtotime((string)$officialRemark['created_at'])),
+                                    'message_html' => nl2br(e((string)$officialRemark['message'])),
+                                    'reply_target_id' => $canReply ? 'globalReplyBox' : null,
+                                ]);
                             ?>
-                            <div class="timeline-entry">
-                                <div class="timeline-avatar">
-                                    <?php if ($officialPhoto): ?>
-                                        <img src="<?php echo e($officialPhoto); ?>" alt="<?php echo e($officialName); ?>">
-                                    <?php else: ?>
-                                        <?php echo e($officialInitial); ?>
-                                    <?php endif; ?>
-                                </div>
-                                <div class="timeline-body">
-                                    <div class="timeline-heading">
-                                        <div class="timeline-name"><?php echo e($officialName . ($officialCurrentUser ? ' (You)' : '')); ?></div>
-                                        <div class="timeline-role"><?php echo e($officialRoleLabel); ?></div>
-                                    </div>
-                                    <div class="timeline-time"><?php echo e(date('M d, Y h:i A', strtotime((string)$officialRemark['created_at']))); ?></div>
-                                    <div class="timeline-card current-user">
-                                        <div class="timeline-text"><?php echo nl2br(e((string)$officialRemark['message'])); ?></div>
-                                    </div>
-                                </div>
-                            </div>
                         <?php else: ?>
                             <div class="empty-card">No official remark has been posted yet.</div>
+                        <?php endif; ?>
+
+                        <?php if (!empty($timelineReplies)): ?>
+                            <div class="timeline-replies">
+                                <?php foreach ($timelineReplies as $replyItem): ?>
+                                    <?php
+                                        $replyRoleRaw = strtolower((string)($replyItem['sender_role'] ?? ''));
+                                        $replySenderId = isset($replyItem['sender_id']) ? (int)$replyItem['sender_id'] : 0;
+                                        $replyPerson = $replySenderId > 0 ? get_person_display($pdo, $replyRoleRaw, $replySenderId) : ['name' => ucfirst($replyRoleRaw), 'photo' => null];
+                                        $replyName = $replyPerson['name'] ?? ucfirst($replyRoleRaw);
+                                        $replyPhoto = !empty($replyPerson['photo']) ? ('../' . ltrim($replyPerson['photo'], '/')) : null;
+                                        $replyRoleLabel = $replyRoleRaw === 'dean' ? 'College Dean' : ($replyRoleRaw === 'admin' ? 'Administrator' : 'Student');
+                                        $replyIsCurrentUser = $replyRoleRaw === 'admin';
+                                        echo response_timeline_entry([
+                                            'name' => $replyName,
+                                            'role_label' => $replyRoleLabel,
+                                            'is_current_user' => $replyIsCurrentUser,
+                                            'photo' => $replyPhoto,
+                                            'time_text' => date('M d, Y h:i A', strtotime((string)($replyItem['created_at'] ?? ''))),
+                                            'message_html' => nl2br(e((string)($replyItem['message'] ?? ''))),
+                                            'is_reply' => true,
+                                            'reply_target_id' => $canReply ? 'globalReplyBox' : null,
+                                        ]);
+                                    ?>
+                                <?php endforeach; ?>
+                            </div>
                         <?php endif; ?>
                     </div>
 
@@ -533,21 +589,35 @@ body { background: #f4f6fb; }
                                     $meta = feedback_option_meta((string)$feedback['satisfaction']);
                                     $studentInfo = get_person_display($pdo, 'student', (int)$suggestion['student_id']);
                                     $studentName = $studentInfo['name'] ?? 'Student';
+                                    $stuPhoto = !empty($studentInfo['photo']) ? ('../' . ltrim($studentInfo['photo'], '/')) : null;
+                                    $stuInitial = strtoupper(substr(trim($studentName), 0, 1)) ?: 'S';
+                                    $stuComment = trim((string)($feedback['comment'] ?? ''));
                                 ?>
                                 <div class="feedback-summary-card">
-                                    <div class="feedback-head">
-                                        <div>
-                                            <div class="feedback-title"><?php echo e($studentName); ?></div>
-                                            <div class="feedback-subtext">Submitted feedback for this response</div>
+                                    <div class="feedback-summary-top">
+                                        <div class="feedback-avatar">
+                                            <?php if ($stuPhoto): ?>
+                                                <img src="<?php echo e($stuPhoto); ?>" alt="<?php echo e($studentName); ?>">
+                                            <?php else: ?>
+                                                <?php echo e($stuInitial); ?>
+                                            <?php endif; ?>
                                         </div>
-                                        <span class="pill <?php echo e((string)$feedback['satisfaction']); ?>">
-                                            <i class='bx <?php echo e($meta['icon']); ?>'></i>
-                                            <?php echo e($meta['label']); ?>
-                                        </span>
+                                        <div class="feedback-summary-info">
+                                            <div class="feedback-head">
+                                                <div>
+                                                    <div class="feedback-title"><?php echo e($studentName); ?></div>
+                                                    <div class="feedback-subtext">Submitted feedback for this response</div>
+                                                </div>
+                                                <span class="pill small <?php echo e((string)$feedback['satisfaction']); ?>">
+                                                    <i class='bx <?php echo e($meta['icon']); ?>'></i>
+                                                    <?php echo e($meta['label']); ?>
+                                                </span>
+                                            </div>
+                                        </div>
                                     </div>
-                                    <div class="timeline-text" style="display:block;width:100%;font-size:13px;color:#374151;white-space:pre-line;text-align:left;word-break:break-word;margin:0;padding:0;line-height:1.6;">
-                                        <?php echo nl2br(e((string)($feedback['comment'] ?? ''))); ?>
-                                    </div>
+                                    <?php if ($stuComment !== ''): ?>
+                                    <div class="feedback-comment-bubble"><?php echo nl2br(e($stuComment)); ?></div>
+                                    <?php endif; ?>
                                 </div>
                             <?php else: ?>
                                 <div class="empty-card">No rating has been submitted yet.</div>
@@ -555,50 +625,9 @@ body { background: #f4f6fb; }
                         </div>
                     </div>
 
-                    <div class="ticket-section">
-                        <div class="section-title">Conversation Replies</div>
-                        <?php if (empty($timelineReplies)): ?>
-                            <div class="empty-card">No conversation replies yet.</div>
-                        <?php else: ?>
-                            <div class="timeline-list">
-                                <?php foreach ($timelineReplies as $replyItem): ?>
-                                    <?php
-                                        $replyRoleRaw = strtolower((string)($replyItem['sender_role'] ?? ''));
-                                        $replySenderId = isset($replyItem['sender_id']) ? (int)$replyItem['sender_id'] : 0;
-                                        $replyPerson = $replySenderId > 0 ? get_person_display($pdo, $replyRoleRaw, $replySenderId) : ['name' => ucfirst($replyRoleRaw), 'photo' => null];
-                                        $replyName = $replyPerson['name'] ?? ucfirst($replyRoleRaw);
-                                        $replyPhoto = !empty($replyPerson['photo']) ? ('../' . ltrim($replyPerson['photo'], '/')) : null;
-                                        $replyInitial = strtoupper(substr(trim($replyName), 0, 1));
-                                        $replyRoleLabel = $replyRoleRaw === 'dean' ? 'College Dean' : ($replyRoleRaw === 'admin' ? 'Administrator' : 'Student');
-                                        $replyIsCurrentUser = $replyRoleRaw === 'admin';
-                                    ?>
-                                    <div class="timeline-entry">
-                                        <div class="timeline-avatar">
-                                            <?php if ($replyPhoto): ?>
-                                                <img src="<?php echo e($replyPhoto); ?>" alt="<?php echo e($replyName); ?>">
-                                            <?php else: ?>
-                                                <?php echo e($replyInitial); ?>
-                                            <?php endif; ?>
-                                        </div>
-                                        <div class="timeline-body">
-                                            <div class="timeline-heading">
-                                                <div class="timeline-name"><?php echo e($replyName . ($replyIsCurrentUser ? ' (You)' : '')); ?></div>
-                                                <div class="timeline-role"><?php echo e($replyRoleLabel); ?></div>
-                                            </div>
-                                            <div class="timeline-time"><?php echo e(date('M d, Y h:i A', strtotime((string)($replyItem['created_at'] ?? '')))); ?></div>
-                                            <div class="timeline-card<?php echo $replyIsCurrentUser ? ' current-user' : ''; ?>">
-                                                <div class="timeline-text"><?php echo nl2br(e((string)($replyItem['message'] ?? ''))); ?></div>
-                                            </div>
-                                        </div>
-                                    </div>
-                                <?php endforeach; ?>
-                            </div>
-                        <?php endif; ?>
-                    </div>
-
                     <?php if ($canReply): ?>
                         <div class="ticket-section">
-                            <div class="reply-box-card reply-form-wrapper">
+                            <div id="globalReplyBox" class="reply-box-card reply-form-wrapper timeline-reply-box">
                                 <form id="feedbackReplyForm" class="admin-feedback-reply-form" method="POST">
                                     <input type="hidden" name="csrf_token" value="<?php echo e((string)($_SESSION['csrf_token'] ?? '')); ?>">
                                     <input type="hidden" name="ticket_type" value="suggestion">
@@ -623,7 +652,9 @@ body { background: #f4f6fb; }
             <?php endif; ?>
         </div>
     </div>
+    <?php endif; ?>
 
 </div>
+<?php echo response_timeline_script(); ?>
 </body>
 </html>

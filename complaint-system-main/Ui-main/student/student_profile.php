@@ -88,6 +88,11 @@ $firstName = '';
 $lastName = '';
 $role = 'Student';
 $studentProfile = [];
+// Captured into its own variable (not $studentProfile) because
+// student_topbar.php, included further down, fetches its own $studentProfile
+// with a narrower set of columns and overwrites this one - clobbering
+// contact_number before the template below gets to read it.
+$studentContactNumber = '';
 
 if (isset($_SESSION['user_id'])) {
     try {
@@ -105,8 +110,9 @@ if (isset($_SESSION['user_id'])) {
         );
         $profileStmt->execute([':user_id' => (int)$_SESSION['user_id']]);
         $studentProfile = $profileStmt->fetch(PDO::FETCH_ASSOC);
-        
+
         if ($studentProfile) {
+            $studentContactNumber = trim((string)($studentProfile['contact_number'] ?? ''));
             $firstName = $studentProfile['first_name'] ?? '';
             $lastName = $studentProfile['last_name'] ?? '';
             $studentName = trim($firstName . ' ' . $lastName);
@@ -451,6 +457,10 @@ body {
                     <div class="detail-item">
                         <label>Email Address</label>
                         <p><i class='bx bx-envelope'></i> <?php echo e($studentEmail); ?></p>
+                    </div>
+                    <div class="detail-item">
+                        <label>Cellphone Number</label>
+                        <p><i class='bx bx-phone'></i> <?php echo e($studentContactNumber !== '' ? $studentContactNumber : 'N/A'); ?></p>
                     </div>
                 </div>
             </div>

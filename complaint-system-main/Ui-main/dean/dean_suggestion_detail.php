@@ -3,6 +3,8 @@
 session_start();
 require_once __DIR__ . '/../db_connection.php';
 require_once __DIR__ . '/../ticket_flow.php';
+require_once __DIR__ . '/../suggestion_flow.php';
+require_once __DIR__ . '/../response_timeline_ui.php';
 ini_set('display_errors', '0');
 error_reporting(E_ALL & ~E_NOTICE & ~E_WARNING);
 if (empty($_SESSION['csrf_token'])) {
@@ -90,30 +92,54 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     $newStatus = trim((string)($_POST['status'] ?? ''));
     $remark = trim((string)($_POST['remark'] ?? ''));
     $remarkId = isset($_POST['remark_id']) ? (int)$_POST['remark_id'] : 0;
-    $allowed = ['new','under_review','reviewed'];
-    if ($postedId <= 0 || !in_array($newStatus,$allowed,true)) {
-        $flashMessage = 'Invalid request.'; $flashType = 'error';
+
+    $currentStatus = '';
+    if ($postedId > 0) {
+        $currentStmt = $pdo->prepare('SELECT status FROM suggestions WHERE id = :id AND college_id = :college_id LIMIT 1');
+        $currentStmt->execute([':id' => $postedId, ':college_id' => $deanCollegeId]);
+        $currentStatus = (string)($currentStmt->fetchColumn() ?: '');
+    }
+    $allowedNext = suggestion_allowed_next_statuses($currentStatus);
+    $isFinalizingStep = in_array($newStatus, ['accepted', 'not_feasible', 'implemented'], true);
+
+    if ($postedId <= 0 || $currentStatus === '') {
+        $flashMessage = 'Suggestion not found in your college scope.'; $flashType = 'error';
+    } elseif (suggestion_thread_is_locked($currentStatus)) {
+        $flashMessage = 'This suggestion is already closed and can no longer be updated.'; $flashType = 'error';
+    } elseif (!array_key_exists($newStatus, $allowedNext)) {
+        $flashMessage = 'Invalid status for this suggestion\'s current stage.'; $flashType = 'error';
+    } elseif ($isFinalizingStep && $remark === '' && $remarkId <= 0) {
+        $flashMessage = 'Please provide Official Remarks before finalizing this status.'; $flashType = 'error';
     } else {
-        // require remark only when marking as reviewed and no previous official remark exists
-        if ($newStatus === 'reviewed' && $remark === '' && $remarkId <= 0) {
-            $flashMessage = 'Please provide Official Remarks before marking Reviewed.'; $flashType='error';
-        } else {
-            try {
-                $update = $pdo->prepare('UPDATE suggestions SET status = :status WHERE id = :id');
-                $update->execute([':status'=>$newStatus, ':id'=>$postedId]);
-                if ($remarkId > 0 && $remark !== '') {
-                    $up = $pdo->prepare('UPDATE ticket_replies SET message = :message WHERE id = :id AND sender_role = :role');
-                    $up->execute([':message'=>$remark, ':id'=>$remarkId, ':role'=>'dean']);
-                } elseif ($remarkId <= 0 && $remark !== '') {
-                    $ins = $pdo->prepare('INSERT INTO ticket_replies (ticket_type, ticket_id, sender_id, sender_role, message, created_at) VALUES ("suggestion", :ticket_id, :sender_id, "dean", :message, NOW())');
-                    $ins->execute([':ticket_id'=>$postedId, ':sender_id'=>$deanProfileId, ':message'=>$remark]);
-                }
-                header('Location: ?id='.$postedId);
-                exit;
-            } catch (Throwable $e) {
-                $flashMessage = 'Unable to save.';
-                $flashType='error';
+        try {
+            set_suggestion_status($pdo, $postedId, $newStatus);
+            if ($remarkId > 0 && $remark !== '') {
+                $up = $pdo->prepare('UPDATE ticket_replies SET message = :message WHERE id = :id AND sender_role = :role');
+                $up->execute([':message'=>$remark, ':id'=>$remarkId, ':role'=>'dean']);
+            } elseif ($remarkId <= 0 && $remark !== '') {
+                $ins = $pdo->prepare('INSERT INTO ticket_replies (ticket_type, ticket_id, sender_id, sender_role, message, created_at) VALUES ("suggestion", :ticket_id, :sender_id, "dean", :message, NOW())');
+                $ins->execute([':ticket_id'=>$postedId, ':sender_id'=>$deanProfileId, ':message'=>$remark]);
             }
+
+            // Let the student know their suggestion was updated.
+            $ownerStmt = $pdo->prepare('SELECT student_id FROM suggestions WHERE id = :id LIMIT 1');
+            $ownerStmt->execute([':id' => $postedId]);
+            $suggestionStudentId = (int)($ownerStmt->fetchColumn() ?: 0);
+            if ($suggestionStudentId > 0) {
+                $actorInfo = get_person_display($pdo, 'dean', $deanProfileId);
+                $actorName = $actorInfo['name'] ?? 'Your dean';
+                $statusLabel = suggestion_status_meta($newStatus)['label'];
+                $updateMessage = $remark !== ''
+                    ? $actorName . ' posted an official remark and updated your suggestion status to ' . $statusLabel . '.'
+                    : $actorName . ' updated your suggestion status to ' . $statusLabel . '.';
+                notify_ticket_owner($pdo, 'suggestion', $postedId, $suggestionStudentId, 'suggestion_update', $updateMessage);
+            }
+
+            header('Location: ?id='.$postedId);
+            exit;
+        } catch (Throwable $e) {
+            $flashMessage = 'Unable to save.';
+            $flashType='error';
         }
     }
 }
@@ -146,6 +172,22 @@ try {
     }
 } catch (PDOException $e) { $flashMessage = 'Unable to load suggestion.'; $flashType='error'; }
 
+// Whether a real suggestion was loaded - checked before the fallback below
+// replaces $suggestion with an empty placeholder, so the page can show just
+// the "not found" notice instead of rendering a broken, half-empty record.
+$suggestionFound = is_array($suggestion);
+
+// Ensure $suggestion is an array to avoid template notices when fields are accessed
+if (!is_array($suggestion)) {
+    $suggestion = [
+        'subject' => '',
+        'description' => '',
+        'category_name' => '',
+        'created_at' => null,
+        'expected_outcome' => '',
+        'status' => 'new',
+    ];
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -173,8 +215,38 @@ body { background: #f4f6fb; }
     max-width: 980px;
     margin: 0 auto;
 }
+.complaint-document { padding: 0; overflow: hidden; }
+.document-heading { padding: 16px 22px; border-bottom: 1px solid #e5e7eb; background: linear-gradient(180deg, #ffffff 0%, #fafafa 100%); display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.document-heading-left { min-width: 0; display: flex; align-items: center; gap: 10px; }
+.document-back-btn { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 8px; border: 1px solid #d1d5db; background: #fff; color: #374151; text-decoration: none; flex-shrink: 0; transition: border-color .15s ease, background .15s ease, color .15s ease; }
+.document-back-btn:hover { background: #f3f4f6; border-color: #a5b4fc; color: #111827; }
+.document-back-btn i { font-size: 18px; }
+.document-kicker { color: #6b7280; font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; margin-bottom: 5px; }
+.document-submitted { color: #374151; font-size: 13px; }
+.record-action-dropdown { position: relative; flex-shrink: 0; }
+.record-action-btn { display: inline-flex; align-items: center; gap: 6px; padding: 8px 14px; border-radius: 8px; border: 1px solid #d1d5db; background: #fff; color: #111827; font-weight: 700; font-size: 13px; font-family: 'Poppins', sans-serif; cursor: pointer; transition: border-color .15s ease, box-shadow .15s ease; }
+.record-action-btn:hover { border-color: #a5b4fc; box-shadow: 0 4px 10px rgba(79,140,255,0.15); }
+.record-action-btn i { font-size: 16px; transition: transform .15s ease; }
+.record-action-dropdown.open .record-action-btn i.bx-chevron-down { transform: rotate(180deg); }
+.record-action-menu { position: absolute; top: calc(100% + 6px); right: 0; min-width: 170px; background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; box-shadow: 0 12px 28px rgba(15,23,42,0.16); padding: 6px; display: none; flex-direction: column; gap: 2px; z-index: 50; }
+.record-action-dropdown.open .record-action-menu { display: flex; }
+.record-action-item { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; padding: 9px 10px; border: none; background: transparent; border-radius: 7px; font-size: 13px; font-weight: 600; color: #374151; cursor: pointer; font-family: 'Poppins', sans-serif; }
+.record-action-item:hover { background: #f3f4f6; color: #111827; }
+.record-action-item i { font-size: 16px; color: #6b7280; }
+.update-status-modal { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; z-index: 9998; padding: 20px; }
+.update-status-modal.visible { display: flex; }
+.update-status-backdrop { position: absolute; inset: 0; background: rgba(15, 23, 42, 0.48); }
+.update-status-sheet { position: relative; z-index: 1; width: min(540px, 100%); max-height: 90vh; overflow-y: auto; border-radius: 14px; }
+.update-status-sheet .status-remarks-card { max-width: none !important; width: 100% !important; margin: 0 !important; box-shadow: 0 30px 60px rgba(15, 23, 42, 0.25); }
+.update-status-modal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.update-status-close { background: transparent; border: none; cursor: pointer; color: #6b7280; font-size: 20px; display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 8px; flex-shrink: 0; }
+.update-status-close:hover { background: #f3f4f6; color: #111827; }
+.document-section { padding: 20px 22px; border-bottom: 1px solid #e5e7eb; }
+.document-section:last-child { border-bottom: 0; }
+.document-section-title { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 14px; color: #111827; font-weight: 700; }
+.document-section-title .section-label { font-size: 15px; }
 
-/* Card utility to match other student pages */
+/* Card utility to match other dean pages */
 .card { background: #fff; border: 1px solid #e5e7eb; border-radius: 12px; padding: 14px; box-shadow: 0 6px 18px rgba(15,23,42,0.04); }
 .avatar-circle { width: 40px; height: 40px; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center; overflow: hidden; background: #6b46c1; color: #fff; font-weight: 700; font-size: 14px; border: 1px solid #eef2ff; flex-shrink: 0; }
 .avatar-circle img { width: 100%; height: 100%; object-fit: cover; }
@@ -264,17 +336,24 @@ body { background: #f4f6fb; }
     .timeline-card { display:inline-block; width:fit-content; max-width:min(78%, 720px); padding:16px 18px; border-radius:14px; border:1px solid #e5e7eb; background:#fff; box-shadow:0 6px 18px rgba(15,23,42,0.04); }
     .timeline-card.current-user { background:#f3f0ff; border-color:#c4b5fd; }
     .timeline-card .timeline-text { color:#111827; font-size:14px; line-height:1.6; white-space:pre-wrap; word-break:break-word; text-align:left; }
+    <?php echo response_timeline_styles(); ?>
     .pill { display:inline-flex; align-items:center; gap:8px; padding:6px 10px; border-radius:999px; font-weight:700; font-size:13px; }
+    .pill.very_satisfied { background:#fef3c7; color:#92400e; }
     .pill.satisfied { background:#dcfce7; color:#065f46; }
     .pill.neutral { background:#f3f4f6; color:#374151; }
-    .pill.not_satisfied { background:#fee2e2; color:#b91c1c; }
+    .pill.not_satisfied { background:#ffedd5; color:#9a3412; }
+    .pill.very_unsatisfied { background:#fee2e2; color:#b91c1c; }
     .pill.small { padding:4px 8px; font-size:11px; }
-    .feedback-panel { border:1px solid #e5e7eb; border-radius:14px; padding:16px; background:#f9fafb; }
-    .feedback-summary-card { background:#fff; border:1px solid #e5e7eb; border-radius:14px; padding:18px; display:flex; flex-direction:column; gap:12px; box-shadow:0 4px 14px rgba(15,23,42,0.04); align-items:flex-start; }
-    .feedback-head { display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap; }
-    .feedback-title { font-weight:700; color:#111827; font-size:14px; }
-    .feedback-subtext { font-size:13px; color:#6b7280; }
-    .feedback-summary-card .timeline-text { display:block; width:100%; text-align:left !important; align-self:flex-start; word-break:break-word; white-space:pre-line; margin:0; padding:0; text-indent:0; line-height:1.6; }
+    .feedback-panel { border:1px solid #e5e7eb; border-radius:12px; padding:10px; background:#f9fafb; }
+    .feedback-summary-card { background:#fff; border:1px solid #e5e7eb; border-radius:12px; padding:10px 12px; display:flex; flex-direction:column; gap:8px; box-shadow:0 2px 8px rgba(15,23,42,0.04); align-items:stretch; }
+    .feedback-summary-top { display:flex; align-items:center; gap:10px; width:100%; }
+    .feedback-avatar { width:40px; height:40px; border-radius:999px; display:inline-flex; align-items:center; justify-content:center; overflow:hidden; background:#6b46c1; color:#fff; font-weight:700; font-size:14px; border:1px solid #eef2ff; flex-shrink:0; }
+    .feedback-avatar img { width:100%; height:100%; object-fit:cover; }
+    .feedback-summary-info { flex:1; min-width:0; }
+    .feedback-head { display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap; }
+    .feedback-title { font-weight:700; color:#111827; font-size:13px; line-height:1.3; }
+    .feedback-subtext { font-size:11.5px; color:#6b7280; line-height:1.3; }
+    .feedback-comment-bubble { display:inline-block; max-width:100%; background:#f8fafc; border:1px solid #eef2ff; border-radius:10px; padding:7px 10px; font-size:12px; color:#374151; line-height:1.5; white-space:pre-wrap; word-break:break-word; margin-left:50px; }
     .empty-card { background:#f9fafb; border:1px dashed #d1d5db; border-radius:12px; padding:14px; color:#6b7280; font-size:13px; }
     .reply-box-card { border:1px solid #e5e7eb; border-radius:14px; padding:16px; background:#fff; box-shadow:0 4px 14px rgba(15,23,42,0.06); }
     .reply-box-card textarea { width:100%; min-height:120px; border-radius:12px; padding:14px; border:1px solid #d1d5db; resize:vertical; background:#fff; font-size:14px; line-height:1.5; }
@@ -307,6 +386,10 @@ body { background: #f4f6fb; }
 .textarea, .input { width: 100%; border: 1px solid #d1d5db; border-radius: 10px; padding: 12px 14px; background: #fff; }
 .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
 @media (max-width: 1024px) { .main { margin-left: 0; } .grid { grid-template-columns: 1fr; } .feedback-row { grid-template-columns: 1fr; } }
+.scroll-top-btn { position: fixed; right: 24px; bottom: 24px; width: 44px; height: 44px; border-radius: 999px; background: #6b46c1; color: #fff; border: none; display: none; align-items: center; justify-content: center; cursor: pointer; box-shadow: 0 10px 24px rgba(107, 70, 193, 0.35); z-index: 500; transition: background .15s ease, transform .15s ease, opacity .2s ease; opacity: 0; transform: translateY(8px); }
+.scroll-top-btn.visible { display: flex; opacity: 1; transform: translateY(0); }
+.scroll-top-btn:hover { background: #5b3aa8; }
+.scroll-top-btn i { font-size: 22px; }
 </style>
 </head>
 <body>
@@ -317,69 +400,76 @@ body { background: #f4f6fb; }
         <div class="notice <?php echo e($flashType); ?>"><?php echo e($flashMessage); ?></div>
     <?php endif; ?>
 
-    <div class="ticket-header card" style="display:flex;justify-content:space-between;align-items:center;gap:16px;margin-bottom:16px;">
-        <div>
-            <div style="font-weight:700;font-size:18px;">Suggestion <?php echo e((string)$suggestion['ticket_no'] ?? ''); ?></div>
-            <div class="muted">Category: <?php echo e((string)($suggestion['category_name'] ?? '')); ?> · Submitted <?php echo e(!empty($suggestion['created_at']) ? date('M d, Y h:i A', strtotime((string)$suggestion['created_at'])) : ''); ?></div>
-        </div>
-        <?php
-            $status = strtolower(trim((string)($suggestion['status'] ?? '')));
-            $statusMap = [
-                'new' => 'Open',
-                'open' => 'Open',
-                'under_review' => 'Under review',
-                'reviewed' => 'Reviewed',
-                'resolved' => 'Resolved',
-            ];
-            $statusLabel = $statusMap[$status] ?? 'Under review';
-            $statusColor = 'background:#f59e0b;color:#1f2937;';
-            if ($status === 'reviewed') { $statusColor = 'background:#dcfce7;color:#065f46;'; }
-            elseif ($status === 'under_review') { $statusColor = 'background:#f59e0b;color:#1f2937;'; }
-            elseif ($status === 'new' || $status === 'open') { $statusColor = 'background:#fee2e2;color:#b91c1c;'; }
-        ?>
-        <div style="display:flex;align-items:center;gap:10px;">
-            <span style="padding:8px 12px;border-radius:999px;font-weight:700;<?php echo $statusColor; ?>"><?php echo e($statusLabel); ?></span>
-        </div>
-    </div>
-
-    <!-- Suggestion Details -->
-    <div class="card" style="margin-bottom:18px;">
-        <div style="font-weight:700;margin-bottom:8px;color:#111827;">Suggestion Details</div>
-        <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;">
-            <div><div style="font-size:12px;color:#6b7280;">Submitted By</div><div style="margin-top:6px;font-weight:600;"><?php echo e(trim(((int)($suggestion['is_anonymous'] ?? 0) === 1) ? 'Anonymous Student' : trim((string)($suggestion['first_name'] ?? '') . ' ' . (string)($suggestion['last_name'] ?? '')))); ?></div></div>
-            <div><div style="font-size:12px;color:#6b7280;">Category</div><div style="margin-top:6px;"><?php echo e((string)($suggestion['category_name'] ?? '')); ?></div></div>
-            <div><div style="font-size:12px;color:#6b7280;">Date of Suggestion</div><div style="margin-top:6px;"><?php echo e(!empty($suggestion['date_of_suggestion']) ? date('M d, Y', strtotime((string)$suggestion['date_of_suggestion'])) : 'N/A'); ?></div></div>
-            <div><div style="font-size:12px;color:#6b7280;">Terms of Agreement</div><div style="margin-top:6px;"><?php echo e(array_key_exists('terms_agreement_accepted', $suggestion) ? (((int)$suggestion['terms_agreement_accepted'] === 1) ? 'Yes' : 'No') : 'Unknown'); ?></div></div>
-            <div class="full" style="grid-column:1 / -1;"><div style="font-size:12px;color:#6b7280;">Subject / Idea</div><div style="margin-top:6px;"><?php echo e((string)($suggestion['subject'] ?? '')); ?></div></div>
-            <div class="full" style="grid-column:1 / -1;"><div style="font-size:12px;color:#6b7280;">Detailed Suggestion</div><div style="margin-top:6px;white-space:pre-wrap;"><?php echo nl2br(e((string)($suggestion['description'] ?? ''))); ?></div></div>
-        </div>
-
-        <?php if (!empty($suggestion['attachment'])): ?>
-            <?php $att = (string)$suggestion['attachment']; $attPath = '../' . ltrim($att, '/'); $ext = strtolower(pathinfo($att, PATHINFO_EXTENSION)); $isImage = in_array($ext, ['jpg','jpeg','png','gif'], true); ?>
-            <div style="margin-top:12px;">
-                <div style="font-size:12px;color:#6b7280;margin-bottom:6px;">Attachments / References</div>
-                <?php if ($isImage): ?>
-                    <a href="<?php echo e($attPath); ?>" target="_blank"><img src="<?php echo e($attPath); ?>" alt="attachment" style="max-width:360px;border-radius:8px;border:1px solid #eef2ff;"></a>
-                <?php else: ?>
-                    <a href="<?php echo e($attPath); ?>" target="_blank" class="btn" style="display:inline-block;padding:8px 12px;border-radius:8px;">Download attachment</a>
-                <?php endif; ?>
+    <?php if ($suggestionFound): ?>
+    <div class="complaint-document card" style="margin-bottom:18px;">
+        <div class="document-heading">
+            <div class="document-heading-left">
+                <a href="dean_suggestions.php" id="recordBackBtn" class="document-back-btn" aria-label="Back to Suggestions" title="Back to Suggestions">
+                    <i class='bx bx-arrow-back'></i>
+                </a>
+                <div>
+                    <div class="document-kicker">Official Suggestion Record</div>
+                    <div class="document-submitted">Submitted <?php echo e(!empty($suggestion['created_at']) ? date('M d, Y h:i A', strtotime((string)$suggestion['created_at'])) : ''); ?> &middot; Status: <?php echo e(suggestion_status_meta((string)($suggestion['status'] ?? ''))['label']); ?></div>
+                </div>
             </div>
-        <?php else: ?>
-            <div style="margin-top:12px;">
-                <div style="font-size:12px;color:#6b7280;margin-bottom:6px;">Attachments / References</div>
-                <div style="margin-top:6px;color:#374151;">No attachment uploaded.</div>
+            <?php $suggestionAllowedNext = suggestion_allowed_next_statuses((string)($suggestion['status'] ?? '')); ?>
+            <?php if (!empty($suggestionAllowedNext)): ?>
+            <div class="record-action-dropdown" id="recordActionDropdown">
+                <button type="button" class="record-action-btn" id="recordActionBtn" aria-haspopup="true" aria-expanded="false">
+                    Action <i class='bx bx-chevron-down'></i>
+                </button>
+                <div class="record-action-menu" id="recordActionMenu" role="menu">
+                    <button type="button" class="record-action-item" id="recordActionUpdate" role="menuitem"><i class='bx bx-edit-alt'></i> Update</button>
+                </div>
+            </div>
+            <?php endif; ?>
+        </div>
+
+        <!-- Suggestion Details -->
+        <div class="document-section">
+            <div class="document-section-title">
+                <div class="section-label">Suggestion Details</div>
+            </div>
+            <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;">
+                <div><div style="font-size:12px;color:#6b7280;">Submitted By</div><div style="margin-top:6px;font-weight:600;"><?php echo e(trim(((int)($suggestion['is_anonymous'] ?? 0) === 1) ? 'Anonymous Student' : trim((string)($suggestion['first_name'] ?? '') . ' ' . (string)($suggestion['last_name'] ?? '')))); ?></div></div>
+                <div><div style="font-size:12px;color:#6b7280;">Category</div><div style="margin-top:6px;"><?php echo e((string)($suggestion['category_name'] ?? '')); ?></div></div>
+                <div><div style="font-size:12px;color:#6b7280;">Date of Suggestion</div><div style="margin-top:6px;"><?php echo e(!empty($suggestion['date_of_suggestion']) ? date('M d, Y', strtotime((string)$suggestion['date_of_suggestion'])) : 'N/A'); ?></div></div>
+                <div><div style="font-size:12px;color:#6b7280;">Terms of Agreement</div><div style="margin-top:6px;"><?php echo e(array_key_exists('terms_agreement_accepted', $suggestion) ? (((int)$suggestion['terms_agreement_accepted'] === 1) ? 'Yes' : 'No') : 'Unknown'); ?></div></div>
+                <div class="full" style="grid-column:1 / -1;"><div style="font-size:12px;color:#6b7280;">Subject / Idea</div><div style="margin-top:6px;"><?php echo e((string)($suggestion['subject'] ?? '')); ?></div></div>
+                <div class="full" style="grid-column:1 / -1;"><div style="font-size:12px;color:#6b7280;">Detailed Suggestion</div><div style="margin-top:6px;white-space:pre-wrap;"><?php echo nl2br(e((string)($suggestion['description'] ?? ''))); ?></div></div>
+            </div>
+
+            <?php if (!empty($suggestion['attachment'])): ?>
+                <?php $att = (string)$suggestion['attachment']; $attPath = '../' . ltrim($att, '/'); $ext = strtolower(pathinfo($att, PATHINFO_EXTENSION)); $isImage = in_array($ext, ['jpg','jpeg','png','gif'], true); ?>
+                <div style="margin-top:12px;">
+                    <div style="font-size:12px;color:#6b7280;margin-bottom:6px;">Attachments / References</div>
+                    <?php if ($isImage): ?>
+                        <a href="<?php echo e($attPath); ?>" target="_blank"><img src="<?php echo e($attPath); ?>" alt="attachment" style="max-width:360px;border-radius:8px;border:1px solid #eef2ff;"></a>
+                    <?php else: ?>
+                        <a href="<?php echo e($attPath); ?>" target="_blank" class="btn" style="display:inline-block;padding:8px 12px;border-radius:8px;">Download attachment</a>
+                    <?php endif; ?>
+                </div>
+            <?php endif; ?>
+        </div>
+
+        <?php if (!empty($suggestion['expected_outcome'])): ?>
+            <div class="document-section">
+                <div class="document-section-title"><div class="section-label">Expected Outcome</div></div>
+                <div style="white-space:pre-wrap;"><?php echo nl2br(e((string)$suggestion['expected_outcome'])); ?></div>
             </div>
         <?php endif; ?>
-
-        <div style="margin-top:12px;">
-            <div style="font-size:12px;color:#6b7280;margin-bottom:6px;">Expected Outcome & Benefits</div>
-            <div style="margin-top:6px;white-space:pre-wrap;"><?php echo nl2br(e((string)($suggestion['expected_outcome'] ?? 'No expected outcome provided.'))); ?></div>
-        </div>
     </div>
 
-    <!-- Status Update & Remarks Form -->
-    <div class="card status-remarks-card" style="margin-bottom:18px;">
-        <div style="font-weight:700;margin-bottom:12px;color:#111827;">Update Status & Official Remarks</div>
+    <!-- Status Update & Remarks Form (opened from the Action dropdown) -->
+    <?php if (!empty($suggestionAllowedNext)): ?>
+    <div id="updateStatusModal" class="update-status-modal" aria-hidden="true" role="dialog" aria-modal="true">
+        <div class="update-status-backdrop" onclick="closeUpdateStatusModal()"></div>
+        <div class="update-status-sheet" onclick="event.stopPropagation();">
+        <div class="card status-remarks-card">
+        <div class="update-status-modal-head">
+            <div style="font-weight:700;color:#111827;">Update Status & Official Remarks</div>
+            <button type="button" class="update-status-close" onclick="closeUpdateStatusModal()" aria-label="Close"><i class='bx bx-x'></i></button>
+        </div>
 
         <form method="POST">
             <input type="hidden" name="action" value="update_suggestion">
@@ -392,44 +482,68 @@ body { background: #f4f6fb; }
             <div class="form-group">
                 <label for="statusSelect">Suggestion Status</label>
                 <select id="statusSelect" name="status" class="form-control">
-                    <option value="under_review" <?php echo ((string)$suggestion['status'] === 'under_review') ? 'selected' : ''; ?>>Under Review</option>
-                    <option value="reviewed" <?php echo ((string)$suggestion['status'] === 'reviewed') ? 'selected' : ''; ?>>Reviewed</option>
+                    <?php foreach ($suggestionAllowedNext as $statusValue => $statusOptionLabel): ?>
+                        <option value="<?php echo e($statusValue); ?>" <?php echo ((string)$suggestion['status'] === $statusValue) ? 'selected' : ''; ?>><?php echo e($statusOptionLabel); ?></option>
+                    <?php endforeach; ?>
                 </select>
             </div>
 
             <?php if (!empty($deanRemark)): ?>
+                <!-- Display existing remark -->
                 <div id="remarkDisplay" style="margin-bottom:12px;">
                     <div style="font-weight:700;margin-bottom:6px;color:#111827;font-size:14px;">Official Remarks (Visible to Student)</div>
                     <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:10px;padding:12px;margin-bottom:12px;color:#374151;line-height:1.6;">
-                        <?php echo nl2br(e((string)$deanRemark['message'])); ?>
+                        <?php
+                        $previewText = trim((string)$deanRemark['message']);
+                        if (mb_strlen($previewText) > 120) {
+                            $sentenceEnd = preg_match('/[\.\!\?](\s|$)/u', mb_substr($previewText, 0, 120), $matches, PREG_OFFSET_CAPTURE);
+                            if ($sentenceEnd && isset($matches[0][1]) && $matches[0][1] > 0) {
+                                $previewText = mb_substr($previewText, 0, $matches[0][1] + 1);
+                            } else {
+                                $previewText = mb_substr($previewText, 0, 120);
+                                $lastSpace = mb_strrpos($previewText, ' ');
+                                if ($lastSpace !== false) {
+                                    $previewText = mb_substr($previewText, 0, $lastSpace);
+                                }
+                            }
+                            $previewText = rtrim($previewText) . '...';
+                        }
+                        echo nl2br(e($previewText));
+                        ?>
                     </div>
                     <div style="font-size:12px;color:#6b7280;margin-bottom:12px;">Added: <?php echo e(date('M d, Y h:i A', strtotime((string)$deanRemark['created_at']))); ?></div>
-                    <button type="button" onclick="toggleRemarkEdit()" class="btn" style="background:#6b46c1;color:#fff;border:none;">
+                    <button type="button" onclick="toggleRemarkEdit()" class="btn btn-secondary" style="background:#6b46c1;color:#fff;border:none;">
                         <i class='bx bx-edit-alt' style="margin-right:4px;"></i> Edit Remarks
                     </button>
                 </div>
 
+                <!-- Edit form (hidden by default) -->
                 <div id="remarkFormWrapper" style="display:none;margin-bottom:12px;">
                     <div class="form-group">
                         <label for="remarkTextarea">Edit Official Remarks (Visible to Student)</label>
                         <textarea id="remarkTextarea" name="remark" class="form-control" placeholder="Type your response or next steps here..." required><?php echo e((string)$deanRemark['message']); ?></textarea>
                     </div>
-                    <div class="status-remarks-actions">
-                        <button type="submit" class="btn">Save Changes</button>
-                        <button type="button" onclick="toggleRemarkEdit()" class="btn" style="background:#6b7280;">Cancel</button>
-                    </div>
+                    <button type="button" onclick="toggleRemarkEdit()" class="btn btn-secondary" style="margin-bottom:4px;">Cancel Editing</button>
                 </div>
             <?php else: ?>
+                <!-- New remark form -->
                 <div class="form-group">
                     <label for="remarkTextarea">Official Remarks (Visible to Student)</label>
                     <textarea id="remarkTextarea" name="remark" class="form-control" placeholder="Type your response or next steps here..." required></textarea>
                 </div>
-                <div class="status-remarks-actions">
-                    <button type="submit" class="btn">Save Changes</button>
-                </div>
             <?php endif; ?>
+
+            <!-- Status changes (and remark edits, if any) are always saved from here -->
+            <!-- so switching just the status dropdown never requires opening "Edit Remarks" first. -->
+            <div class="status-remarks-actions">
+                <button type="button" class="btn btn-secondary" onclick="closeUpdateStatusModal()">Cancel</button>
+                <button type="submit" class="btn">Save Changes</button>
+            </div>
         </form>
+        </div>
+        </div>
     </div>
+    <?php endif; ?>
 
     <script>
     function toggleRemarkEdit() {
@@ -440,6 +554,76 @@ body { background: #f4f6fb; }
             form.style.display = form.style.display === 'none' ? 'block' : 'none';
         }
     }
+
+    function openUpdateStatusModal() {
+        const modal = document.getElementById('updateStatusModal');
+        if (modal) {
+            modal.classList.add('visible');
+            modal.setAttribute('aria-hidden', 'false');
+        }
+    }
+
+    function closeUpdateStatusModal() {
+        const modal = document.getElementById('updateStatusModal');
+        if (modal) {
+            modal.classList.remove('visible');
+            modal.setAttribute('aria-hidden', 'true');
+        }
+    }
+
+    document.addEventListener('DOMContentLoaded', function () {
+        // Header "Action" dropdown: Update only (no Call Slip for suggestions)
+        const actionDropdown = document.getElementById('recordActionDropdown');
+        const actionBtn = document.getElementById('recordActionBtn');
+        const actionUpdateItem = document.getElementById('recordActionUpdate');
+
+        function closeActionDropdown() {
+            if (actionDropdown) {
+                actionDropdown.classList.remove('open');
+                if (actionBtn) actionBtn.setAttribute('aria-expanded', 'false');
+            }
+        }
+
+        if (actionDropdown && actionBtn) {
+            actionBtn.addEventListener('click', function (event) {
+                event.preventDefault();
+                event.stopPropagation();
+                const isOpen = actionDropdown.classList.toggle('open');
+                actionBtn.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+            });
+
+            document.addEventListener('click', function (event) {
+                if (!actionDropdown.contains(event.target)) {
+                    closeActionDropdown();
+                }
+            });
+
+            document.addEventListener('keydown', function (event) {
+                if (event.key === 'Escape') {
+                    closeActionDropdown();
+                }
+            });
+        }
+
+        if (actionUpdateItem) {
+            actionUpdateItem.addEventListener('click', function (event) {
+                event.preventDefault();
+                closeActionDropdown();
+                openUpdateStatusModal();
+            });
+        }
+
+        // The status form lives in a modal that starts hidden, so this has
+        // to wait for the DOM instead of running inline.
+        const status = document.getElementById('statusSelect');
+        const remark = document.getElementById('remarkTextarea');
+        if (status && remark) {
+            const finalizingStatuses = ['accepted', 'not_feasible', 'implemented'];
+            function toggleRequired() { remark.required = finalizingStatuses.includes(status.value); }
+            status.addEventListener('change', toggleRequired);
+            toggleRequired();
+        }
+    });
 
     function toggleFeedbackReplyForm(button) {
         const feedbackHistoryId = button.dataset.feedbackHistoryId;
@@ -470,10 +654,16 @@ body { background: #f4f6fb; }
                 statusEl.innerHTML = '<span style="color:#166534;">Reply sent successfully.</span>';
                 appendDeanReply(form, result.reply);
                 form.reset();
+                // Collapse the inline form after sending so the thread stays tidy.
+                // Do NOT collapse the global reply form (id="feedbackReplyForm").
                 const wrapper = form.closest('.reply-form-wrapper');
                 if (wrapper && form.id !== 'feedbackReplyForm') {
                     wrapper.style.display = 'none';
                 }
+                // Reload so the reply is picked up from the database and the
+                // whole thread (and anyone else's view of it) stays in sync,
+                // same as the student side already does.
+                setTimeout(() => window.location.reload(), 600);
             } else {
                 statusEl.innerHTML = '<span style="color:#b91c1c;">Unable to send reply. Please try again.</span>';
             }
@@ -489,47 +679,32 @@ body { background: #f4f6fb; }
     }
 
     function appendDeanReply(form, reply) {
-        if (!reply || typeof reply !== 'object') {
+        if (!reply || typeof reply !== 'object' || !window.VoiceTimeline) {
             return;
         }
 
-        const wrapper = form.closest('.reply-form-wrapper');
-        if (!wrapper) {
-            return;
-        }
+        const roleRaw = String(reply.replier_role || '').toLowerCase();
+        const roleLabel = roleRaw === 'dean' ? 'College Dean' : (roleRaw === 'admin' ? 'Administrator' : 'Student');
+        const box = document.getElementById('globalReplyBox');
 
-        const newReply = document.createElement('div');
-        newReply.className = 'feedback-reply current-user-reply';
-        newReply.style.cssText = 'border:1px solid #e5e7eb;border-radius:10px;padding:14px;display:flex;gap:12px;align-items:flex-start;width:100%;max-width:880px;background:#fff;margin-left:0;';
-        newReply.innerHTML = `
-            <div class="avatar-circle" style="width:36px;height:36px;flex-shrink:0;background:#4f46e5;">
-                <span style="font-size:16px;color:#fff;">${escapeHtml((reply.replier_name || 'You').charAt(0).toUpperCase())}</span>
-            </div>
-            <div style="flex:1;min-width:0;">
-                <div style="display:flex;flex-direction:column;gap:4px;margin-bottom:6px;">
-                    <div style="font-weight:700;font-size:13px;color:#111827;">${escapeHtml(reply.replier_name || 'You')}</div>
-                    <div style="font-size:12px;color:#6b7280;">${escapeHtml(reply.replier_role ? reply.replier_role.charAt(0).toUpperCase() + reply.replier_role.slice(1) : 'Responder')}</div>
-                </div>
-                <div style="font-size:11px;color:#6b7280;margin-bottom:6px;">${escapeHtml(reply.created_at || '')}</div>
-                <div style="font-size:13px;color:#111827;white-space:pre-wrap;">${escapeHtml(reply.message || '')}</div>
-            </div>
-        `;
-
-        if (wrapper.parentNode) {
-            wrapper.parentNode.insertBefore(newReply, wrapper);
-        } else {
-            wrapper.insertAdjacentElement('afterend', newReply);
-        }
+        window.VoiceTimeline.appendReply({
+            name: reply.replier_name || 'You',
+            roleLabel: roleLabel,
+            isCurrentUser: true,
+            photo: null,
+            timeText: reply.created_at || '',
+            messageHtml: escapeHtml(reply.message || '').replace(/\n/g, '<br>'),
+            replyTargetId: box ? box.id : null,
+        });
     }
 
     document.addEventListener('DOMContentLoaded', function () {
-        const status = document.getElementById('statusSelect');
-        const remark = document.getElementById('remarkTextarea');
-        if (status && remark) {
-            function toggleRequired() { remark.required = status.value === 'reviewed'; }
-            status.addEventListener('change', toggleRequired);
-            toggleRequired();
-        }
+        const replyButtons = document.querySelectorAll('.reply-toggle');
+        replyButtons.forEach(function (button) {
+            button.addEventListener('click', function () {
+                toggleFeedbackReplyForm(button);
+            });
+        });
 
         const replyForms = document.querySelectorAll('.dean-feedback-reply-form');
         replyForms.forEach(function (form) {
@@ -538,6 +713,7 @@ body { background: #f4f6fb; }
     });
     </script>
 
+    <!-- Combined Response Timeline -->
     <?php
         $timelineReplies = [];
         $officialRemark = null;
@@ -578,18 +754,15 @@ body { background: #f4f6fb; }
         $canReply = !$threadResolved;
         $feedbackId = !empty($feedback['id']) ? (int)$feedback['id'] : '';
     ?>
-
-    <div class="card" style="padding:0;margin-bottom:18px;">
+    <?php if ($officialRemark || !empty($feedback) || !empty($timelineReplies)): ?>
+    <div class="card response-timeline-card" style="padding:0;margin-bottom:18px;">
         <div style="display:flex;align-items:center;padding:12px 16px;border-bottom:1px solid #eef2ff;">
             <div style="font-weight:700;flex:1;">Response Timeline</div>
         </div>
         <div style="padding:16px;">
-            <?php if (!$officialRemark && empty($feedback) && empty($timelineReplies)): ?>
-                <div class="muted">No responses yet.</div>
-            <?php else: ?>
                 <div class="timeline-shell">
                     <div class="ticket-section">
-                        <div class="section-title">Official Remark</div>
+                        <div class="section-title">Responses</div>
                         <?php if ($officialRemark): ?>
                             <?php
                                 $officialRole = strtolower((string)($officialRemark['sender_role'] ?? ''));
@@ -597,31 +770,46 @@ body { background: #f4f6fb; }
                                 $officialPerson = $officialSenderId > 0 ? get_person_display($pdo, $officialRole, $officialSenderId) : ['name' => ucfirst($officialRole), 'photo' => null];
                                 $officialName = $officialPerson['name'] ?? (ucfirst($officialRole) ?: 'Staff');
                                 $officialPhoto = !empty($officialPerson['photo']) ? ('../' . ltrim($officialPerson['photo'], '/')) : null;
-                                $officialInitial = strtoupper(substr(trim($officialName), 0, 1));
                                 $officialRoleLabel = $officialRole === 'dean' ? 'College Dean' : ($officialRole === 'admin' ? 'Administrator' : 'Student');
-                                $officialCurrentUser = $officialRole === 'dean';
+                                $officialCurrentUser = ($officialRole === 'dean');
+                                echo response_timeline_entry([
+                                    'name' => $officialName,
+                                    'role_label' => $officialRoleLabel,
+                                    'is_current_user' => $officialCurrentUser,
+                                    'photo' => $officialPhoto,
+                                    'time_text' => date('M d, Y h:i A', strtotime((string)$officialRemark['created_at'])),
+                                    'message_html' => nl2br(e((string)$officialRemark['message'])),
+                                    'reply_target_id' => $canReply ? 'globalReplyBox' : null,
+                                ]);
                             ?>
-                            <div class="timeline-entry">
-                                <div class="timeline-avatar">
-                                    <?php if ($officialPhoto): ?>
-                                        <img src="<?php echo e($officialPhoto); ?>" alt="<?php echo e($officialName); ?>">
-                                    <?php else: ?>
-                                        <?php echo e($officialInitial); ?>
-                                    <?php endif; ?>
-                                </div>
-                                <div class="timeline-body">
-                                    <div class="timeline-heading">
-                                        <div class="timeline-name"><?php echo e($officialName . ($officialCurrentUser ? ' (You)' : '')); ?></div>
-                                        <div class="timeline-role"><?php echo e($officialRoleLabel); ?></div>
-                                    </div>
-                                    <div class="timeline-time"><?php echo e(date('M d, Y h:i A', strtotime((string)$officialRemark['created_at']))); ?></div>
-                                    <div class="timeline-card current-user">
-                                        <div class="timeline-text"><?php echo nl2br(e((string)$officialRemark['message'])); ?></div>
-                                    </div>
-                                </div>
-                            </div>
                         <?php else: ?>
                             <div class="empty-card">No official remark has been posted yet.</div>
+                        <?php endif; ?>
+
+                        <?php if (!empty($timelineReplies)): ?>
+                            <div class="timeline-replies">
+                                <?php foreach ($timelineReplies as $replyItem): ?>
+                                    <?php
+                                        $replyRoleRaw = strtolower((string)($replyItem['sender_role'] ?? ''));
+                                        $replySenderId = isset($replyItem['sender_id']) ? (int)$replyItem['sender_id'] : 0;
+                                        $replyPerson = $replySenderId > 0 ? get_person_display($pdo, $replyRoleRaw, $replySenderId) : ['name' => ucfirst($replyRoleRaw), 'photo' => null];
+                                        $replyName = $replyPerson['name'] ?? ucfirst($replyRoleRaw);
+                                        $replyPhoto = !empty($replyPerson['photo']) ? ('../' . ltrim($replyPerson['photo'], '/')) : null;
+                                        $replyRoleLabel = $replyRoleRaw === 'dean' ? 'College Dean' : ($replyRoleRaw === 'admin' ? 'Administrator' : 'Student');
+                                        $replyIsCurrentUser = ($replyRoleRaw === 'dean');
+                                        echo response_timeline_entry([
+                                            'name' => $replyName,
+                                            'role_label' => $replyRoleLabel,
+                                            'is_current_user' => $replyIsCurrentUser,
+                                            'photo' => $replyPhoto,
+                                            'time_text' => date('M d, Y h:i A', strtotime((string)($replyItem['created_at'] ?? ''))),
+                                            'message_html' => nl2br(e((string)($replyItem['message'] ?? ''))),
+                                            'is_reply' => true,
+                                            'reply_target_id' => $canReply ? 'globalReplyBox' : null,
+                                        ]);
+                                    ?>
+                                <?php endforeach; ?>
+                            </div>
                         <?php endif; ?>
                     </div>
 
@@ -633,21 +821,35 @@ body { background: #f4f6fb; }
                                     $meta = feedback_option_meta((string)$feedback['satisfaction']);
                                     $studentInfo = get_person_display($pdo, 'student', (int)$suggestion['student_id']);
                                     $studentName = $studentInfo['name'] ?? 'Student';
+                                    $stuPhoto = !empty($studentInfo['photo']) ? ('../' . ltrim($studentInfo['photo'], '/')) : null;
+                                    $stuInitial = strtoupper(substr(trim($studentName), 0, 1)) ?: 'S';
+                                    $stuComment = trim((string)($feedback['comment'] ?? ''));
                                 ?>
                                 <div class="feedback-summary-card">
-                                    <div class="feedback-head">
-                                        <div>
-                                            <div class="feedback-title"><?php echo e($studentName); ?></div>
-                                            <div class="feedback-subtext">Submitted feedback for this response</div>
+                                    <div class="feedback-summary-top">
+                                        <div class="feedback-avatar">
+                                            <?php if ($stuPhoto): ?>
+                                                <img src="<?php echo e($stuPhoto); ?>" alt="<?php echo e($studentName); ?>">
+                                            <?php else: ?>
+                                                <?php echo e($stuInitial); ?>
+                                            <?php endif; ?>
                                         </div>
-                                        <span class="pill <?php echo e((string)$feedback['satisfaction']); ?>">
-                                            <i class='bx <?php echo e($meta['icon']); ?>'></i>
-                                            <?php echo e($meta['label']); ?>
-                                        </span>
+                                        <div class="feedback-summary-info">
+                                            <div class="feedback-head">
+                                                <div>
+                                                    <div class="feedback-title"><?php echo e($studentName); ?></div>
+                                                    <div class="feedback-subtext">Submitted feedback for this response</div>
+                                                </div>
+                                                <span class="pill small <?php echo e((string)$feedback['satisfaction']); ?>">
+                                                    <i class='bx <?php echo e($meta['icon']); ?>'></i>
+                                                    <?php echo e($meta['label']); ?>
+                                                </span>
+                                            </div>
+                                        </div>
                                     </div>
-                                    <div class="timeline-text" style="display:block;width:100%;font-size:13px;color:#374151;white-space:pre-line;text-align:left;word-break:break-word;margin:0;padding:0;line-height:1.6;">
-                                        <?php echo nl2br(e((string)($feedback['comment'] ?? ''))); ?>
-                                    </div>
+                                    <?php if ($stuComment !== ''): ?>
+                                    <div class="feedback-comment-bubble"><?php echo nl2br(e($stuComment)); ?></div>
+                                    <?php endif; ?>
                                 </div>
                             <?php else: ?>
                                 <div class="empty-card">No rating has been submitted yet.</div>
@@ -655,50 +857,9 @@ body { background: #f4f6fb; }
                         </div>
                     </div>
 
-                    <div class="ticket-section">
-                        <div class="section-title">Conversation Replies</div>
-                        <?php if (empty($timelineReplies)): ?>
-                            <div class="empty-card">No conversation replies yet.</div>
-                        <?php else: ?>
-                            <div class="timeline-list">
-                                <?php foreach ($timelineReplies as $replyItem): ?>
-                                    <?php
-                                        $replyRoleRaw = strtolower((string)($replyItem['sender_role'] ?? ''));
-                                        $replySenderId = isset($replyItem['sender_id']) ? (int)$replyItem['sender_id'] : 0;
-                                        $replyPerson = $replySenderId > 0 ? get_person_display($pdo, $replyRoleRaw, $replySenderId) : ['name' => ucfirst($replyRoleRaw), 'photo' => null];
-                                        $replyName = $replyPerson['name'] ?? ucfirst($replyRoleRaw);
-                                        $replyPhoto = !empty($replyPerson['photo']) ? ('../' . ltrim($replyPerson['photo'], '/')) : null;
-                                        $replyInitial = strtoupper(substr(trim($replyName), 0, 1));
-                                        $replyRoleLabel = $replyRoleRaw === 'dean' ? 'College Dean' : ($replyRoleRaw === 'admin' ? 'Administrator' : 'Student');
-                                        $replyIsCurrentUser = $replyRoleRaw === 'dean';
-                                    ?>
-                                    <div class="timeline-entry">
-                                        <div class="timeline-avatar">
-                                            <?php if ($replyPhoto): ?>
-                                                <img src="<?php echo e($replyPhoto); ?>" alt="<?php echo e($replyName); ?>">
-                                            <?php else: ?>
-                                                <?php echo e($replyInitial); ?>
-                                            <?php endif; ?>
-                                        </div>
-                                        <div class="timeline-body">
-                                            <div class="timeline-heading">
-                                                <div class="timeline-name"><?php echo e($replyName . ($replyIsCurrentUser ? ' (You)' : '')); ?></div>
-                                                <div class="timeline-role"><?php echo e($replyRoleLabel); ?></div>
-                                            </div>
-                                            <div class="timeline-time"><?php echo e(date('M d, Y h:i A', strtotime((string)($replyItem['created_at'] ?? '')))); ?></div>
-                                            <div class="timeline-card<?php echo $replyIsCurrentUser ? ' current-user' : ''; ?>">
-                                                <div class="timeline-text"><?php echo nl2br(e((string)($replyItem['message'] ?? ''))); ?></div>
-                                            </div>
-                                        </div>
-                                    </div>
-                                <?php endforeach; ?>
-                            </div>
-                        <?php endif; ?>
-                    </div>
-
                     <?php if ($canReply): ?>
                         <div class="ticket-section">
-                            <div class="reply-box-card reply-form-wrapper">
+                            <div id="globalReplyBox" class="reply-box-card reply-form-wrapper timeline-reply-box">
                                 <form id="feedbackReplyForm" class="dean-feedback-reply-form" method="POST">
                                     <input type="hidden" name="csrf_token" value="<?php echo e((string)($_SESSION['csrf_token'] ?? '')); ?>">
                                     <input type="hidden" name="ticket_type" value="suggestion">
@@ -720,10 +881,52 @@ body { background: #f4f6fb; }
                         </div>
                     <?php endif; ?>
                 </div>
-            <?php endif; ?>
         </div>
     </div>
 
+    <?php endif; ?>
+    <div style="height:18px;"></div>
+    <?php endif; ?>
 </div>
+
+<?php echo response_timeline_script(); ?>
+<button type="button" id="scrollTopBtn" class="scroll-top-btn" aria-label="Scroll to top" title="Back to top">
+    <i class='bx bx-up-arrow-alt'></i>
+</button>
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    // Back arrow: prefer returning to the exact suggestions-list page the
+    // dean came from (same filters/search/pagination/scroll position, via
+    // normal browser back-navigation) instead of a fresh navigation that
+    // would reset it back to the top.
+    var backBtn = document.getElementById('recordBackBtn');
+    if (backBtn) {
+        backBtn.addEventListener('click', function (event) {
+            var cameFromList = document.referrer && document.referrer.indexOf(window.location.origin) === 0;
+            if (cameFromList && window.history.length > 1) {
+                event.preventDefault();
+                window.history.back();
+            }
+            // Otherwise let the plain href navigate to dean_suggestions.php
+            // (e.g. this page was opened directly or from elsewhere).
+        });
+    }
+
+    var scrollTopBtn = document.getElementById('scrollTopBtn');
+    if (!scrollTopBtn) return;
+    var toggleScrollTopBtn = function () {
+        if (window.scrollY > 300) {
+            scrollTopBtn.classList.add('visible');
+        } else {
+            scrollTopBtn.classList.remove('visible');
+        }
+    };
+    window.addEventListener('scroll', toggleScrollTopBtn, { passive: true });
+    toggleScrollTopBtn();
+    scrollTopBtn.addEventListener('click', function () {
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+    });
+});
+</script>
 </body>
 </html>

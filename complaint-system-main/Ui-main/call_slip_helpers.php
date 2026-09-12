@@ -25,6 +25,26 @@ function call_slip_mail_settings(): array
 }
 
 /**
+ * Absolute URL to the student login page, for the "log in to VOICE to view
+ * full details" link in the call slip email. Built from the current
+ * request rather than a hardcoded host, since callers (dean/admin ticket
+ * pages) always live two directories under Ui-main - Ui-main/<role>/*.php -
+ * so the app root sits exactly two levels above the current script.
+ */
+function call_slip_login_url(): string
+{
+    $isHttps = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
+        || (isset($_SERVER['SERVER_PORT']) && (string)$_SERVER['SERVER_PORT'] === '443');
+    $scheme = $isHttps ? 'https' : 'http';
+    $host = (string)($_SERVER['HTTP_HOST'] ?? 'localhost');
+
+    $scriptDir = str_replace('\\', '/', dirname((string)($_SERVER['SCRIPT_NAME'] ?? '/')));
+    $appRoot = rtrim(dirname(dirname($scriptDir)), '/');
+
+    return $scheme . '://' . $host . $appRoot . '/student/login.php';
+}
+
+/**
  * Converts a 24-hour "HH:MM" (or "HH:MM:SS") time — what a native
  * <input type="time"> always submits, regardless of how it's displayed in
  * the picker — into 12-hour form with an explicit AM/PM, e.g. "23:00" -> "11:00 PM".
@@ -52,7 +72,8 @@ function send_call_slip_email(
     string $dateIssued,
     string $timeIssued,
     string $officeMessage,
-    string $issuedBy
+    string $issuedBy,
+    string $reasonNote = ''
 ): array {
     if (!filter_var($recipientEmail, FILTER_VALIDATE_EMAIL)) {
         return ['ok' => false, 'message' => 'The reported student does not have a valid Gmail address.'];
@@ -86,11 +107,27 @@ function send_call_slip_email(
         $mailer->isHTML(true);
         $mailer->Subject = 'VOICE Call Slip - ' . $ticketNo;
 
-        $safeName = htmlspecialchars($recipientName !== '' ? $recipientName : 'Student', ENT_QUOTES, 'UTF-8');
-        $safeDate = htmlspecialchars($dateIssued, ENT_QUOTES, 'UTF-8');
+        $displayName = $recipientName !== '' ? $recipientName : 'Student';
+        $datePrepared = date('F j, Y');
+        $reasonText = $reasonNote !== '' ? $reasonNote : 'General concern regarding the filed complaint.';
+
+        // e.g. "2026-09-10 (Thursday)" - falls back to the raw value if it
+        // isn't a parseable date (so a blank/odd value doesn't crash this).
+        $dateWithWeekday = $dateIssued;
+        $parsedDate = $dateIssued !== '' ? strtotime($dateIssued) : false;
+        if ($parsedDate !== false) {
+            $dateWithWeekday = date('Y-m-d', $parsedDate) . ' (' . date('l', $parsedDate) . ')';
+        }
+
+        $safeName = htmlspecialchars($displayName, ENT_QUOTES, 'UTF-8');
+        $safeDatePrepared = htmlspecialchars($datePrepared, ENT_QUOTES, 'UTF-8');
+        $safeDate = htmlspecialchars($dateWithWeekday, ENT_QUOTES, 'UTF-8');
         $safeTime = htmlspecialchars($timeIssued, ENT_QUOTES, 'UTF-8');
         $safeOfficeMessage = htmlspecialchars($officeMessage, ENT_QUOTES, 'UTF-8');
+        $safeReasonNote = nl2br(htmlspecialchars($reasonText, ENT_QUOTES, 'UTF-8'));
         $safeIssuedBy = htmlspecialchars($issuedBy, ENT_QUOTES, 'UTF-8');
+        $loginUrl = call_slip_login_url();
+        $safeLoginUrl = htmlspecialchars($loginUrl, ENT_QUOTES, 'UTF-8');
 
         $mailer->Body = "<!DOCTYPE html>
 <html>
@@ -99,15 +136,18 @@ function send_call_slip_email(
             <div style=\"font-family:Arial,Helvetica,sans-serif;background:#f7f7f8;padding:24px;color:#111827;\">
                 <div style=\"max-width:560px;margin:0 auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:12px;padding:24px;\">
                     <h2 style=\"margin:0 0 18px;\">VOICE Call Slip</h2>
-                    <p>Hello {$safeName},</p>
-                    <p><strong>Date:</strong> {$safeDate}<br><strong>Time:</strong> {$safeTime}</p>
+                    <p><strong>To:</strong> {$safeName}<br><strong>Date Issued:</strong> {$safeDatePrepared}</p>
                     <p>{$safeOfficeMessage}</p>
-                    <p><strong>Issued by:</strong> {$safeIssuedBy}</p>
+                    <p><strong>on Date:</strong> {$safeDate}<br><strong>at Time:</strong> {$safeTime}</p>
+                    <p><strong>This is in connection with:</strong><br>{$safeReasonNote}</p>
+                    <p>Please review this Call Slip and report to the designated office at the scheduled date and time. Thank you.</p>
+                    <p style=\"margin-top:20px;\"><strong>Issued by:</strong> {$safeIssuedBy}</p>
+                    <p style=\"margin:18px 0;\"><a href=\"{$safeLoginUrl}\" style=\"display:inline-block;background:#6d28d9;color:#ffffff;text-decoration:none;padding:11px 20px;border-radius:8px;font-weight:600;\">Log in to VOICE</a></p>
                 </div>
             </div>
 </body>
 </html>";
-        $mailer->AltBody = "Hello {$recipientName},\n\nDate: {$dateIssued}\nTime: {$timeIssued}\n\n{$officeMessage}\nIssued by: {$issuedBy}";
+        $mailer->AltBody = "To: {$displayName}\nDate Issued: {$datePrepared}\n\n{$officeMessage}\n\non Date: {$dateWithWeekday}\nat Time: {$timeIssued}\n\nThis is in connection with:\n{$reasonText}\n\nPlease review this Call Slip and report to the designated office at the scheduled date and time. Thank you.\n\nIssued by: {$issuedBy}\n\n{$loginUrl}";
         $mailer->send();
         $transactionId = method_exists($mailer->getSMTPInstance(), 'getLastTransactionID')
             ? (string)$mailer->getSMTPInstance()->getLastTransactionID()

@@ -119,6 +119,18 @@ if ($dateFrom !== '' && $dateTo !== '' && $dateFrom > $dateTo) {
     [$dateFrom, $dateTo] = [$dateTo, $dateFrom];
 }
 
+$cardFilter = trim((string)($_GET['card_filter'] ?? ''));
+if (!in_array($cardFilter, ['complaints', 'suggestions', 'reviewed_suggestions', 'resolved_complaints'], true)) {
+    $cardFilter = '';
+}
+$cardFilterLabels = [
+    '' => 'All Records',
+    'complaints' => 'Complaints',
+    'suggestions' => 'Suggestions',
+    'reviewed_suggestions' => 'Reviewed Suggestions',
+    'resolved_complaints' => 'Resolved Complaints',
+];
+
 $reportRangeStart = $dateFrom !== '' ? $dateFrom . ' 00:00:00' : '';
 $reportRangeEnd = $dateTo !== ''
     ? (new DateTimeImmutable($dateTo))->modify('+1 day')->format('Y-m-d 00:00:00')
@@ -136,7 +148,18 @@ $filterPreserve = array_filter([
     'date_from' => $dateFrom,
     'date_to' => $dateTo,
     'department' => $programId > 0 ? (string)$programId : '',
+    'card_filter' => $cardFilter,
 ], static fn($v) => $v !== '');
+
+$cardFilterUrl = static function (string $value) use ($filterPreserve): string {
+    $params = $filterPreserve;
+    if ($value === '') {
+        unset($params['card_filter']);
+    } else {
+        $params['card_filter'] = $value;
+    }
+    return 'dean_reports.php' . ($params !== [] ? '?' . http_build_query($params) : '');
+};
 
 function dean_reports_semester_clause(string $alias, string $semester, array &$params, string $prefix): string
 {
@@ -239,21 +262,81 @@ if ($q !== '') {
 
 $reportedSubquery = '(SELECT COUNT(*) FROM complaint_student_links csl INNER JOIN complaints rc ON rc.id = csl.complaint_id WHERE csl.student_id = sp.id';
 $complaintsSubquery = '(SELECT COUNT(*) FROM complaints fc WHERE fc.student_id = sp.id';
+$suggestionsSubquery = '(SELECT COUNT(*) FROM suggestions fs WHERE fs.student_id = sp.id';
 if ($schoolYear !== '') {
     $reportedSubquery .= ' AND rc.school_year = :sy_reported';
     $complaintsSubquery .= ' AND fc.school_year = :sy_filed';
+    $suggestionsSubquery .= ' AND fs.school_year = :sy_suggestions';
     $directoryParams[':sy_reported'] = $schoolYear;
     $directoryParams[':sy_filed'] = $schoolYear;
+    $directoryParams[':sy_suggestions'] = $schoolYear;
 }
 $reportedSubquery .= dean_reports_semester_clause('rc', $semester, $directoryParams, 'semester_reported');
 $complaintsSubquery .= dean_reports_semester_clause('fc', $semester, $directoryParams, 'semester_filed');
+$suggestionsSubquery .= dean_reports_semester_clause('fs', $semester, $directoryParams, 'semester_suggestions');
 $reportedSubquery .= dean_reports_range_clause('rc', $reportRangeStart, $reportRangeEnd, $directoryParams, 'range_reported');
 $complaintsSubquery .= dean_reports_range_clause('fc', $reportRangeStart, $reportRangeEnd, $directoryParams, 'range_filed');
+$suggestionsSubquery .= dean_reports_range_clause('fs', $reportRangeStart, $reportRangeEnd, $directoryParams, 'range_suggestions');
+$complaintsSubquery .= $cardFilter === 'resolved_complaints' ? " AND fc.status = 'resolved'" : '';
+$suggestionsSubquery .= in_array($cardFilter, ['reviewed_suggestions'], true) ? " AND fs.status = 'reviewed'" : '';
+if (in_array($cardFilter, ['suggestions', 'reviewed_suggestions'], true)) {
+    $reportedSubquery .= ' AND 1 = 0';
+    $complaintsSubquery .= ' AND 1 = 0';
+}
+if (in_array($cardFilter, ['complaints', 'resolved_complaints'], true)) {
+    $suggestionsSubquery .= ' AND 1 = 0';
+}
+$latestComplaintSubquery = preg_replace('/^\(SELECT COUNT\(\*\)/', '(SELECT MAX(fc.created_at)', $complaintsSubquery);
+$latestSuggestionSubquery = preg_replace('/^\(SELECT COUNT\(\*\)/', '(SELECT MAX(fs.created_at)', $suggestionsSubquery);
+$latestParameterPrefixes = [
+    'sy_filed' => 'latest_sy_filed',
+    'semester_filed_start' => 'latest_semester_filed_start',
+    'semester_filed_end' => 'latest_semester_filed_end',
+    'range_filed_start' => 'latest_range_filed_start',
+    'range_filed_end' => 'latest_range_filed_end',
+    'sy_suggestions' => 'latest_sy_suggestions',
+    'semester_suggestions_start' => 'latest_semester_suggestions_start',
+    'semester_suggestions_end' => 'latest_semester_suggestions_end',
+    'range_suggestions_start' => 'latest_range_suggestions_start',
+    'range_suggestions_end' => 'latest_range_suggestions_end',
+];
+foreach ($latestParameterPrefixes as $sourcePrefix => $latestPrefix) {
+    $sourceParameter = ':' . $sourcePrefix;
+    $latestParameter = ':' . $latestPrefix;
+    $latestComplaintSubquery = str_replace($sourceParameter, $latestParameter, $latestComplaintSubquery);
+    $latestSuggestionSubquery = str_replace($sourceParameter, $latestParameter, $latestSuggestionSubquery);
+    if (array_key_exists($sourceParameter, $directoryParams)) {
+        $directoryParams[$latestParameter] = $directoryParams[$sourceParameter];
+    }
+}
+$latestComplaintSubquery .= ')';
+$latestSuggestionSubquery .= ')';
+$latestActivitySql = "GREATEST(COALESCE({$latestComplaintSubquery}, '1000-01-01 00:00:00'), COALESCE({$latestSuggestionSubquery}, '1000-01-01 00:00:00'))";
 $reportedSubquery .= ') AS times_reported';
 $complaintsSubquery .= ') AS complaints_filed';
+$suggestionsSubquery .= ') AS suggestions_filed';
 
-// Sorting
-$sortSql = ' ORDER BY sp.first_name, sp.last_name';
+$cardActivitySql = '';
+if ($cardFilter !== '') {
+    $activityTable = in_array($cardFilter, ['suggestions', 'reviewed_suggestions'], true) ? 'suggestions' : 'complaints';
+    $activityAlias = $activityTable === 'suggestions' ? 'af_s' : 'af_c';
+    $cardActivitySql = " AND EXISTS (SELECT 1 FROM {$activityTable} {$activityAlias} WHERE {$activityAlias}.student_id = sp.id";
+    if ($schoolYear !== '') {
+        $cardActivitySql .= " AND {$activityAlias}.school_year = :sy_card_activity";
+        $directoryParams[':sy_card_activity'] = $schoolYear;
+    }
+    $cardActivitySql .= dean_reports_semester_clause($activityAlias, $semester, $directoryParams, 'semester_card_activity');
+    $cardActivitySql .= dean_reports_range_clause($activityAlias, $reportRangeStart, $reportRangeEnd, $directoryParams, 'range_card_activity');
+    if ($cardFilter === 'reviewed_suggestions') {
+        $cardActivitySql .= " AND {$activityAlias}.status = 'reviewed'";
+    } elseif ($cardFilter === 'resolved_complaints') {
+        $cardActivitySql .= " AND {$activityAlias}.status = 'resolved'";
+    }
+    $cardActivitySql .= ')';
+}
+
+// Sorting: newest matching complaint/suggestion activity first by default.
+$sortSql = " ORDER BY {$latestActivitySql} DESC, sp.first_name, sp.last_name";
 if ($sort === 'complaints_desc') {
     $sortSql = ' ORDER BY complaints_filed DESC, sp.first_name, sp.last_name';
 } elseif ($sort === 'reports_desc') {
@@ -272,24 +355,25 @@ $baseSql = "SELECT
         sp.year_level,
         sp.status,
         {$reportedSubquery},
-        {$complaintsSubquery}
+        {$complaintsSubquery},
+        {$suggestionsSubquery}
     FROM student_profiles sp
     LEFT JOIN users u ON sp.user_id = u.id
     LEFT JOIN programs prog ON sp.program_id = prog.id
-    WHERE {$directoryWhere}";
+    WHERE {$directoryWhere}{$cardActivitySql}";
 
 $sql = $baseSql . $sortSql . ' LIMIT 50';
 $studentStmt = $pdo->prepare($sql);
 $studentStmt->execute($directoryParams);
 $students = $studentStmt->fetchAll(PDO::FETCH_ASSOC);
 $students = array_values(array_filter($students, static function (array $student): bool {
-    return (int)($student['times_reported'] ?? 0) > 0 || (int)($student['complaints_filed'] ?? 0) > 0;
+    return (int)($student['times_reported'] ?? 0) > 0 || (int)($student['complaints_filed'] ?? 0) > 0 || (int)($student['suggestions_filed'] ?? 0) > 0;
 }));
 
 // If AJAX request, return only table rows HTML for live search
 if ((string)($_GET['ajax'] ?? '') === '1') {
     if (empty($students)) {
-        echo '<tr><td colspan="7" style="text-align:center;color:#aaa">No data found for selected filters</td></tr>';
+        echo '<tr><td colspan="8" style="text-align:center;color:#aaa">No data found for selected filters</td></tr>';
         exit;
     }
     foreach ($students as $student) {
@@ -297,17 +381,22 @@ if ((string)($_GET['ajax'] ?? '') === '1') {
         $name = htmlspecialchars(trim(($student['first_name'] ?? '') . ' ' . ($student['last_name'] ?? '')));
         $program = htmlspecialchars($student['program'] ?? 'N/A');
         $year = htmlspecialchars($student['year_level'] ?? 'N/A');
+        $detailParams = $filterPreserve;
+        $detailParams['student_id'] = (int)$student['sp_id'];
+        $detailUrl = 'dean_report_student_detail.php?' . http_build_query($detailParams);
         $reported = (int)($student['times_reported'] ?? 0);
         $complaints = (int)($student['complaints_filed'] ?? 0);
+        $suggestions = (int)($student['suggestions_filed'] ?? 0);
         $status = htmlspecialchars(ucfirst($student['status'] ?? 'active'));
         $statusClass = 'status-' . strtolower($student['status'] ?? 'active');
-        echo "<tr>";
+        echo '<tr class="report-student-row" tabindex="0" role="link" data-href="' . htmlspecialchars($detailUrl, ENT_QUOTES, 'UTF-8') . '" title="Open student report details">';
         echo "<td><strong>{$sid}</strong></td>";
         echo "<td>{$name}</td>";
         echo "<td>{$program}</td>";
         echo "<td>{$year}</td>";
-        echo '<td><a class="complaint-count-badge" href="../reported_complaints.php?student_id=' . (int)$student['sp_id'] . '" title="View reported complaints">' . $reported . '</a></td>';
-        echo '<td><a class="complaint-count-badge" href="../reported_complaints.php?student_id=' . (int)$student['sp_id'] . '&view=complaints" title="View student complaints">' . $complaints . '</a></td>';
+        echo '<td><a class="complaint-count-badge" href="dean_reported_complaints.php?student_id=' . (int)$student['sp_id'] . '" title="View reported complaints">' . $reported . '</a></td>';
+        echo '<td><a class="complaint-count-badge" href="dean_reported_complaints.php?student_id=' . (int)$student['sp_id'] . '&view=complaints" title="View student complaints">' . $complaints . '</a></td>';
+        echo '<td><span class="complaint-count-badge" title="Student suggestions">' . $suggestions . '</span></td>';
         echo "<td><span class=\"{$statusClass}\">{$status}</span></td>";
         echo "</tr>";
     }
@@ -327,13 +416,13 @@ if ((string)($_GET['ajax'] ?? '') === '1') {
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Poppins', sans-serif; }
 body { background: #f9fafb; }
-.main { margin-left: 260px; margin-top: 61px; padding: 25px; min-height: calc(100vh - 61px); overflow-y: auto; }
+.main { margin-left: 260px; margin-top: 61px; padding: 20px 24px; min-height: calc(100vh - 61px); overflow-y: auto; }
 
 /* ===== PAGE HEADER ===== */
 .page-header { margin-bottom: 4px; }
 .page-header h2 { font-size: 24px; font-weight: 700; color: #1f2937; }
 .page-subtitle { color: #6b7280; font-size: 14px; margin-bottom: 6px; }
-.filter-summary { color: #6b7280; font-size: 13px; margin-bottom: 20px; }
+.filter-summary { color: #6b7280; font-size: 13px; margin-bottom: 12px; }
 .filter-summary strong { color: #374151; font-weight: 600; }
 .print-only { display: none; }
 
@@ -343,23 +432,23 @@ body { background: #f9fafb; }
     border: 1px solid #e5e7eb;
     border-radius: 12px;
     box-shadow: 0 2px 10px rgba(0,0,0,0.02);
-    padding: 18px 20px;
-    margin-bottom: 24px;
+    padding: 12px 14px;
+    margin-bottom: 16px;
     display: flex;
-    flex-wrap: nowrap;
+    flex-wrap: wrap;
     align-items: flex-end;
-    gap: 16px;
+    gap: 10px;
 }
-.filter-form { display: flex; flex-wrap: nowrap; gap: 12px; align-items: flex-end; flex: 1 1 auto; min-width: 0; }
-.filter-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; flex: 0 1 160px; }
+.filter-form { display: flex; flex-wrap: nowrap; gap: 10px; align-items: flex-end; flex: 1 1 700px; min-width: 0; }
+.filter-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1 1 125px; }
 .filter-field label { font-size: 11px; font-weight: 600; color: #52627a; text-transform: uppercase; letter-spacing: .03em; }
 .filter-select {
-    height: 43px;
-    padding: 10px 14px;
+    height: 36px;
+    padding: 6px 10px;
     border: 1px solid #e5e7eb;
     border-radius: 8px;
     background: #fff;
-    font-size: 13.5px;
+    font-size: 12.5px;
     color: #1f2937;
     font-family: 'Poppins', sans-serif;
     min-width: 0;
@@ -367,16 +456,17 @@ body { background: #f9fafb; }
     cursor: pointer;
 }
 .filter-select:focus { outline: none; border-color: #6d28d9; box-shadow: 0 0 0 3px rgba(109,40,217,0.1); }
+input.filter-select { cursor: text; }
 
-.filter-actions { display: flex; gap: 10px; align-items: flex-end; flex-shrink: 0; }
+.filter-actions { display: flex; gap: 8px; align-items: flex-end; flex: 0 0 auto; }
 .btn-print, .btn-ghost {
     display: inline-flex;
     align-items: center;
     gap: 7px;
-    height: 40px;
-    padding: 10px 18px;
+    height: 36px;
+    padding: 7px 12px;
     border-radius: 8px;
-    font-size: 13.5px;
+    font-size: 12.5px;
     font-weight: 600;
     cursor: pointer;
     text-decoration: none;
@@ -384,55 +474,61 @@ body { background: #f9fafb; }
     font-family: 'Poppins', sans-serif;
     white-space: nowrap;
 }
-.btn-print { background: #6d28d9; color: #fff; min-width: 137px; justify-content: center; }
+.btn-print { background: #6d28d9; color: #fff; min-width: 125px; justify-content: center; }
 .btn-print:hover { background: #5d1fa0; }
 .btn-ghost { background: #fff; color: #6b7280; border: 1px solid #e5e7eb; }
 .btn-ghost:hover { background: #f3f4f6; color: #374151; }
 
 /* ===== KPI METRICS ===== */
-.metrics-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; margin-bottom: 24px; }
+.metrics-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 16px; }
 @media (max-width: 1200px) { .metrics-grid { grid-template-columns: repeat(2, 1fr); } }
 @media (max-width: 640px) { .metrics-grid { grid-template-columns: 1fr; } }
 
 .metric-card {
     background: #fff;
-    padding: 20px;
+    padding: 13px 14px;
     border-radius: 12px;
     border: 1px solid #e5e7eb;
     box-shadow: 0 2px 10px rgba(0,0,0,0.02);
     display: flex;
     align-items: center;
-    gap: 16px;
+    gap: 11px;
     transition: transform 0.2s ease;
+    text-decoration: none;
+    color: inherit;
+    cursor: pointer;
 }
 .metric-card:hover { transform: translateY(-3px); box-shadow: 0 5px 15px rgba(0,0,0,0.05); }
-.metric-icon { width: 52px; height: 52px; border-radius: 12px; display: flex; justify-content: center; align-items: center; font-size: 24px; flex-shrink: 0; }
+.metric-card.active { border-color: #6d28d9; box-shadow: 0 0 0 3px rgba(109,40,217,0.12), 0 5px 15px rgba(0,0,0,0.05); }
+.metric-icon { width: 42px; height: 42px; border-radius: 10px; display: flex; justify-content: center; align-items: center; font-size: 20px; flex-shrink: 0; }
 .icon-blue { background: #eff6ff; color: #3b82f6; }
 .icon-purple { background: #f3e8ff; color: #7c3aed; }
 .icon-green { background: #dcfce7; color: #16a34a; }
 .icon-amber { background: #fef3c7; color: #d97706; }
-.metric-info h4 { color: #6b7280; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; margin-bottom: 6px; }
-.metric-info .value { font-size: 24px; font-weight: 700; color: #1f2937; line-height: 1; }
+.metric-info h4 { color: #6b7280; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; margin-bottom: 3px; }
+.metric-info .value { font-size: 21px; font-weight: 700; color: #1f2937; line-height: 1; }
 .metric-info .sub { font-size: 12px; color: #9ca3af; margin-top: 4px; }
 
 /* ===== SHARED CARD ===== */
-.data-card { background: #fff; padding: 22px; border-radius: 12px; border: 1px solid #e5e7eb; box-shadow: 0 2px 10px rgba(0,0,0,0.02); margin-bottom: 24px; }
-.card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px; flex-wrap: wrap; gap: 12px; }
+.data-card { background: #fff; padding: 16px 18px; border-radius: 12px; border: 1px solid #e5e7eb; box-shadow: 0 2px 10px rgba(0,0,0,0.02); margin-bottom: 16px; }
+.card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 11px; flex-wrap: wrap; gap: 8px; }
 .card-header h3 { font-size: 16px; font-weight: 600; color: #1f2937; }
 .card-header p { font-size: 12.5px; color: #9ca3af; margin-top: 2px; }
 
 /* ===== DIRECTORY TOOLBAR ===== */
-.directory-toolbar { display: flex; gap: 12px; align-items: center; margin-bottom: 18px; flex-wrap: wrap; }
-.search-box { display: flex; align-items: center; background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px; padding: 9px 12px; flex: 1; min-width: 220px; }
+.directory-toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 11px; flex-wrap: wrap; }
+.search-box { display: flex; align-items: center; background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px; padding: 7px 10px; flex: 1; min-width: 220px; }
 .search-box i { color: #9ca3af; margin-right: 8px; }
 .search-box input { border: none; background: transparent; outline: none; width: 100%; font-size: 13.5px; font-family: 'Poppins', sans-serif; }
 
 /* ===== TABLE ===== */
 table { width: 100%; border-collapse: collapse; min-width: 760px; }
 .data-card > div[style*="overflow"] { overflow-x: auto; }
-th { text-align: left; font-size: 11.5px; color: #9ca3af; padding: 12px 12px; border-bottom: 2px solid #f0f1f3; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; }
-td { padding: 14px 12px; font-size: 13.5px; color: #374151; border-bottom: 1px solid #f9f9f9; vertical-align: middle; }
+th { text-align: left; font-size: 11px; color: #9ca3af; padding: 9px 10px; border-bottom: 2px solid #f0f1f3; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; }
+td { padding: 10px; font-size: 13px; color: #374151; border-bottom: 1px solid #f9f9f9; vertical-align: middle; }
 tbody tr:hover td { background: #fafafa; }
+.report-student-row { cursor: pointer; }
+.report-student-row:focus td { background: #f5f3ff; outline: none; }
 .complaint-count-badge { display: inline-flex; align-items: center; justify-content: center; min-width: 34px; padding: 5px 10px; border-radius: 999px; background: #eef2ff; color: #4338ca; font-weight: 600; text-decoration: none; font-size: 13px; }
 .complaint-count-badge:hover { background: #e0e7ff; }
 .status-active { background: #dcfce7; color: #16a34a; padding: 5px 10px; border-radius: 6px; font-size: 12px; font-weight: 600; }
@@ -440,10 +536,18 @@ tbody tr:hover td { background: #fafafa; }
 
 @media (max-width: 900px) {
     .main { margin-left: 0 !important; padding: 16px !important; }
-    .filter-bar { flex-direction: column; align-items: stretch; }
+    .filter-bar { align-items: stretch; }
     .filter-form { flex-wrap: wrap; }
     .filter-field { flex: 1 1 180px; }
     .filter-actions { justify-content: flex-end; }
+}
+
+@media (max-width: 640px) {
+    .filter-actions { width: 100%; justify-content: stretch; }
+    .filter-actions > * { flex: 1; }
+    .metrics-grid { gap: 10px; }
+    .metric-card { padding: 11px; }
+    .data-card { padding: 14px 12px; }
 }
 
 /* ===== PRINT ===== */
@@ -483,12 +587,6 @@ tbody tr:hover td { background: #fafafa; }
         <h2>Reports Management</h2>
     </div>
     <p class="page-subtitle"><?php echo e($collegeName); ?> (<?php echo e($collegeCode); ?>) Performance Overview</p>
-    <p class="filter-summary">
-        Showing reports<?php if ($dateFrom !== '' || $dateTo !== ''): ?> from <strong><?php echo e($dateFrom !== '' ? $dateFrom : 'Beginning'); ?></strong> to <strong><?php echo e($dateTo !== '' ? $dateTo : 'Today'); ?></strong><?php endif; ?> for
-        <strong><?php echo $semester !== '' ? 'Semester ' . e($semester) : 'All Semesters'; ?></strong> &middot;
-        <strong><?php echo $programId > 0 ? e($selectedDepartmentName) : 'All Departments'; ?></strong> &middot;
-        School Year <strong><?php echo $schoolYear !== '' ? e($schoolYear) : 'All School Years'; ?></strong>
-    </p>
     <p class="print-only" style="font-size:12px;color:#6b7280;margin-bottom:16px;">
         Generated <?php echo e(date('F j, Y g:i A')); ?> by <?php echo e($deanDisplayName); ?>, Dean of <?php echo e($collegeName); ?>
     </p>
@@ -498,16 +596,13 @@ tbody tr:hover td { background: #fafafa; }
         <form method="GET" class="filter-form" id="reportFilterForm">
             <?php if ($q !== ''): ?><input type="hidden" name="q" value="<?php echo e($q); ?>"><?php endif; ?>
             <?php if ($sort !== ''): ?><input type="hidden" name="sort" value="<?php echo e($sort); ?>"><?php endif; ?>
+            <?php if ($cardFilter !== ''): ?><input type="hidden" name="card_filter" value="<?php echo e($cardFilter); ?>"><?php endif; ?>
             <div class="filter-field">
                 <label for="schoolYearFilter">School Year</label>
-                <select class="filter-select" id="schoolYearFilter" name="school_year" onchange="this.form.submit()">
-                    <option value="">All School Years</option>
-                    <?php foreach ($availableSchoolYears as $sy): ?>
-                        <option value="<?php echo e($sy); ?>" <?php echo $sy === $schoolYear ? 'selected' : ''; ?>>
-                            SY <?php echo e($sy); ?><?php echo $sy === sy_current() ? ' (Current)' : ''; ?>
-                        </option>
-                    <?php endforeach; ?>
-                </select>
+                <input type="text" class="filter-select" id="schoolYearFilter" name="school_year"
+                       inputmode="numeric" maxlength="9" autocomplete="off"
+                       placeholder="All School Years (e.g. 2024)" value="<?php echo e($schoolYear); ?>"
+                       oninput="formatSchoolYearInput(this, true, event)" onkeydown="schoolYearInputKeydown(event, this)">
             </div>
 
             <div class="filter-field">
@@ -556,35 +651,35 @@ tbody tr:hover td { background: #fafafa; }
 
     <!-- KPI METRICS -->
     <div class="metrics-grid">
-        <div class="metric-card">
+        <a class="metric-card <?php echo $cardFilter === 'complaints' ? 'active' : ''; ?>" href="<?php echo e($cardFilterUrl($cardFilter === 'complaints' ? '' : 'complaints')); ?>" aria-pressed="<?php echo $cardFilter === 'complaints' ? 'true' : 'false'; ?>">
             <div class="metric-icon icon-amber"><i class='bx bx-message-square-detail'></i></div>
             <div class="metric-info">
                 <h4>Complaints</h4>
                 <div class="value"><?php echo number_format($totalComplaints); ?></div>
             </div>
-        </div>
-        <div class="metric-card">
+        </a>
+        <a class="metric-card <?php echo $cardFilter === 'suggestions' ? 'active' : ''; ?>" href="<?php echo e($cardFilterUrl($cardFilter === 'suggestions' ? '' : 'suggestions')); ?>" aria-pressed="<?php echo $cardFilter === 'suggestions' ? 'true' : 'false'; ?>">
             <div class="metric-icon icon-purple"><i class='bx bx-bulb'></i></div>
             <div class="metric-info">
                 <h4>Suggestions</h4>
                 <div class="value"><?php echo number_format($totalSuggestions); ?></div>
             </div>
-        </div>
-        <div class="metric-card">
+        </a>
+        <a class="metric-card <?php echo $cardFilter === 'reviewed_suggestions' ? 'active' : ''; ?>" href="<?php echo e($cardFilterUrl($cardFilter === 'reviewed_suggestions' ? '' : 'reviewed_suggestions')); ?>" aria-pressed="<?php echo $cardFilter === 'reviewed_suggestions' ? 'true' : 'false'; ?>">
             <div class="metric-icon icon-blue"><i class='bx bx-check-circle'></i></div>
             <div class="metric-info">
                 <h4>Reviewed Suggestions</h4>
                 <div class="value"><?php echo number_format($reviewedSuggestions); ?></div>
             </div>
-        </div>
-        <div class="metric-card">
+        </a>
+        <a class="metric-card <?php echo $cardFilter === 'resolved_complaints' ? 'active' : ''; ?>" href="<?php echo e($cardFilterUrl($cardFilter === 'resolved_complaints' ? '' : 'resolved_complaints')); ?>" aria-pressed="<?php echo $cardFilter === 'resolved_complaints' ? 'true' : 'false'; ?>">
             <div class="metric-icon icon-green"><i class='bx bx-check-circle'></i></div>
             <div class="metric-info">
                 <h4>Resolved Complaints</h4>
                 <div class="value"><?php echo number_format($resolvedComplaints); ?></div>
                 <div class="sub"><?php echo $totalComplaints > 0 ? $resolvedRate . '% resolution rate' : 'No complaints yet'; ?></div>
             </div>
-        </div>
+        </a>
     </div>
 
     <!-- ENROLLEES DIRECTORY -->
@@ -595,7 +690,8 @@ tbody tr:hover td { background: #fafafa; }
                 <p>Filters: School Year: <?php echo $schoolYear !== '' ? e($schoolYear) : 'All'; ?> &middot;
                     Semester: <?php echo $semester !== '' ? e($semester === '1' ? '1st Semester' : '2nd Semester') : 'All'; ?> &middot;
                     Department: <?php echo $programId > 0 ? e($selectedDepartmentName) : 'All'; ?> &middot;
-                    Dates: <?php echo e($dateFrom !== '' ? $dateFrom : 'Beginning'); ?> to <?php echo e($dateTo !== '' ? $dateTo : 'Today'); ?></p>
+                    Dates: <?php echo e($dateFrom !== '' ? $dateFrom : 'Beginning'); ?> to <?php echo e($dateTo !== '' ? $dateTo : 'Today'); ?> &middot;
+                    Card: <?php echo e($cardFilterLabels[$cardFilter]); ?></p>
             </div>
         </div>
 
@@ -605,6 +701,7 @@ tbody tr:hover td { background: #fafafa; }
             <?php if ($programId > 0): ?><input type="hidden" name="department" value="<?php echo (int)$programId; ?>"><?php endif; ?>
             <?php if ($dateFrom !== ''): ?><input type="hidden" name="date_from" value="<?php echo e($dateFrom); ?>"><?php endif; ?>
             <?php if ($dateTo !== ''): ?><input type="hidden" name="date_to" value="<?php echo e($dateTo); ?>"><?php endif; ?>
+            <?php if ($cardFilter !== ''): ?><input type="hidden" name="card_filter" value="<?php echo e($cardFilter); ?>"><?php endif; ?>
             <div class="search-box">
                 <i class='bx bx-search'></i>
                 <input type="text" name="q" placeholder="Search by ID, Name or Program..." value="<?php echo e($q); ?>">
@@ -627,23 +724,26 @@ tbody tr:hover td { background: #fafafa; }
                         <th>Year Level</th>
                         <th>Reported</th>
                         <th>Complaints</th>
+                        <th>Suggestions</th>
                         <th>Status</th>
                     </tr>
                 </thead>
                 <tbody>
                     <?php if (empty($students)): ?>
                     <tr>
-                        <td colspan="7" style="text-align:center;color:#aaa">No data found for selected filters</td>
+                        <td colspan="8" style="text-align:center;color:#aaa">No data found for selected filters</td>
                     </tr>
                     <?php else: ?>
                         <?php foreach ($students as $student): ?>
-                        <tr>
+                        <?php $detailParams = $filterPreserve; $detailParams['student_id'] = (int)$student['sp_id']; ?>
+                        <tr class="report-student-row" tabindex="0" role="link" data-href="<?php echo e('dean_report_student_detail.php?' . http_build_query($detailParams)); ?>" title="Open student report details">
                             <td><strong><?php echo e($student['student_number'] ?? $student['username'] ?? 'N/A'); ?></strong></td>
                             <td><?php echo e(trim(($student['first_name'] ?? '') . ' ' . ($student['last_name'] ?? ''))); ?></td>
                             <td><?php echo e($student['program'] ?? 'N/A'); ?></td>
                             <td><?php echo e($student['year_level'] ?? 'N/A'); ?></td>
-                            <td><a class="complaint-count-badge" href="../reported_complaints.php?student_id=<?php echo (int)$student['sp_id']; ?>" title="View reported complaints"><?php echo (int)($student['times_reported'] ?? 0); ?></a></td>
-                            <td><a class="complaint-count-badge" href="../reported_complaints.php?student_id=<?php echo (int)$student['sp_id']; ?>&view=complaints" title="View student complaints"><?php echo (int)($student['complaints_filed'] ?? 0); ?></a></td>
+                            <td><a class="complaint-count-badge" href="dean_reported_complaints.php?student_id=<?php echo (int)$student['sp_id']; ?>" title="View reported complaints"><?php echo (int)($student['times_reported'] ?? 0); ?></a></td>
+                            <td><a class="complaint-count-badge" href="dean_reported_complaints.php?student_id=<?php echo (int)$student['sp_id']; ?>&view=complaints" title="View student complaints"><?php echo (int)($student['complaints_filed'] ?? 0); ?></a></td>
+                            <td><span class="complaint-count-badge" title="Student suggestions"><?php echo (int)($student['suggestions_filed'] ?? 0); ?></span></td>
                             <td><span class="status-<?php echo strtolower($student['status'] ?? 'active'); ?>"><?php echo ucfirst($student['status'] ?? 'active'); ?></span></td>
                         </tr>
                         <?php endforeach; ?>
@@ -668,6 +768,7 @@ document.addEventListener('DOMContentLoaded', function(){
     const department = <?php echo json_encode($programId > 0 ? (string)$programId : ''); ?>;
     const dateFrom = <?php echo json_encode($dateFrom); ?>;
     const dateTo = <?php echo json_encode($dateTo); ?>;
+    const cardFilter = <?php echo json_encode($cardFilter); ?>;
     let timer = null;
 
     function doSearch() {
@@ -679,11 +780,13 @@ document.addEventListener('DOMContentLoaded', function(){
         if (department) params.set('department', department);
         if (dateFrom) params.set('date_from', dateFrom);
         if (dateTo) params.set('date_to', dateTo);
+        if (cardFilter) params.set('card_filter', cardFilter);
         params.set('ajax', '1');
         fetch(window.location.pathname + '?' + params.toString(), {headers: {'X-Requested-With': 'XMLHttpRequest'}})
             .then(r => r.text())
             .then(html => {
                 if (tbody) tbody.innerHTML = html;
+                bindStudentRows();
             }).catch(err => console.error('Search error', err));
     }
 
@@ -696,5 +799,28 @@ document.addEventListener('DOMContentLoaded', function(){
     if (sortSelect) {
         sortSelect.addEventListener('change', function(){ doSearch(); });
     }
+
+    function bindStudentRows() {
+        if (!tbody) return;
+        tbody.querySelectorAll('.report-student-row').forEach(function(row) {
+            if (row.dataset.bound === '1') return;
+            row.dataset.bound = '1';
+            const openDetails = function(event) {
+                if (event.target.closest('a, button, input, select, textarea')) return;
+                const href = row.dataset.href;
+                if (href) window.location.href = href;
+            };
+            row.addEventListener('click', openDetails);
+            row.addEventListener('keydown', function(event) {
+                if ((event.key === 'Enter' || event.key === ' ') && !event.target.closest('a, button, input, select, textarea')) {
+                    event.preventDefault();
+                    openDetails(event);
+                }
+            });
+        });
+    }
+
+    bindStudentRows();
 });
 </script>
+<?php echo sy_smart_input_script(); ?>

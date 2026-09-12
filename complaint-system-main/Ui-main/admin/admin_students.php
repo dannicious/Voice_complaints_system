@@ -508,8 +508,8 @@ if ((string)($_GET['ajax'] ?? '') === '1') {
         echo "<td>{$email}</td>";
         echo "<td>" . htmlspecialchars($collegeLabel) . "<br><span style=\"color:#6b7280;font-size:11px;\">" . htmlspecialchars($programLabel) . "</span></td>";
         echo "<td>" . htmlspecialchars($classInfo) . "<br><span style=\"color:#6b7280;font-size:11px;\">" . htmlspecialchars((string)($student['school_year'] ?? '')) . "</span></td>";
-        echo '<td><a class="complaint-count-badge" href="../reported_complaints.php?student_id=' . (int)$student['id'] . '&view=complaints" title="View student complaints">' . $complaintCount . '</a></td>';
-        echo '<td><a class="complaint-count-badge" href="../reported_complaints.php?student_id=' . (int)$student['id'] . '" title="View reported complaints">' . $reportedCount . '</a></td>';
+        echo '<td><a class="complaint-count-badge" href="admin_reported_complaints.php?student_id=' . (int)$student['id'] . '&view=complaints" title="View student complaints">' . $complaintCount . '</a></td>';
+        echo '<td><a class="complaint-count-badge" href="admin_reported_complaints.php?student_id=' . (int)$student['id'] . '" title="View reported complaints">' . $reportedCount . '</a></td>';
         echo "<td><span class=\"badge bg-active\">" . htmlspecialchars(ucfirst($student['status'] ?? 'active')) . "</span></td>";
         echo '</tr>';
     }
@@ -657,8 +657,8 @@ tbody tr:hover { background-color: #fcfcfc; }
                                 <td><?php echo e((string)$student['email']); ?></td>
                                 <td><?php echo e($collegeLabel); ?><br><span style="color:#6b7280;font-size:11px;"><?php echo e($programLabel); ?></span></td>
                                 <td><?php echo e($classInfo); ?><br><span style="color:#6b7280;font-size:11px;"><?php echo e((string)($student['school_year'] ?? '')); ?></span></td>
-                                <td><a class="complaint-count-badge" href="../reported_complaints.php?student_id=<?php echo (int)$student['id']; ?>&view=complaints" title="View student complaints"><?php echo e((string)($student['complaint_count'] ?? 0)); ?></a></td>
-                                <td><a class="complaint-count-badge" href="../reported_complaints.php?student_id=<?php echo (int)$student['id']; ?>" title="View reported complaints"><?php echo e((string)($student['reported_count'] ?? 0)); ?></a></td>
+                                <td><a class="complaint-count-badge" href="admin_reported_complaints.php?student_id=<?php echo (int)$student['id']; ?>&view=complaints" title="View student complaints"><?php echo e((string)($student['complaint_count'] ?? 0)); ?></a></td>
+                                <td><a class="complaint-count-badge" href="admin_reported_complaints.php?student_id=<?php echo (int)$student['id']; ?>" title="View reported complaints"><?php echo e((string)($student['reported_count'] ?? 0)); ?></a></td>
                                 <td><span class="badge bg-active">Active</span></td>
                             </tr>
                         <?php endforeach; ?>

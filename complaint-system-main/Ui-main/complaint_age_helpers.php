@@ -9,6 +9,8 @@
  * become so it stands out in the list.
  */
 
+require_once __DIR__ . '/ticket_flow.php';
+
 /**
  * Relative age of a complaint, e.g. "Just now", "2 hours ago", "3 days ago",
  * "1 week ago". Falls back to an absolute date past ~2 months, where an exact
@@ -120,6 +122,100 @@ function complaint_age_styles(): string
     .age-chip.age-overdue { background:#fee2e2; color:#b91c1c; }
     .age-chip.age-done { background:#f3f4f6; color:#6b7280; }
     </style>';
+}
+
+/**
+ * The status badge's display label, so an untouched complaint stops calling
+ * itself "New" once it no longer is: "New" for the first hour, then a short
+ * elapsed-time label ("1 hr", "2 hrs", ... "1 day", "2 days", ...). Returns
+ * null once the complaint has actually been acted on (status left the
+ * new/pending bucket) - callers should fall back to their normal status
+ * label in that case.
+ */
+function complaint_new_status_label(string $dateTime, string $status): ?string
+{
+    if (!complaint_is_awaiting_action($status)) {
+        return null;
+    }
+
+    $timestamp = strtotime($dateTime);
+    if ($timestamp === false) {
+        return 'New';
+    }
+
+    $hours = max(0, time() - $timestamp) / 3600;
+    if ($hours < 1) {
+        return 'New';
+    }
+    if ($hours < 24) {
+        $value = (int)floor($hours);
+        return $value . ' hr' . ($value === 1 ? '' : 's');
+    }
+
+    $days = (int)floor($hours / 24);
+    return $days . ' day' . ($days === 1 ? '' : 's');
+}
+
+/**
+ * CSS class to pair with complaint_new_status_label(), reusing the same
+ * fresh/waiting/overdue colors as the age chip so the badge itself escalates
+ * in color the longer a complaint sits untouched. Returns null once the
+ * complaint has been acted on - callers should fall back to their normal
+ * status badge class in that case.
+ */
+function complaint_new_status_badge_class(string $dateTime, string $status): ?string
+{
+    if (!complaint_is_awaiting_action($status)) {
+        return null;
+    }
+
+    $level = complaint_age_level($dateTime, $status);
+
+    return 'age-' . ($level !== '' ? $level : 'fresh');
+}
+
+/**
+ * Opportunistic SLA check: notifies whoever handles a complaint (its
+ * college's dean, or every admin for a general complaint) the first time it
+ * has sat untouched for 24 hours. No real cron job exists in this app, so
+ * this is meant to be called from the complaint inbox pages on page load;
+ * a dedicated tracking column keeps it to a single notification per
+ * complaint until someone actually acts on it.
+ */
+function check_and_send_complaint_overdue_notifications(PDO $pdo): void
+{
+    try {
+        $pdo->exec('ALTER TABLE complaints ADD COLUMN IF NOT EXISTS overdue_notified_at TIMESTAMP NULL DEFAULT NULL');
+    } catch (PDOException $e) {
+        // Ignore - either already applied or the DB user lacks ALTER rights.
+    }
+
+    try {
+        $stmt = $pdo->prepare(
+            "SELECT id FROM complaints
+             WHERE status IN ('new', 'pending')
+               AND overdue_notified_at IS NULL
+               AND created_at <= DATE_SUB(NOW(), INTERVAL 24 HOUR)"
+        );
+        $stmt->execute();
+        $overdueIds = $stmt->fetchAll(PDO::FETCH_COLUMN);
+
+        if ($overdueIds) {
+            $updateStmt = $pdo->prepare('UPDATE complaints SET overdue_notified_at = NOW() WHERE id = :id');
+            foreach ($overdueIds as $complaintId) {
+                notify_ticket_handlers(
+                    $pdo,
+                    'complaint',
+                    (int)$complaintId,
+                    'complaint_overdue',
+                    'Reminder: a complaint has been waiting 24+ hours with no response.'
+                );
+                $updateStmt->execute([':id' => (int)$complaintId]);
+            }
+        }
+    } catch (PDOException $e) {
+        // Best-effort - never break a page load over this.
+    }
 }
 
 /**

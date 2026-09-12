@@ -12,6 +12,7 @@ if (!isset($_SESSION['user_id']) || (string)($_SESSION['role'] ?? '') !== 'stude
 }
 
 $requested = trim((string)($_POST['school_year'] ?? $_GET['school_year'] ?? ''));
+$requestedSemester = trim((string)($_POST['semester'] ?? $_GET['semester'] ?? ''));
 $redirectTo = (string)($_POST['redirect_to'] ?? $_GET['redirect_to'] ?? 'student_dashboard.php');
 
 // Only allow same-origin redirect targets (site-absolute path or a bare
@@ -28,10 +29,14 @@ if (!$isSafeRedirect) {
 $studentProfileId = sy_resolve_student_profile_id($pdo);
 
 if ($studentProfileId > 0 && sy_is_valid_label($requested)) {
-    $available = sy_list_for_student($pdo, $studentProfileId);
-    if (in_array($requested, $available, true)) {
-        sy_set_selected($requested);
-    }
+    // Any syntactically valid school year is allowed, even one the student
+    // has no records in — the tracking list shows an empty state for it
+    // rather than silently bouncing the selection back to the current year.
+    sy_set_selected($requested);
+}
+
+if ($studentProfileId > 0 && semester_is_valid_label($requestedSemester)) {
+    semester_set_selected($requestedSemester);
 }
 
 header('Location: ' . $redirectTo);

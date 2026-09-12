@@ -115,7 +115,7 @@ require_once __DIR__ . '/../school_year_helpers.php';
 $current = basename($_SERVER['PHP_SELF']);
 $pageMode = (string)($_GET['mode'] ?? '');
 
-$sidebarSchoolYearCurrent = sy_current();
+$sidebarSchoolYearCurrent = sy_current($pdo);
 $sidebarSchoolYearSelected = (string)($_SESSION['selected_school_year'] ?? $sidebarSchoolYearCurrent);
 if (!sy_is_valid_label($sidebarSchoolYearSelected)) {
     $sidebarSchoolYearSelected = $sidebarSchoolYearCurrent;

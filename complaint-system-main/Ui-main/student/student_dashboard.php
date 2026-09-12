@@ -138,7 +138,7 @@ body {
 
     <div class="presentation-container">
         <div class="presentation-header">
-            <h1>Welcome to VOICE - <br><span>Student Feedback and<br>Complaint System</span></h1>
+            <h1>Welcome to VOICE - <br><span>A web-based information system for managing student complaints and suggestions</span></h1>
         </div>
 
         <div class="presentation-embed">

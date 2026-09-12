@@ -2,6 +2,23 @@
 
 declare(strict_types=1);
 
+/**
+ * Generates a unique human-facing ticket number, e.g. "VOX-C-2026-4821" for
+ * a complaint or "VOX-S-2026-0193" for a suggestion. Retries on the rare
+ * collision against the table's own ticket_no column.
+ */
+function generate_ticket_no(PDO $pdo, string $table, string $prefix): string
+{
+    $check = $pdo->prepare("SELECT 1 FROM {$table} WHERE ticket_no = :ticket_no LIMIT 1");
+
+    do {
+        $ticketNo = $prefix . '-' . date('Y') . '-' . str_pad((string)random_int(0, 9999), 4, '0', STR_PAD_LEFT);
+        $check->execute([':ticket_no' => $ticketNo]);
+    } while ($check->fetchColumn());
+
+    return $ticketNo;
+}
+
 function normalize_ticket_route(?string $route): ?string
 {
     $value = strtolower(trim((string)$route));
@@ -398,7 +415,7 @@ function create_ticket_feedback_table(PDO $pdo): void
                 ticket_type ENUM("complaint", "suggestion") NOT NULL,
                 ticket_id INT NOT NULL,
                 student_id INT NOT NULL,
-                satisfaction ENUM("satisfied", "neutral", "not_satisfied") NOT NULL,
+                satisfaction ENUM("very_satisfied", "satisfied", "neutral", "not_satisfied", "very_unsatisfied") NOT NULL,
                 comment TEXT NULL,
                 created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -423,7 +440,7 @@ function create_ticket_feedback_history_table(PDO $pdo): void
                 ticket_type ENUM("complaint", "suggestion") NOT NULL,
                 ticket_id INT NOT NULL,
                 student_id INT NOT NULL,
-                satisfaction ENUM("satisfied", "neutral", "not_satisfied") NOT NULL,
+                satisfaction ENUM("very_satisfied", "satisfied", "neutral", "not_satisfied", "very_unsatisfied") NOT NULL,
                 comment TEXT NULL,
                 archived_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY (id),
@@ -536,38 +553,31 @@ function get_latest_feedback_reply_time(PDO $pdo, int $feedbackId): ?string
 function get_ticket_feedback_submission_reason(PDO $pdo, string $ticketType, int $ticketId, int $studentId): ?string
 {
     $state = get_ticket_status_state($pdo, $ticketType, $ticketId);
-    $status = $state['status'];
+    $status = strtolower((string)($state['status'] ?? ''));
+    $label = $ticketType === 'complaint' ? 'complaint' : 'suggestion';
 
-    if (!ticket_has_staff_reply_after($pdo, $ticketType, $ticketId, null)) {
-        return 'You can only rate after a staff response is posted.';
+    // Rating is only available once the ticket has reached its final,
+    // closed status - not while it's still open/under review, even if a
+    // staff/dean/admin response has already been posted. (Once closed the
+    // conversation is locked everywhere else too, so there's no scenario
+    // where a new response arrives afterward that would call for re-rating.)
+    if ($ticketType === 'complaint') {
+        if ($status !== 'resolved') {
+            return 'You can rate this once the ' . $label . ' has been resolved.';
+        }
+    } else {
+        // Suggestion-only terminal set: accepted suggestions that were
+        // implemented, or ones marked not feasible (plus legacy values from
+        // before the decision/implementation status split).
+        $suggestionClosedStatuses = ['implemented', 'not_feasible', 'reviewed', 'declined', 'rejected'];
+        if (!in_array($status, $suggestionClosedStatuses, true)) {
+            return 'You can rate this once the ' . $label . ' has been finalized.';
+        }
     }
 
     $feedback = get_ticket_feedback($pdo, $ticketType, $ticketId, $studentId);
-    // If the ticket is resolved and the student already submitted feedback,
-    // treat the ticket as fully completed and do not allow further rating.
-    if ($status === 'resolved' && $feedback) {
-        return 'This complaint has already received feedback and is now complete.';
-    }
-    if (!$feedback) {
-        return null;
-    }
-
-    $feedbackId = isset($feedback['id']) ? (int)$feedback['id'] : 0;
-    if ($feedbackId <= 0) {
-        return null;
-    }
-
-    if (!ticket_feedback_has_staff_replies($pdo, $feedbackId)) {
-        return 'You have already rated the current response. Please wait for a staff reply before rating again.';
-    }
-
-    $latestFeedbackReplyAt = get_latest_feedback_reply_time($pdo, $feedbackId);
-    if ($latestFeedbackReplyAt === null) {
-        return 'You have already rated the current response. Please wait for a staff reply before rating again.';
-    }
-
-    if (!ticket_has_staff_reply_after($pdo, $ticketType, $ticketId, $latestFeedbackReplyAt)) {
-        return 'Please wait for another staff response before rating again.';
+    if ($feedback) {
+        return 'This ' . $label . ' has already received feedback and is now complete.';
     }
 
     return null;
@@ -758,19 +768,30 @@ function feedback_option_meta(string $option): array
 {
     $opt = strtolower(trim($option));
     $map = [
+        'very_satisfied' => [
+            'label' => 'Very Satisfied',
+            'description' => 'You were very satisfied with the response.',
+            'icon' => 'bx-star',
+        ],
         'satisfied' => [
             'label' => 'Satisfied',
             'description' => 'You were satisfied with the response.',
             'icon' => 'bx-smile',
         ],
+        // Legacy value kept for historical records submitted before the 4-option scale.
         'neutral' => [
             'label' => 'Neutral',
             'description' => 'Neutral response.',
             'icon' => 'bx-meh',
         ],
         'not_satisfied' => [
-            'label' => 'Not satisfied',
-            'description' => 'You were not satisfied with the response.',
+            'label' => 'Unsatisfied',
+            'description' => 'You were unsatisfied with the response.',
+            'icon' => 'bx-meh',
+        ],
+        'very_unsatisfied' => [
+            'label' => 'Very Unsatisfied',
+            'description' => 'You were very unsatisfied with the response.',
             'icon' => 'bx-sad',
         ],
     ];
@@ -848,5 +869,117 @@ function ticket_thread_is_unlocked_for_replies(PDO $pdo, string $ticketType, int
     } catch (Throwable $e) {
         // On errors, be permissive
         return true;
+    }
+}
+
+/**
+ * Notify the student who filed a ticket - used whenever a dean/admin/staff
+ * response, official remark, or status change happens, so the student finds
+ * out without having to keep reopening the ticket to check.
+ */
+if (!function_exists('notify_ticket_owner')) {
+    function notify_ticket_owner(PDO $pdo, string $ticketType, int $ticketId, int $studentProfileId, string $type, string $message): void
+    {
+        try {
+            $stmt = $pdo->prepare('SELECT user_id FROM student_profiles WHERE id = :id LIMIT 1');
+            $stmt->execute([':id' => $studentProfileId]);
+            $userId = (int)($stmt->fetchColumn() ?: 0);
+            if ($userId <= 0) {
+                return;
+            }
+            $ins = $pdo->prepare(
+                'INSERT INTO notifications (user_id, type, message, ticket_type, ticket_id, is_read)
+                 VALUES (:user_id, :type, :message, :ticket_type, :ticket_id, 0)'
+            );
+            $ins->execute([
+                ':user_id' => $userId,
+                ':type' => $type,
+                ':message' => $message,
+                ':ticket_type' => $ticketType,
+                ':ticket_id' => $ticketId,
+            ]);
+        } catch (Throwable $e) {
+            // Notifications are best-effort - never block the actual save.
+        }
+    }
+}
+
+/**
+ * Resolve who is currently handling a ticket: the office staff it's routed
+ * to, else the dean of its college, else every admin - the same routing
+ * rules used when the ticket was first filed. Used to notify the handling
+ * side when the student replies or submits a rating.
+ */
+if (!function_exists('resolve_ticket_handler_user_ids')) {
+    function resolve_ticket_handler_user_ids(PDO $pdo, string $ticketType, int $ticketId): array
+    {
+        try {
+            $table = $ticketType === 'complaint' ? 'complaints' : 'suggestions';
+            $hasOffice = $ticketType === 'suggestion';
+            $cols = 'college_id' . ($hasOffice ? ', office' : '');
+            $stmt = $pdo->prepare("SELECT {$cols} FROM `{$table}` WHERE id = :id LIMIT 1");
+            $stmt->execute([':id' => $ticketId]);
+            $row = $stmt->fetch(PDO::FETCH_ASSOC);
+            if (!$row) {
+                return [];
+            }
+
+            $office = $hasOffice ? trim((string)($row['office'] ?? '')) : '';
+            if ($office !== '') {
+                $stmt = $pdo->prepare(
+                    "SELECT u.id FROM users u INNER JOIN staff_profiles sp ON sp.user_id = u.id
+                     WHERE u.role = 'staff' AND u.is_active = 1 AND sp.status = 'active' AND LOWER(TRIM(sp.office)) = LOWER(TRIM(:office))"
+                );
+                $stmt->execute([':office' => $office]);
+                return array_map('intval', array_column($stmt->fetchAll(PDO::FETCH_ASSOC), 'id'));
+            }
+
+            $collegeId = $row['college_id'] ?? null;
+            if ($collegeId !== null) {
+                $stmt = $pdo->prepare(
+                    "SELECT u.id FROM users u INNER JOIN dean_profiles dp ON dp.user_id = u.id
+                     WHERE u.role = 'dean' AND u.is_active = 1 AND dp.status = 'active' AND dp.college_id = :college_id"
+                );
+                $stmt->execute([':college_id' => (int)$collegeId]);
+                return array_map('intval', array_column($stmt->fetchAll(PDO::FETCH_ASSOC), 'id'));
+            }
+
+            $stmt = $pdo->query("SELECT id FROM users WHERE role = 'admin' AND is_active = 1");
+            return array_map('intval', array_column($stmt->fetchAll(PDO::FETCH_ASSOC), 'id'));
+        } catch (Throwable $e) {
+            return [];
+        }
+    }
+}
+
+/**
+ * Notify whoever is currently handling a ticket - used when the student
+ * replies or submits a rating, so the dean/admin/staff side finds out
+ * without having to refresh and check.
+ */
+if (!function_exists('notify_ticket_handlers')) {
+    function notify_ticket_handlers(PDO $pdo, string $ticketType, int $ticketId, string $type, string $message): void
+    {
+        $userIds = resolve_ticket_handler_user_ids($pdo, $ticketType, $ticketId);
+        if (empty($userIds)) {
+            return;
+        }
+        try {
+            $ins = $pdo->prepare(
+                'INSERT INTO notifications (user_id, type, message, ticket_type, ticket_id, is_read)
+                 VALUES (:user_id, :type, :message, :ticket_type, :ticket_id, 0)'
+            );
+            foreach ($userIds as $userId) {
+                $ins->execute([
+                    ':user_id' => $userId,
+                    ':type' => $type,
+                    ':message' => $message,
+                    ':ticket_type' => $ticketType,
+                    ':ticket_id' => $ticketId,
+                ]);
+            }
+        } catch (Throwable $e) {
+            // Notifications are best-effort - never block the actual save.
+        }
     }
 }

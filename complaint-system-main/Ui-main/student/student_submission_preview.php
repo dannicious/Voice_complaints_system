@@ -151,11 +151,19 @@ $mode = normalize_mode((string)($_GET['mode'] ?? $_POST['mode'] ?? 'complaint'))
 // locked in that state).
 require_once __DIR__ . '/../school_year_helpers.php';
 $svStudentProfileId = sy_resolve_student_profile_id($pdo);
-$svSchoolYearCurrent = sy_current();
+$svSchoolYearCurrent = sy_current($pdo);
 $svSchoolYearSelected = $svStudentProfileId > 0 ? sy_get_selected($pdo, $svStudentProfileId) : $svSchoolYearCurrent;
 if ($svSchoolYearSelected !== $svSchoolYearCurrent) {
     header('Location: student_complaints.php?mode=' . $mode . '&status=error&msg=' . urlencode(
         'Switch to the current school year (' . $svSchoolYearCurrent . ') to file a new complaint or suggestion.'
+    ));
+    exit;
+}
+$svSemesterCurrent = semester_current();
+$svSemesterSelected = $svStudentProfileId > 0 ? semester_get_selected() : $svSemesterCurrent;
+if ($svSemesterSelected !== $svSemesterCurrent) {
+    header('Location: student_complaints.php?mode=' . $mode . '&status=error&msg=' . urlencode(
+        'Switch to the current semester (' . semester_display_label($svSemesterCurrent) . ') to file a new complaint or suggestion.'
     ));
     exit;
 }
@@ -188,12 +196,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'date_of_incident' => trim((string)($_POST['date_of_incident'] ?? '')),
                 'time_of_incident' => trim((string)($_POST['time_of_incident'] ?? '')),
                 'place_of_incident' => trim((string)($_POST['place_of_incident'] ?? '')),
-                // The recipient is decided by who is being reported, not by the
-                // student: reported students go to their dean, reported
-                // faculty/staff go to the SAS Director.
-                'category' => $reportedType === 'faculty' ? 'admin' : 'dean',
-                'act_complained_of' => trim((string)($_POST['act_complained_of'] ?? '')),
-                'desired_outcome' => trim((string)($_POST['desired_outcome'] ?? '')),
+                // Hard-capped at 500 characters (also enforced client-side via
+                // the field's maxlength) - mb_substr so this can't cut a
+                // multi-byte character in half.
+                'act_complained_of' => mb_substr(trim((string)($_POST['act_complained_of'] ?? '')), 0, 500),
+                // Hard-capped at 300 characters (also enforced client-side via
+                // the field's maxlength) - mb_substr so this can't cut a
+                // multi-byte character in half.
+                'desired_outcome' => mb_substr(trim((string)($_POST['desired_outcome'] ?? '')), 0, 300),
                 'terms_agreement_accepted' => isset($_POST['terms_agreement_accepted']) ? '1' : '',
             ];
 
@@ -206,7 +216,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             set_preview_draft('complaint', $draft);
 
             $required = [
-                'person_complained_of', 'date_of_incident', 'place_of_incident', 'category',
+                'person_complained_of', 'date_of_incident', 'place_of_incident',
                 'act_complained_of', 'desired_outcome', 'terms_agreement_accepted',
             ];
             $missing = [];
@@ -227,11 +237,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
         } else {
             $draft = [
-                'category' => trim((string)($_POST['category'] ?? '')),
-                'date_of_suggestion' => trim((string)($_POST['date_of_suggestion'] ?? '')),
-                'subject' => trim((string)($_POST['subject'] ?? '')),
+                'office' => trim((string)($_POST['office'] ?? '')),
+                'subject' => trim((string)($_POST['subject'] ?? ($_POST['office'] ?? ''))),
                 'description' => trim((string)($_POST['description'] ?? '')),
-                'expected_outcome' => trim((string)($_POST['expected_outcome'] ?? '')),
                 'terms_agreement_accepted' => isset($_POST['terms_agreement_accepted']) ? '1' : '',
             ];
 
@@ -243,7 +251,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             set_preview_draft('suggestion', $draft);
 
-            $required = ['category', 'date_of_suggestion', 'subject', 'description', 'expected_outcome', 'terms_agreement_accepted'];
+            $required = ['office', 'subject', 'description', 'terms_agreement_accepted'];
             $missing = [];
             foreach ($required as $key) {
                 if ($draft[$key] === '' || $draft[$key] === null) {
@@ -266,6 +274,72 @@ if (empty($draft)) {
     header('Location: student_complaints.php?mode=' . $mode . '&status=error&msg=' . urlencode('Please complete the form first.'));
     exit;
 }
+
+// Suggestions only: give the student a heads-up if a very similar suggestion
+// was already sent to the same office, so they don't file an accidental
+// duplicate. This is informational only - it never blocks submission.
+$duplicateSuggestion = null;
+if ($mode === 'suggestion') {
+    require_once __DIR__ . '/../suggestion_flow.php';
+    $duplicateSuggestion = check_suggestion_duplicate($pdo, (string)($draft['office'] ?? ''), (string)($draft['description'] ?? ''));
+}
+
+// Complaints only: there is no category dropdown anymore - the AI decides
+// the category automatically from the written text (shown for
+// transparency below, informational only). Routing itself depends only on
+// who is being reported - faculty/staff always goes to the SAS Office
+// (Admin), a fellow student always goes to the reporting student's own
+// college dean - matching process_complaint.php exactly.
+$aiClassification = null;
+$aiUrgency = null;
+$aiRouteRole = null; // 'dean' | 'admin'
+$isSpamBlocked = false;
+if ($mode === 'complaint') {
+    require_once __DIR__ . '/../complaint_ai_helpers.php';
+    $aiCombinedText = trim((string)($draft['act_complained_of'] ?? '') . ' ' . (string)($draft['desired_outcome'] ?? ''));
+    if ($aiCombinedText !== '') {
+        // Reuse a cached result from an earlier render of this same draft
+        // (e.g. the student went back and forward again) instead of calling
+        // the AI a second time for identical text.
+        if (array_key_exists('ai_category_id', $draft)) {
+            $aiClassification = [
+                'category_id' => $draft['ai_category_id'],
+                'category_name' => $draft['ai_category_name'] ?? null,
+                'confidence' => (float)($draft['ai_confidence'] ?? 0.0),
+                'language' => $draft['ai_language'] ?? null,
+                'source' => $draft['ai_source'] ?? 'local',
+                'is_spam' => !empty($draft['ai_is_spam']),
+            ];
+            $aiUrgency = ['score' => (int)($draft['ai_urgency_score'] ?? 0), 'level' => $draft['ai_urgency_level'] ?? 'low'];
+        } else {
+            $aiClassification = ai_classify_text_smart($pdo, $aiCombinedText);
+            $aiUrgency = ai_urgency_score($aiCombinedText);
+
+            // Stash into the session draft so process_complaint.php reuses
+            // this exact result instead of calling the AI a second time.
+            $_SESSION['submission_drafts']['complaint']['ai_category_id'] = $aiClassification['category_id'];
+            $_SESSION['submission_drafts']['complaint']['ai_category_name'] = $aiClassification['category_name'];
+            $_SESSION['submission_drafts']['complaint']['ai_confidence'] = $aiClassification['confidence'];
+            $_SESSION['submission_drafts']['complaint']['ai_language'] = $aiClassification['language'] ?? null;
+            $_SESSION['submission_drafts']['complaint']['ai_source'] = $aiClassification['source'] ?? 'local';
+            $_SESSION['submission_drafts']['complaint']['ai_is_spam'] = !empty($aiClassification['is_spam']);
+            $_SESSION['submission_drafts']['complaint']['ai_urgency_score'] = $aiUrgency['score'];
+            $_SESSION['submission_drafts']['complaint']['ai_urgency_level'] = $aiUrgency['level'];
+        }
+
+        // Only Groq can judge spam/nonsense (the local fallback always
+        // reports is_spam=false) - block submission when it's confident this
+        // isn't a genuine complaint attempt.
+        if (!empty($aiClassification['is_spam'])) {
+            $isSpamBlocked = true;
+        }
+    }
+
+    $previewReportedTypeForRoute = (string)($draft['reported_type'] ?? 'student');
+    $aiRouteRole = $previewReportedTypeForRoute === 'faculty' ? 'admin' : 'dean';
+}
+$aiRouteFieldLabel = $aiRouteRole === 'dean' ? 'College Dean' : ($aiRouteRole === 'admin' ? 'SAS Office (Admin)' : 'Pending review');
+$aiRouteSentenceLabel = $aiRouteRole === 'dean' ? 'your college dean' : ($aiRouteRole === 'admin' ? 'the SAS Office (Admin)' : null);
 
 $labels = $mode === 'complaint'
     ? [
@@ -318,6 +392,16 @@ body { background: #f4f6fb; color: #1f2937; }
 .notice { margin-bottom: 16px; padding: 12px 14px; border-radius: 10px; font-size: 13px; font-weight: 500; }
 .notice.error { background: #fff1f2; color: #b91c1c; border: 1px solid #fecdd3; }
 .notice.success { background: #ecfdf5; color: #166534; border: 1px solid #bbf7d0; }
+.notice.info { background: #fffbeb; color: #92400e; border: 1px solid #fde68a; }
+/* Spam-blocked popup modal */
+.spam-overlay { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; background: rgba(15,23,42,0.55); z-index: 9999; padding: 20px; }
+.spam-overlay.visible { display: flex; }
+.spam-card { background: #fff; padding: 24px 26px; border-radius: 14px; box-shadow: 0 20px 45px rgba(15,23,42,0.25); max-width: 460px; width: 100%; text-align: center; border-left: 6px solid #dc2626; }
+.spam-card .spam-icon { width: 46px; height: 46px; margin: 0 auto 12px; border-radius: 50%; background: #fee2e2; color: #dc2626; display: flex; align-items: center; justify-content: center; font-size: 24px; }
+.spam-card h3 { margin-bottom: 10px; color: #111827; font-size: 18px; }
+.spam-card p { color: #4b5563; font-size: 14px; line-height: 1.5; margin-bottom: 18px; }
+.spam-close { display: inline-block; padding: 10px 20px; background: #dc2626; color: #fff; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; border: none; }
+.spam-close:hover { background: #b91c1c; }
 @media (max-width: 768px) {
     .main { margin-left: 0; }
     .grid { grid-template-columns: 1fr; }
@@ -334,6 +418,27 @@ body { background: #f4f6fb; color: #1f2937; }
 
         <?php if ($flashMessage !== ''): ?>
             <div class="notice <?php echo e($flashType); ?>"><?php echo e($flashMessage); ?></div>
+        <?php endif; ?>
+
+        <?php if ($duplicateSuggestion !== null): ?>
+            <div class="notice info">
+                <i class='bx bx-info-circle'></i>
+                A similar suggestion to this office already exists (Ticket <?php echo e($duplicateSuggestion['ticket_no']); ?>, <?php echo e((string)$duplicateSuggestion['percent']); ?>% similar) and is still being handled. You can still submit yours if it's actually different.
+            </div>
+        <?php endif; ?>
+
+        <?php if ($aiUrgency !== null && $aiUrgency['level'] !== 'low'): ?>
+            <div class="notice info">
+                <i class='bx bx-error'></i>
+                This complaint reads as <strong><?php echo e(ucfirst((string)$aiUrgency['level'])); ?> urgency</strong> based on its wording. It will be flagged accordingly for whoever reviews it.
+            </div>
+        <?php endif; ?>
+
+        <?php if ($isSpamBlocked): ?>
+            <div class="notice error">
+                <i class='bx bx-block'></i>
+                This submission cannot proceed as written - see the popup for details.
+            </div>
         <?php endif; ?>
 
         <div class="card">
@@ -380,29 +485,56 @@ body { background: #f4f6fb; color: #1f2937; }
                     <div class="field"><div class="field-label">Time of Incident</div><div class="field-value"><?php echo field((string)($draft['time_of_incident'] ?? '')); ?></div></div>
                     <div class="field full"><div class="field-label">Place of Incident</div><div class="field-value"><?php echo field((string)($draft['place_of_incident'] ?? '')); ?></div></div>
                     <div class="field"><div class="field-label">Reported</div><div class="field-value"><?php echo field(((string)($draft['reported_type'] ?? 'student')) === 'faculty' ? 'Faculty/Staff' : 'Student'); ?></div></div>
-                    <div class="field"><div class="field-label">Will be sent to</div><div class="field-value"><?php echo field(((string)($draft['category'] ?? '')) === 'admin' ? 'SAS Director' : 'College Dean'); ?></div></div>
+                    <div class="field"><div class="field-label">Category (AI-assigned)</div><div class="field-value"><?php echo field($aiClassification !== null && $aiClassification['category_name'] !== null ? (string)$aiClassification['category_name'] : 'Pending review'); ?></div></div>
+                    <?php $previewLanguageLabel = $aiClassification !== null ? groq_language_label($aiClassification['language'] ?? null) : ''; ?>
+                    <?php if ($previewLanguageLabel !== ''): ?>
+                        <div class="field"><div class="field-label">Detected Language</div><div class="field-value"><?php echo field($previewLanguageLabel); ?></div></div>
+                    <?php endif; ?>
+                    <div class="field"><div class="field-label">Will be sent to</div><div class="field-value"><?php echo field($aiRouteFieldLabel); ?></div></div>
                     <div class="field full"><div class="field-label">Act/s Complained Of</div><div class="field-value"><?php echo field((string)($draft['act_complained_of'] ?? '')); ?></div></div>
                     <div class="field full"><div class="field-label">Desired Outcome</div><div class="field-value"><?php echo field((string)($draft['desired_outcome'] ?? '')); ?></div></div>
                     <div class="field full"><div class="field-label">Supporting File</div><div class="field-value"><?php echo !empty($draft['attachment_name']) ? field((string)$draft['attachment_name']) : 'No file attached'; ?></div></div>
                 <?php else: ?>
-                    <div class="field"><div class="field-label">Category</div><div class="field-value"><?php echo field((string)($draft['category'] ?? '')); ?></div></div>
-                    <div class="field"><div class="field-label">Date of Suggestion</div><div class="field-value"><?php echo field((string)($draft['date_of_suggestion'] ?? '')); ?></div></div>
+                    <div class="field"><div class="field-label">Office</div><div class="field-value"><?php echo field((string)($draft['office'] ?? '')); ?></div></div>
                     <div class="field full"><div class="field-label">Idea Title</div><div class="field-value"><?php echo field((string)($draft['subject'] ?? '')); ?></div></div>
                     <div class="field full"><div class="field-label">Detailed Suggestion</div><div class="field-value"><?php echo field((string)($draft['description'] ?? '')); ?></div></div>
-                    <div class="field full"><div class="field-label">Expected Outcome</div><div class="field-value"><?php echo field((string)($draft['expected_outcome'] ?? '')); ?></div></div>
                     <div class="field full"><div class="field-label">Supporting File</div><div class="field-value"><?php echo !empty($draft['attachment_name']) ? field((string)$draft['attachment_name']) : 'No file attached'; ?></div></div>
                 <?php endif; ?>
             </div>
 
             <div class="actions">
                 <a class="btn btn-edit" href="<?php echo e($labels['edit_url']); ?>"><i class='bx bx-edit'></i> Edit</a>
-                <form method="POST" action="<?php echo e($labels['submit_url']); ?>" style="display:inline;">
-                    <input type="hidden" name="draft_token" value="<?php echo e(get_preview_token($mode)); ?>">
-                    <button type="submit" class="btn btn-proceed"><i class='bx bx-check-circle'></i> <?php echo e($labels['submit_label']); ?></button>
-                </form>
+                <?php if (!$isSpamBlocked): ?>
+                    <form method="POST" action="<?php echo e($labels['submit_url']); ?>" style="display:inline;">
+                        <input type="hidden" name="draft_token" value="<?php echo e(get_preview_token($mode)); ?>">
+                        <button type="submit" class="btn btn-proceed"><i class='bx bx-check-circle'></i> <?php echo e($labels['submit_label']); ?></button>
+                    </form>
+                <?php endif; ?>
             </div>
         </div>
     </div>
 </div>
+
+<?php if ($isSpamBlocked): ?>
+    <div id="spamOverlay" class="spam-overlay" role="dialog" aria-modal="true" aria-labelledby="spamModalTitle">
+        <div class="spam-card" role="document">
+            <div class="spam-icon"><i class='bx bx-block'></i></div>
+            <h3 id="spamModalTitle">This doesn't look like a genuine complaint</h3>
+            <p>It reads like spam, a test message, or text unrelated to any real incident. Please go back and describe an actual incident, or contact the SAS Office directly if you believe this is a mistake. This submission cannot proceed as written.</p>
+            <button id="spamClose" class="spam-close">OK, let me edit it</button>
+        </div>
+    </div>
+    <script>
+    window.addEventListener('load', function() {
+        const overlay = document.getElementById('spamOverlay');
+        const close = document.getElementById('spamClose');
+        if (!overlay) return;
+        overlay.classList.add('visible');
+        function hide() { overlay.classList.remove('visible'); }
+        close.addEventListener('click', hide, { once: true });
+        overlay.addEventListener('click', function(e){ if (e.target === overlay) hide(); });
+    });
+    </script>
+<?php endif; ?>
 </body>
 </html>

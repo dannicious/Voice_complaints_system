@@ -23,7 +23,11 @@ function ensure_role(string $expectedRole): void
 {
     if (!isset($_SESSION['user_id'])) {
         // Not logged in -> redirect to role login
-        header('Location: ../' . $expectedRole . '/login.php');
+        if ($expectedRole === 'staff') {
+            header('Location: /complaint-system/complaint-system-main/staff/login.php');
+        } else {
+            header('Location: ../' . $expectedRole . '/login.php');
+        }
         exit;
     }
 

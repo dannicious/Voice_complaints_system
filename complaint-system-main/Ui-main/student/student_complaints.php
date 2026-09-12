@@ -19,10 +19,12 @@ function e(string $value): string
 // current school year. A student viewing a past school year (via the
 // topbar switcher) gets a locked, read-only notice instead of the form.
 $studentProfileId = sy_resolve_student_profile_id($pdo);
-$schoolYearCurrent = sy_current();
+$schoolYearCurrent = sy_current($pdo);
 $schoolYearSelected = $studentProfileId > 0 ? sy_get_selected($pdo, $studentProfileId) : $schoolYearCurrent;
+$semesterCurrent = semester_current();
+$semesterSelected = $studentProfileId > 0 ? semester_get_selected() : $semesterCurrent;
 
-if ($studentProfileId > 0 && $schoolYearSelected !== $schoolYearCurrent) {
+if ($studentProfileId > 0 && ($schoolYearSelected !== $schoolYearCurrent || $semesterSelected !== $semesterCurrent)) {
     $lockedIsSuggestion = $pageMode === 'suggestion';
     $lockedTitle = $lockedIsSuggestion ? 'Send a Suggestion' : 'File a Complaint';
     $lockedAction = $lockedIsSuggestion ? 'Sending a suggestion' : 'Filing a complaint';
@@ -58,14 +60,15 @@ if ($studentProfileId > 0 && $schoolYearSelected !== $schoolYearCurrent) {
             <h2 class="page-title"><?php echo e($lockedTitle); ?></h2>
             <div class="locked-card">
                 <i class='bx bx-lock-alt'></i>
-                <h3>You're viewing School Year <?php echo e($schoolYearSelected); ?></h3>
+                <h3>You're viewing School Year <?php echo e($schoolYearSelected); ?>, <?php echo e(semester_display_label($semesterSelected)); ?></h3>
                 <p>
-                    <?php echo e($lockedAction); ?> is only available while viewing the current school year
-                    (<?php echo e($schoolYearCurrent); ?>). This past school year's records are read-only.
+                    <?php echo e($lockedAction); ?> is only available while viewing the current school year and semester
+                    (<?php echo e($schoolYearCurrent); ?>, <?php echo e(semester_display_label($semesterCurrent)); ?>). This past period's records are read-only.
                     Switch back to the current school year to continue.
                 </p>
                 <form method="POST" action="set_school_year.php">
                     <input type="hidden" name="school_year" value="<?php echo e($schoolYearCurrent); ?>">
+                    <input type="hidden" name="semester" value="<?php echo e($semesterCurrent); ?>">
                     <input type="hidden" name="redirect_to" value="<?php echo e($_SERVER['REQUEST_URI'] ?? 'student_complaints.php'); ?>">
                     <button type="submit" class="btn-blue"><i class='bx bx-refresh'></i> Switch to <?php echo e($schoolYearCurrent); ?></button>
                 </form>
@@ -92,12 +95,15 @@ function draft_checked(array $draft, string $key): string
 {
     return !empty($draft[$key]) ? 'checked' : '';
 }
-$complaintCategories = [
-    ['value' => 'dean', 'label' => 'Dean'],
-    ['value' => 'admin', 'label' => 'Admin'],
-];
+// Complaint category is no longer picked by the student - the AI
+// classifier assigns it automatically from the written complaint text
+// (see complaint_ai_helpers.php / student_submission_preview.php).
 $placeOfIncidentOptions = ['CTAS Building', 'CCJ Building', 'CCIS Building', 'GYM', 'BACK ADMIN'];
 $reportedStudentOptions = [];
+$studentBrowseColleges = [];
+$studentBrowsePrograms = [];
+$studentBrowseYearLevels = [];
+$studentBrowseSections = [];
 $selectedReportedStudentIds = [];
 $draftKey = $pageMode === 'suggestion' ? 'suggestion' : 'complaint';
 
@@ -119,7 +125,7 @@ $placeOfIncidentIsOther = $placeOfIncidentDraftValue !== '' && !in_array($placeO
 if ($pageMode !== 'suggestion') {
     try {
         $studentOptionsStmt = $pdo->prepare(
-            'SELECT sp.id, sp.student_number, sp.first_name, sp.last_name, sp.section, sp.year_level,
+            'SELECT sp.id, sp.student_number, sp.first_name, sp.last_name, sp.section, sp.year_level, u.profile_pic,
                     c.name AS college_name, p.name AS program_name
              FROM student_profiles sp
              LEFT JOIN users u ON u.id = sp.user_id
@@ -137,6 +143,32 @@ if ($pageMode !== 'suggestion') {
     } catch (PDOException $e) {
         $reportedStudentOptions = [];
     }
+
+    // Distinct filter values for the "Browse students" modal, so a student
+    // who doesn't know a name can instead narrow the list down by college,
+    // program/department, year level, and section.
+    $studentBrowseColleges = [];
+    $studentBrowsePrograms = [];
+    $studentBrowseYearLevels = [];
+    $studentBrowseSections = [];
+    foreach ($reportedStudentOptions as $studentOption) {
+        $collegeName = trim((string)($studentOption['college_name'] ?? ''));
+        $programName = trim((string)($studentOption['program_name'] ?? ''));
+        $yearLevelValue = trim((string)($studentOption['year_level'] ?? ''));
+        $sectionValue = trim((string)($studentOption['section'] ?? ''));
+        if ($collegeName !== '') { $studentBrowseColleges[$collegeName] = true; }
+        if ($programName !== '') { $studentBrowsePrograms[$programName] = true; }
+        if ($yearLevelValue !== '') { $studentBrowseYearLevels[$yearLevelValue] = true; }
+        if ($sectionValue !== '') { $studentBrowseSections[$sectionValue] = true; }
+    }
+    $studentBrowseColleges = array_keys($studentBrowseColleges);
+    $studentBrowsePrograms = array_keys($studentBrowsePrograms);
+    $studentBrowseYearLevels = array_keys($studentBrowseYearLevels);
+    $studentBrowseSections = array_keys($studentBrowseSections);
+    sort($studentBrowseColleges);
+    sort($studentBrowsePrograms);
+    sort($studentBrowseYearLevels, SORT_NATURAL);
+    sort($studentBrowseSections, SORT_NATURAL);
 
     $reportedFacultyOptions = faculty_staff_options($pdo);
 
@@ -167,11 +199,21 @@ if ($pageMode !== 'suggestion') {
 }
 
 if ($pageMode === 'suggestion') {
-    $suggestionCategories = [];
+    // Offices a suggestion can be routed to directly — the same set staff
+    // accounts and suggestion categories are matched against at submission.
+    $suggestionOffices = [];
     try {
-        $stmt = $pdo->query('SELECT name FROM suggestion_categories WHERE is_active = 1 ORDER BY name ASC');
-        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
-            $suggestionCategories[] = (string)$row['name'];
+        $officeStmt = $pdo->query(
+            "SELECT office FROM staff_profiles WHERE office IS NOT NULL AND TRIM(office) <> ''
+             UNION
+             SELECT office FROM suggestion_categories WHERE office IS NOT NULL AND TRIM(office) <> ''
+             ORDER BY office ASC"
+        );
+        foreach ($officeStmt->fetchAll(PDO::FETCH_COLUMN) as $office) {
+            $office = trim((string)$office);
+            if ($office !== '' && !in_array($office, $suggestionOffices, true)) {
+                $suggestionOffices[] = $office;
+            }
         }
     } catch (PDOException $e) {
     }
@@ -225,32 +267,17 @@ if ($pageMode === 'suggestion') {
                 <form action="student_submission_preview.php?mode=suggestion" method="POST" enctype="multipart/form-data">
                     <fieldset style="border: 1px solid #e5e7eb; border-radius: 8px; padding: 15px; margin-bottom: 20px;">
                         <legend style="font-weight: 600; color: #333; padding: 0 10px;">Suggestion Details <span style="color: red;">*</span></legend>
-                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
-                            <div class="form-group">
-                                <label>Area of Improvement <span style="color: red;">*</span></label>
-                                <select name="category" class="input-field" required>
-                                    <option value="" disabled <?php echo empty($submissionDraft['category']) ? 'selected' : ''; ?>>Select an area...</option>
-                                    <?php if (count($suggestionCategories) > 0): ?>
-                                        <?php foreach ($suggestionCategories as $cat): ?>
-                                            <option value="<?php echo htmlspecialchars($cat, ENT_QUOTES, 'UTF-8'); ?>" <?php echo draft_selected($submissionDraft, 'category', $cat); ?>><?php echo htmlspecialchars($cat, ENT_QUOTES, 'UTF-8'); ?></option>
-                                        <?php endforeach; ?>
-                                    <?php else: ?>
-                                        <option value="campus_life" <?php echo draft_selected($submissionDraft, 'category', 'campus_life'); ?>>Campus Life & Events</option>
-                                        <option value="facilities" <?php echo draft_selected($submissionDraft, 'category', 'facilities'); ?>>Facilities & Infrastructure</option>
-                                        <option value="academics" <?php echo draft_selected($submissionDraft, 'category', 'academics'); ?>>Academics & Curriculum</option>
-                                        <option value="technology" <?php echo draft_selected($submissionDraft, 'category', 'technology'); ?>>Technology & Digital Services</option>
-                                        <option value="other" <?php echo draft_selected($submissionDraft, 'category', 'other'); ?>>Other Ideas</option>
-                                    <?php endif; ?>
-                                </select>
-                            </div>
-                            <div class="form-group">
-                                <label>Date of Suggestion <span style="color: red;">*</span></label>
-                                <input type="date" name="date_of_suggestion" class="input-field" value="<?php echo draft_value($submissionDraft, 'date_of_suggestion'); ?>" required>
-                            </div>
-                        </div>
                         <div class="form-group">
-                            <label>Idea Title <span style="color: red;">*</span></label>
-                            <input type="text" name="subject" class="input-field" placeholder="E.g., Extend Library Operating Hours during Midterms" value="<?php echo draft_value($submissionDraft, 'subject'); ?>" required>
+                            <label>Select Office <span style="color: red;">*</span></label>
+                            <select name="office" class="input-field" required>
+                                <option value="" disabled <?php echo empty($submissionDraft['office']) ? 'selected' : ''; ?>>Select an office...</option>
+                                <?php foreach ($suggestionOffices as $officeOption): ?>
+                                    <option value="<?php echo htmlspecialchars($officeOption, ENT_QUOTES, 'UTF-8'); ?>" <?php echo draft_selected($submissionDraft, 'office', $officeOption); ?>><?php echo htmlspecialchars($officeOption, ENT_QUOTES, 'UTF-8'); ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                            <?php if ($suggestionOffices === []): ?>
+                                <div class="help-text" style="color:#b45309;font-size:12px;margin-top:6px;">No offices have been set up yet. Please contact the SAS Office.</div>
+                            <?php endif; ?>
                         </div>
                         <div class="form-group">
                             <label>Detailed Suggestion <span style="color: red;">*</span></label>
@@ -271,23 +298,13 @@ if ($pageMode === 'suggestion') {
                         </div>
                     </fieldset>
                     <fieldset style="border: 1px solid #e5e7eb; border-radius: 8px; padding: 15px; margin-bottom: 20px;">
-                        <legend style="font-weight: 600; color: #333; padding: 0 10px;">Expected Outcome & Benefits <span style="color: red;">*</span></legend>
-                        <div class="form-group">
-                            <label>Describe the expected benefits of this suggestion <span style="color: red;">*</span></label>
-                            <textarea name="expected_outcome" class="input-field" rows="4" placeholder="Explain how this suggestion will benefit the student body or the campus..." required><?php echo draft_value($submissionDraft, 'expected_outcome'); ?></textarea>
-                        </div>
-                    </fieldset>
-                    <fieldset style="border: 1px solid #e5e7eb; border-radius: 8px; padding: 15px; margin-bottom: 20px;">
                         <legend style="font-weight: 600; color: #333; padding: 0 10px;">Terms of Agreement <span style="color: red;">*</span></legend>
-                        <p style="font-size: 13px; color: #666; margin-bottom: 15px; line-height: 1.6;">Upon filling-up this form, I declare that the information provided is true and accurate to the best of my knowledge. I understand that my suggestion will be reviewed by the University administration for consideration.</p>
+                        <p style="font-size: 14px; font-weight: 600; color: #374151; margin-bottom: 15px; line-height: 1.6;">Upon filling-up this form, I declare that the information provided is true and accurate to the best of my knowledge. I understand that my suggestion will be reviewed by the University administration for consideration.</p>
                         <div class="checkbox-group" style="margin-bottom: 15px;">
                             <input type="checkbox" name="terms_agreement_accepted" id="terms-agree" value="1" <?php echo draft_checked($submissionDraft, 'terms_agreement_accepted'); ?> required>
-                            <label for="terms-agree">I agree that the provided information is true and may be used by the University for improvement purposes. <span style="color: red;">*</span></label>
+                            <label for="terms-agree" style="font-weight: 400; color: #6b7280;">I agree that the provided information is true and may be used by the University for improvement purposes. <span style="color: red;">*</span></label>
                         </div>
                     </fieldset>
-                    <div style="font-size: 13px; color: #6b7280; margin-bottom: 20px; line-height: 1.6;">
-                        Suggestions are sent directly to your college dean for review.
-                    </div>
                     <button type="submit" class="btn-green">Submit Suggestion</button>
                 </form>
             </div>
@@ -395,6 +412,7 @@ body {
 }
 
 .form-group { margin-bottom: 20px; }
+.incident-details-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 15px; }
 .form-group label { display: block; font-size: 14px; font-weight: 500; color: #444; margin-bottom: 8px; }
 .input-field { width: 100%; padding: 12px 15px; border: 1px solid #e5e7eb; border-radius: 8px; background: #f9fafb; font-size: 14px; outline: none; transition: 0.2s; }
 .input-field:focus { border-color: #6d28d9; background: #fff; box-shadow: 0 0 0 3px rgba(109,40,217,0.1); }
@@ -405,7 +423,8 @@ body {
 .reported-type-option:has(input:checked) { border-color: #7c3aed; background: #f5f3ff; color: #5b21b6; }
 .reported-type-option input { accent-color: #7c3aed; margin: 0; }
 .student-picker { position: relative; }
-.student-picker-input { width: 100%; padding: 12px 15px; border: 1px solid #e5e7eb; border-radius: 8px; background: #f9fafb; font-size: 14px; outline: none; transition: 0.2s; }
+.student-search-row { display: flex; flex-wrap: nowrap; align-items: center; gap: 10px; }
+.student-picker-input { flex: 1 1 auto; min-width: 0; width: auto; padding: 12px 15px; border: 1px solid #e5e7eb; border-radius: 8px; background: #f9fafb; font-size: 14px; font-family: inherit; line-height: 1.4; outline: none; transition: 0.2s; box-sizing: border-box; }
 .student-picker-input:focus { border-color: #6d28d9; background: #fff; box-shadow: 0 0 0 3px rgba(109,40,217,0.1); }
 .student-picker-options { position: absolute; top: calc(100% + 6px); left: 0; right: 0; background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; box-shadow: 0 10px 24px rgba(15,23,42,0.12); max-height: 220px; overflow-y: auto; z-index: 20; display: none; }
 .student-option { width: 100%; padding: 10px 12px; text-align: left; border: none; background: #fff; cursor: pointer; font-size: 13px; color: #374151; display: flex; flex-direction: column; gap: 2px; align-items: flex-start; }
@@ -416,6 +435,57 @@ body {
 .student-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
 .student-chip { display: inline-flex; align-items: center; gap: 6px; background: #ede9fe; color: #5b21b6; padding: 6px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; }
 .student-chip button { border: none; background: transparent; color: inherit; cursor: pointer; font-size: 12px; }
+
+/* "Browse students" link + modal */
+.browse-students-btn { flex: 0 0 auto; box-sizing: border-box; border: 1px solid #6d28d9; background: #fff; color: #6d28d9; font-weight: 700; font-family: inherit; font-size: 14px; line-height: 1.4; cursor: pointer; padding: 12px 16px; border-radius: 8px; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.browse-students-btn:hover { background: #f5f3ff; }
+.browse-students-btn i { font-size: 16px; }
+.browse-modal-overlay { display: none; position: fixed; inset: 0; background: rgba(15,23,42,0.55); z-index: 2000; align-items: center; justify-content: center; padding: 20px; }
+.browse-modal-overlay.visible { display: flex; }
+.browse-modal { background: #fff; border-radius: 14px; width: min(880px, 100%); max-height: min(720px, 92vh); display: flex; flex-direction: column; box-shadow: 0 30px 60px rgba(15,23,42,0.3); overflow: hidden; }
+.browse-modal-header { display: flex; align-items: flex-start; justify-content: space-between; padding: 18px 22px; border-bottom: 1px solid #e5e7eb; }
+.browse-modal-header-left { display: flex; align-items: center; gap: 12px; }
+.browse-modal-icon { width: 38px; height: 38px; border-radius: 10px; background: #ede9fe; color: #6d28d9; display: inline-flex; align-items: center; justify-content: center; font-size: 20px; flex-shrink: 0; }
+.browse-modal-title { font-weight: 700; font-size: 17px; color: #111827; }
+.browse-modal-subtitle { font-size: 13px; color: #6b7280; margin-top: 2px; }
+.browse-modal-close { border: none; background: transparent; font-size: 22px; line-height: 1; color: #6b7280; cursor: pointer; width: 28px; height: 28px; border-radius: 8px; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.browse-modal-close:hover { background: #f3f4f6; color: #111827; }
+.browse-modal-filters { display: flex; flex-wrap: wrap; gap: 10px; padding: 16px 22px 0; align-items: flex-end; }
+.browse-filter-field { display: flex; flex-direction: column; gap: 4px; flex: 1 1 150px; min-width: 140px; }
+.browse-filter-field label { font-size: 11px; font-weight: 700; color: #6b7280; text-transform: uppercase; letter-spacing: .04em; }
+.browse-filter-field select { padding: 9px 10px; border: 1px solid #d1d5db; border-radius: 8px; font-size: 13px; background: #fff; color: #111827; }
+.browse-filter-search { flex: 1 1 220px; }
+.browse-search-wrap { position: relative; display: flex; align-items: center; }
+.browse-search-wrap i { position: absolute; left: 10px; color: #9ca3af; font-size: 15px; }
+.browse-search-wrap input { width: 100%; padding: 9px 10px 9px 32px; border: 1px solid #d1d5db; border-radius: 8px; font-size: 13px; background: #fff; color: #111827; }
+.browse-modal-toolbar { display: flex; align-items: center; justify-content: space-between; padding: 14px 22px 8px; flex-wrap: wrap; gap: 10px; }
+.browse-total-count { font-size: 13px; font-weight: 700; color: #111827; }
+.browse-filter-clear { flex: 0 0 auto; min-width: 0; }
+.browse-clear-filters-btn { height: 38px; padding: 0 4px; border: none; background: none; font-size: 13px; font-weight: 700; color: #6b46c1; cursor: pointer; white-space: nowrap; }
+.browse-clear-filters-btn:hover { text-decoration: underline; }
+.browse-table-wrap { flex: 1; overflow-y: auto; padding: 0 22px 8px; }
+.browse-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.browse-table thead th { position: sticky; top: 0; background: #fff; text-align: left; padding: 8px 10px; font-size: 11px; font-weight: 700; color: #6b7280; text-transform: uppercase; letter-spacing: .03em; border-bottom: 1px solid #e5e7eb; }
+.browse-th-check { width: 34px; }
+.browse-table tbody tr { cursor: pointer; border-bottom: 1px solid #f3f4f6; }
+.browse-table tbody tr:hover { background: #f9fafb; }
+.browse-table tbody tr.checked { background: #eff6ff; }
+.browse-table td { padding: 8px 10px; vertical-align: middle; color: #374151; }
+.browse-row-name-cell { display: flex; align-items: center; gap: 10px; }
+.browse-row-avatar { width: 30px; height: 30px; border-radius: 50%; object-fit: cover; flex-shrink: 0; background: #ede9fe; }
+.browse-row-name { font-weight: 600; color: #111827; }
+.browse-modal-empty { text-align: center; color: #9ca3af; font-size: 13px; padding: 30px 10px; }
+.browse-modal-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 22px; border-top: 1px solid #e5e7eb; }
+.browse-cancel-btn { border: 1px solid #d1d5db; background: #fff; color: #374151; border-radius: 8px; padding: 10px 18px; font-size: 13px; font-weight: 600; cursor: pointer; }
+.browse-cancel-btn:hover { background: #f3f4f6; }
+
+@media (max-width: 1024px) {
+    .incident-details-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 600px) {
+    .incident-details-grid { grid-template-columns: 1fr; }
+}
 
 /* File Upload Styles */
 .file-upload-wrapper {
@@ -550,7 +620,10 @@ body {
                         <label>Search and select the student(s) involved <span style="color: red;">*</span></label>
                         <div class="student-picker" id="studentPicker">
                             <div class="student-chips" id="studentPickerChips"></div>
-                            <input type="text" id="studentSearchInput" class="student-picker-input" placeholder="Click to search student names..." autocomplete="off">
+                            <div class="student-search-row">
+                                <input type="text" id="studentSearchInput" class="student-picker-input" placeholder="Click to search student names..." autocomplete="off">
+                                <button type="button" id="browseStudentsBtn" class="browse-students-btn"><i class='bx bx-user-plus'></i> Browse Student</button>
+                            </div>
                             <div class="student-picker-options" id="studentPickerOptions">
                                 <?php foreach ($reportedStudentOptions as $studentOption): ?>
                                     <?php $optionId = (int)$studentOption['id']; ?>
@@ -559,8 +632,10 @@ body {
                                     <?php $sectionLabel = trim((string)($studentOption['year_level'] ?? '') . (!empty($studentOption['section']) ? ' - ' . $studentOption['section'] : '')); ?>
                                     <?php $programLabel = trim((string)($studentOption['program_name'] ?? '')); ?>
                                     <?php $collegeLabel = trim((string)($studentOption['college_name'] ?? '')); ?>
-                                    <?php $detailText = trim(implode(' • ', array_filter([$studentNumber !== '' ? $studentNumber : '', $sectionLabel !== '' ? $sectionLabel : '', $programLabel !== '' ? $programLabel : '', $collegeLabel !== '' ? $collegeLabel : '']))); ?>
-                                    <button type="button" class="student-option" data-id="<?php echo e((string)$optionId); ?>" data-label="<?php echo e($displayName); ?>" data-search="<?php echo e(strtolower(trim($displayName . ' ' . $studentNumber . ' ' . $sectionLabel . ' ' . $programLabel . ' ' . $collegeLabel))); ?>">
+                                    <?php // Student number is left out of every visible label here - it's personal information, only used behind the scenes for search matching (see data-search below). ?>
+                                    <?php $detailText = trim(implode(' • ', array_filter([$sectionLabel !== '' ? $sectionLabel : '', $programLabel !== '' ? $programLabel : '', $collegeLabel !== '' ? $collegeLabel : '']))); ?>
+                                    <?php $optionPhoto = function_exists('resolve_student_photo') ? resolve_student_photo((string)($studentOption['profile_pic'] ?? '')) : ''; ?>
+                                    <button type="button" class="student-option" data-id="<?php echo e((string)$optionId); ?>" data-label="<?php echo e($displayName); ?>" data-search="<?php echo e(strtolower(trim($displayName . ' ' . $studentNumber . ' ' . $sectionLabel . ' ' . $programLabel . ' ' . $collegeLabel))); ?>" data-college="<?php echo e($collegeLabel); ?>" data-program="<?php echo e($programLabel); ?>" data-yearlevel="<?php echo e(trim((string)($studentOption['year_level'] ?? ''))); ?>" data-section="<?php echo e(trim((string)($studentOption['section'] ?? ''))); ?>" data-details="<?php echo e($detailText); ?>" data-photo="<?php echo e($optionPhoto); ?>" data-number="<?php echo e($studentNumber); ?>">
                                         <span class="student-option-name"><?php echo e($displayName); ?></span>
                                         <?php if ($detailText !== ''): ?>
                                             <span class="student-option-details"><?php echo e($detailText); ?></span>
@@ -572,7 +647,92 @@ body {
                         <?php foreach ($selectedReportedStudentIds as $selectedId): ?>
                             <input type="hidden" name="reported_student_ids[]" value="<?php echo e((string)(int)$selectedId); ?>">
                         <?php endforeach; ?>
-                        <div class="help-text">Click the box to view the list, type to filter names, and choose one or more students.</div>
+                    </div>
+
+                    <div class="browse-modal-overlay" id="browseStudentsModal" aria-hidden="true">
+                        <div class="browse-modal" role="dialog" aria-modal="true" aria-labelledby="browseStudentsTitle">
+                            <div class="browse-modal-header">
+                                <div class="browse-modal-header-left">
+                                    <div class="browse-modal-icon"><i class='bx bx-user'></i></div>
+                                    <div>
+                                        <div id="browseStudentsTitle" class="browse-modal-title">Browse Students</div>
+                                        <div class="browse-modal-subtitle">Find and select student(s) involved in this case.</div>
+                                    </div>
+                                </div>
+                                <button type="button" class="browse-modal-close" id="browseStudentsCloseBtn" aria-label="Close">&times;</button>
+                            </div>
+                            <div class="browse-modal-filters">
+                                <div class="browse-filter-field">
+                                    <label for="browseFilterCollege">College</label>
+                                    <select id="browseFilterCollege">
+                                        <option value="">All Colleges</option>
+                                        <?php foreach ($studentBrowseColleges as $collegeName): ?>
+                                            <option value="<?php echo e($collegeName); ?>"><?php echo e($collegeName); ?></option>
+                                        <?php endforeach; ?>
+                                    </select>
+                                </div>
+                                <div class="browse-filter-field">
+                                    <label for="browseFilterProgram">Department</label>
+                                    <select id="browseFilterProgram">
+                                        <option value="">All Departments</option>
+                                        <?php foreach ($studentBrowsePrograms as $programName): ?>
+                                            <option value="<?php echo e($programName); ?>"><?php echo e($programName); ?></option>
+                                        <?php endforeach; ?>
+                                    </select>
+                                </div>
+                                <div class="browse-filter-field">
+                                    <label for="browseFilterYearLevel">Year Level</label>
+                                    <select id="browseFilterYearLevel">
+                                        <option value="">All Year Levels</option>
+                                        <?php foreach ($studentBrowseYearLevels as $yearLevelName): ?>
+                                            <option value="<?php echo e($yearLevelName); ?>"><?php echo e($yearLevelName); ?></option>
+                                        <?php endforeach; ?>
+                                    </select>
+                                </div>
+                                <div class="browse-filter-field">
+                                    <label for="browseFilterSection">Section</label>
+                                    <select id="browseFilterSection">
+                                        <option value="">All Sections</option>
+                                        <?php foreach ($studentBrowseSections as $sectionName): ?>
+                                            <option value="<?php echo e($sectionName); ?>"><?php echo e($sectionName); ?></option>
+                                        <?php endforeach; ?>
+                                    </select>
+                                </div>
+                                <div class="browse-filter-field browse-filter-clear">
+                                    <label>&nbsp;</label>
+                                    <button type="button" class="browse-clear-filters-btn" id="browseClearFiltersBtn">Clear Filters</button>
+                                </div>
+                                <div class="browse-filter-field browse-filter-search">
+                                    <label for="browseSearchInput">&nbsp;</label>
+                                    <div class="browse-search-wrap">
+                                        <i class='bx bx-search'></i>
+                                        <input type="text" id="browseSearchInput" placeholder="Search by name...">
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="browse-modal-toolbar">
+                                <div class="browse-total-count" id="browseResultsCount">Total Students: 0</div>
+                            </div>
+                            <div class="browse-table-wrap">
+                                <table class="browse-table">
+                                    <thead>
+                                        <tr>
+                                            <th class="browse-th-check"></th>
+                                            <th>Student Name</th>
+                                            <th>College</th>
+                                            <th>Department</th>
+                                            <th>Year Level</th>
+                                            <th>Section</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="browseStudentsList"></tbody>
+                                </table>
+                            </div>
+                            <div class="browse-modal-footer">
+                                <button type="button" class="browse-cancel-btn" id="browseStudentsCancelBtn">Cancel</button>
+                                <button type="button" class="btn-blue" id="browseStudentsDoneBtn">Add Selected (0)</button>
+                            </div>
+                        </div>
                     </div>
 
                     <div class="form-group" id="facultyPickerGroup">
@@ -613,7 +773,7 @@ body {
                 <fieldset style="border: 1px solid #e5e7eb; border-radius: 8px; padding: 15px; margin-bottom: 20px;">
                     <legend style="font-weight: 600; color: #333; padding: 0 10px;">Incident Details <span style="color: red;">*</span></legend>
                     
-                    <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 15px;">
+                    <div class="incident-details-grid">
                         <div class="form-group">
                             <label>Date of Incident <span style="color: red;">*</span></label>
                             <input type="date" name="date_of_incident" class="input-field" value="<?php echo draft_value($submissionDraft, 'date_of_incident'); ?>" required>
@@ -640,7 +800,8 @@ body {
 
                     <div class="form-group">
                         <label>Act/s Complained Of <span style="color: red;">*</span></label>
-                            <textarea name="act_complained_of" class="input-field" rows="3" placeholder="Describe the specific act or behavior complained about" required><?php echo draft_value($submissionDraft, 'act_complained_of'); ?></textarea>
+                            <textarea name="act_complained_of" id="actComplainedOf" class="input-field" rows="3" maxlength="500" placeholder="Describe the specific act or behavior complained about" required oninput="updateActComplainedOfCount()"><?php echo draft_value($submissionDraft, 'act_complained_of'); ?></textarea>
+                            <div id="actComplainedOfCount" style="font-size: 12px; color: #6b7280; margin-top: 4px; text-align: right;"></div>
                     </div>
 
                 </fieldset>
@@ -663,11 +824,12 @@ body {
 
                 <!-- DESIRED OUTCOME SECTION -->
                 <fieldset style="border: 1px solid #e5e7eb; border-radius: 8px; padding: 15px; margin-bottom: 20px;">
-                    <legend style="font-weight: 600; color: #333; padding: 0 10px;">Complaint Outcome <span style="color: red;">*</span></legend>
+                    <legend style="font-weight: 600; color: #333; padding: 0 10px;">Expected Outcome <span style="color: red;">*</span></legend>
                     
                     <div class="form-group">
                         <label>As a result of making this complaint, what outcome would you like to have / to expect? <span style="color: red;">*</span></label>
-                            <textarea name="desired_outcome" class="input-field" rows="4" placeholder="Describe the desired outcome or resolution" required><?php echo draft_value($submissionDraft, 'desired_outcome'); ?></textarea>
+                            <textarea name="desired_outcome" id="desiredOutcome" class="input-field" rows="4" maxlength="300" placeholder="Describe the desired outcome or resolution" required oninput="updateDesiredOutcomeCount()"><?php echo draft_value($submissionDraft, 'desired_outcome'); ?></textarea>
+                            <div id="desiredOutcomeCount" style="font-size: 12px; color: #6b7280; margin-top: 4px; text-align: right;"></div>
                     </div>
                 </fieldset>
 
@@ -675,13 +837,13 @@ body {
                 <fieldset style="border: 1px solid #e5e7eb; border-radius: 8px; padding: 15px; margin-bottom: 20px;">
                     <legend style="font-weight: 600; color: #333; padding: 0 10px;">Terms of Agreement <span style="color: red;">*</span></legend>
                     
-                    <p style="font-size: 13px; color: #666; margin-bottom: 15px; line-height: 1.6;">
+                    <p style="font-size: 14px; font-weight: 600; color: #374151; margin-bottom: 15px; line-height: 1.6;">
                         Upon filling-up this form, I bind myself to stand on the truth of this complaint as a <strong>COMPLAINANT/AGGRIEVED PARTY</strong> on behalf of the public and the institution for legal proceedings may be required as provided by the existing laws.
                     </p>
 
                     <div class="checkbox-group" style="margin-bottom: 15px;">
                         <input type="checkbox" name="terms_agreement_accepted" id="terms-agree" value="1" <?php echo draft_checked($submissionDraft, 'terms_agreement_accepted'); ?> required>
-                        <label for="terms-agree">I agree that the provided information asked herein will be used by the University for whatever legal purpose it may serve. <span style="color: red;">*</span></label>
+                        <label for="terms-agree" style="font-weight: 400; color: #6b7280;">I agree that the provided information asked herein will be used by the University for whatever legal purpose it may serve. <span style="color: red;">*</span></label>
                     </div>
                 </fieldset>
 
@@ -697,6 +859,26 @@ body {
 </div>
 
 <script>
+function updateActComplainedOfCount() {
+    const field = document.getElementById('actComplainedOf');
+    const counter = document.getElementById('actComplainedOfCount');
+    if (!field || !counter) {
+        return;
+    }
+    const max = field.maxLength;
+    counter.textContent = field.value.length + ' / ' + max;
+}
+
+function updateDesiredOutcomeCount() {
+    const field = document.getElementById('desiredOutcome');
+    const counter = document.getElementById('desiredOutcomeCount');
+    if (!field || !counter) {
+        return;
+    }
+    const max = field.maxLength;
+    counter.textContent = field.value.length + ' / ' + max;
+}
+
 function syncPlaceOfIncident() {
     const select = document.getElementById('placeOfIncidentSelect');
     const other = document.getElementById('placeOfIncidentOther');
@@ -777,6 +959,9 @@ function resetComplaintForm() {
 }
 
 document.addEventListener('DOMContentLoaded', function() {
+    updateActComplainedOfCount();
+    updateDesiredOutcomeCount();
+
     const params = new URLSearchParams(window.location.search);
     if (params.get('status') === 'success') {
         // Reset immediately
@@ -932,6 +1117,254 @@ document.addEventListener('DOMContentLoaded', function() {
         searchId: 'studentSearchInput',
         fieldName: 'reported_student_ids[]'
     });
+
+    // "Browse students" modal: an easier alternative to the type-to-search
+    // box for students who don't know exactly who to search for. Selections
+    // made here are staged locally and only applied to the real inline
+    // picker (by clicking its matching hidden .student-option buttons) when
+    // "Add Selected" is pressed - "Cancel"/close just discards the staging.
+    (function setupBrowseStudentsModal() {
+        const openBtn = document.getElementById('browseStudentsBtn');
+        const modal = document.getElementById('browseStudentsModal');
+        const closeBtn = document.getElementById('browseStudentsCloseBtn');
+        const cancelBtn = document.getElementById('browseStudentsCancelBtn');
+        const doneBtn = document.getElementById('browseStudentsDoneBtn');
+        const listEl = document.getElementById('browseStudentsList');
+        const searchInput = document.getElementById('browseSearchInput');
+        const collegeSelect = document.getElementById('browseFilterCollege');
+        const programSelect = document.getElementById('browseFilterProgram');
+        const yearLevelSelect = document.getElementById('browseFilterYearLevel');
+        const sectionSelect = document.getElementById('browseFilterSection');
+        const countEl = document.getElementById('browseResultsCount');
+        const clearFiltersBtn = document.getElementById('browseClearFiltersBtn');
+        const sourceOptions = document.getElementById('studentPickerOptions');
+
+        if (!openBtn || !modal || !sourceOptions) {
+            return;
+        }
+
+        let students = [];
+        let staged = new Set();
+
+        function buildStudents() {
+            students = Array.from(sourceOptions.querySelectorAll('.student-option')).map(function (option) {
+                return {
+                    id: option.getAttribute('data-id') || '',
+                    label: option.getAttribute('data-label') || '',
+                    search: option.getAttribute('data-search') || '',
+                    college: option.getAttribute('data-college') || '',
+                    program: option.getAttribute('data-program') || '',
+                    yearLevel: option.getAttribute('data-yearlevel') || '',
+                    section: option.getAttribute('data-section') || '',
+                    photo: option.getAttribute('data-photo') || '',
+                    row: null
+                };
+            });
+            // Names are already ordered first_name/last_name by the server
+            // query, so a plain alphabetical re-sort here keeps it stable.
+            students.sort(function (a, b) { return a.label.localeCompare(b.label); });
+        }
+
+        function updateDoneButton() {
+            doneBtn.textContent = 'Add Selected (' + staged.size + ')';
+        }
+
+        function renderRows() {
+            listEl.innerHTML = '';
+            students.forEach(function (s) {
+                const tr = document.createElement('tr');
+                s.row = tr;
+
+                const checkCell = document.createElement('td');
+                const checkbox = document.createElement('input');
+                checkbox.type = 'checkbox';
+                checkbox.checked = staged.has(s.id);
+                checkbox.addEventListener('click', function (event) { event.stopPropagation(); });
+                checkbox.addEventListener('change', function () { toggle(s); });
+                checkCell.appendChild(checkbox);
+                tr.appendChild(checkCell);
+
+                const nameCell = document.createElement('td');
+                const nameWrap = document.createElement('div');
+                nameWrap.className = 'browse-row-name-cell';
+                const avatar = document.createElement('img');
+                avatar.className = 'browse-row-avatar';
+                avatar.src = s.photo || '../assets/images/default-avatar.svg';
+                avatar.alt = '';
+                const nameSpan = document.createElement('span');
+                nameSpan.className = 'browse-row-name';
+                nameSpan.textContent = s.label;
+                nameWrap.appendChild(avatar);
+                nameWrap.appendChild(nameSpan);
+                nameCell.appendChild(nameWrap);
+                tr.appendChild(nameCell);
+
+                [s.college, s.program, s.yearLevel, s.section].forEach(function (value) {
+                    const td = document.createElement('td');
+                    td.textContent = value;
+                    tr.appendChild(td);
+                });
+
+                tr.classList.toggle('checked', checkbox.checked);
+                tr.addEventListener('click', function (event) {
+                    if (event.target.tagName === 'INPUT') { return; }
+                    checkbox.checked = !checkbox.checked;
+                    toggle(s);
+                });
+
+                listEl.appendChild(tr);
+            });
+        }
+
+        function toggle(s) {
+            if (staged.has(s.id)) {
+                staged.delete(s.id);
+            } else {
+                staged.add(s.id);
+            }
+            if (s.row) { s.row.classList.toggle('checked', staged.has(s.id)); }
+            updateDoneButton();
+        }
+
+        // Narrows the Department dropdown to only the departments that
+        // actually have students in the selected college (instead of always
+        // listing every department in the school), and drops the current
+        // department selection if it no longer belongs to that college.
+        function updateDepartmentOptions() {
+            const college = collegeSelect.value;
+            const previousProgram = programSelect.value;
+
+            const availablePrograms = [];
+            const seen = new Set();
+            students.forEach(function (s) {
+                if (college !== '' && s.college !== college) { return; }
+                if (s.program === '' || seen.has(s.program)) { return; }
+                seen.add(s.program);
+                availablePrograms.push(s.program);
+            });
+            availablePrograms.sort(function (a, b) { return a.localeCompare(b); });
+
+            programSelect.innerHTML = '';
+            const allOption = document.createElement('option');
+            allOption.value = '';
+            allOption.textContent = 'All Departments';
+            programSelect.appendChild(allOption);
+            availablePrograms.forEach(function (program) {
+                const option = document.createElement('option');
+                option.value = program;
+                option.textContent = program;
+                programSelect.appendChild(option);
+            });
+
+            programSelect.value = availablePrograms.indexOf(previousProgram) !== -1 ? previousProgram : '';
+        }
+
+        function applyFilters() {
+            const query = (searchInput.value || '').toLowerCase().trim();
+            const college = collegeSelect.value;
+            const program = programSelect.value;
+            const yearLevel = yearLevelSelect.value;
+            const section = sectionSelect.value;
+            let visibleCount = 0;
+
+            students.forEach(function (s) {
+                const matchesQuery = query === '' || s.search.includes(query);
+                const matchesCollege = college === '' || s.college === college;
+                const matchesProgram = program === '' || s.program === program;
+                const matchesYearLevel = yearLevel === '' || s.yearLevel === yearLevel;
+                const matchesSection = section === '' || s.section === section;
+                const visible = matchesQuery && matchesCollege && matchesProgram && matchesYearLevel && matchesSection;
+                if (s.row) { s.row.style.display = visible ? '' : 'none'; }
+                if (visible) { visibleCount++; }
+            });
+
+            if (countEl) {
+                countEl.textContent = 'Total Students: ' + visibleCount;
+            }
+            let emptyRow = listEl.querySelector('.browse-modal-empty-row');
+            if (visibleCount === 0) {
+                if (!emptyRow) {
+                    emptyRow = document.createElement('tr');
+                    emptyRow.className = 'browse-modal-empty-row';
+                    const td = document.createElement('td');
+                    td.colSpan = 6;
+                    td.className = 'browse-modal-empty';
+                    td.textContent = 'No students match these filters.';
+                    emptyRow.appendChild(td);
+                    listEl.appendChild(emptyRow);
+                }
+            } else if (emptyRow) {
+                emptyRow.remove();
+            }
+        }
+
+        function openModal() {
+            buildStudents();
+            // Stage whatever's already selected in the real picker.
+            staged = new Set(
+                Array.from(sourceOptions.querySelectorAll('.student-option.selected')).map(function (option) {
+                    return option.getAttribute('data-id') || '';
+                })
+            );
+            renderRows();
+            updateDepartmentOptions();
+            applyFilters();
+            updateDoneButton();
+            modal.classList.add('visible');
+            modal.setAttribute('aria-hidden', 'false');
+        }
+
+        function closeModal() {
+            modal.classList.remove('visible');
+            modal.setAttribute('aria-hidden', 'true');
+        }
+
+        function commitSelection() {
+            Array.from(sourceOptions.querySelectorAll('.student-option')).forEach(function (option) {
+                const id = option.getAttribute('data-id') || '';
+                const shouldBeSelected = staged.has(id);
+                if (option.classList.contains('selected') !== shouldBeSelected) {
+                    option.click();
+                }
+            });
+            closeModal();
+        }
+
+        openBtn.addEventListener('click', function (event) {
+            event.preventDefault();
+            openModal();
+        });
+        if (closeBtn) { closeBtn.addEventListener('click', closeModal); }
+        if (cancelBtn) { cancelBtn.addEventListener('click', closeModal); }
+        if (doneBtn) { doneBtn.addEventListener('click', commitSelection); }
+        modal.addEventListener('click', function (event) {
+            if (event.target === modal) { closeModal(); }
+        });
+        document.addEventListener('keydown', function (event) {
+            if (event.key === 'Escape' && modal.classList.contains('visible')) { closeModal(); }
+        });
+
+        [searchInput, programSelect, yearLevelSelect, sectionSelect].forEach(function (el) {
+            if (el) { el.addEventListener('input', applyFilters); el.addEventListener('change', applyFilters); }
+        });
+        if (collegeSelect) {
+            collegeSelect.addEventListener('change', function () {
+                updateDepartmentOptions();
+                applyFilters();
+            });
+        }
+        if (clearFiltersBtn) {
+            clearFiltersBtn.addEventListener('click', function () {
+                searchInput.value = '';
+                collegeSelect.value = '';
+                yearLevelSelect.value = '';
+                sectionSelect.value = '';
+                updateDepartmentOptions();
+                programSelect.value = '';
+                applyFilters();
+            });
+        }
+    })();
 
     const facultyPickerApi = createPicker({
         pickerId: 'facultyPicker',

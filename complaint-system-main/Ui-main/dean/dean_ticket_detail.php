@@ -5,6 +5,7 @@ require_once __DIR__ . '/../db_connection.php';
 require_once __DIR__ . '/../ticket_flow.php';
 require_once __DIR__ . '/../call_slip_helpers.php';
 require_once __DIR__ . '/../complaint_age_helpers.php';
+require_once __DIR__ . '/../response_timeline_ui.php';
 // Prevent PHP warnings from being printed to the page (they break layout). Logging still occurs.
 ini_set('display_errors', '0');
 error_reporting(E_ALL & ~E_NOTICE & ~E_WARNING);
@@ -159,15 +160,36 @@ function ensure_call_slip_table(PDO $pdo): void
         student_id INT UNSIGNED NOT NULL,
         issued_by_role VARCHAR(40) NOT NULL,
         issued_by_user_id INT UNSIGNED DEFAULT NULL,
+        issued_by_name VARCHAR(150) DEFAULT NULL,
+        report_date DATE DEFAULT NULL,
+        report_time VARCHAR(20) DEFAULT NULL,
+        office_message VARCHAR(255) DEFAULT NULL,
         issued_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
         status VARCHAR(20) NOT NULL DEFAULT 'issued',
         PRIMARY KEY (id),
         KEY idx_ticket (ticket_type, ticket_id),
         KEY idx_student (student_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci");
+
+    // Self-heal older installs where call_slips already existed without
+    // these columns - the report date/time/venue a call slip actually
+    // communicates, previously only ever emailed and never stored, so a
+    // student could never see it again after the email was gone.
+    foreach ([
+        'issued_by_name' => "ALTER TABLE call_slips ADD COLUMN issued_by_name VARCHAR(150) DEFAULT NULL",
+        'report_date' => "ALTER TABLE call_slips ADD COLUMN report_date DATE DEFAULT NULL",
+        'report_time' => "ALTER TABLE call_slips ADD COLUMN report_time VARCHAR(20) DEFAULT NULL",
+        'office_message' => "ALTER TABLE call_slips ADD COLUMN office_message VARCHAR(255) DEFAULT NULL",
+        'reason_note' => "ALTER TABLE call_slips ADD COLUMN reason_note TEXT DEFAULT NULL",
+    ] as $column => $alterSql) {
+        $exists = $pdo->query('SHOW COLUMNS FROM call_slips LIKE ' . $pdo->quote($column))->fetchColumn();
+        if (!$exists) {
+            $pdo->exec($alterSql);
+        }
+    }
 }
 
-function issue_call_slip(PDO $pdo, int $ticketId, string $ticketType, int $studentProfileId, string $issuedByRole, int $issuedByUserId): array
+function issue_call_slip(PDO $pdo, int $ticketId, string $ticketType, int $studentProfileId, string $issuedByRole, int $issuedByUserId, string $issuedByName = '', string $categoryName = '', string $reportDate = '', string $reportTime = '', string $officeMessage = '', string $reasonNote = ''): array
 {
     try {
         ensure_call_slip_table($pdo);
@@ -184,14 +206,25 @@ function issue_call_slip(PDO $pdo, int $ticketId, string $ticketType, int $stude
         }
 
         $table = $ticketType === 'complaint' ? 'complaints' : 'suggestions';
-        $ticketNoStmt = $pdo->prepare('SELECT ticket_no FROM ' . $table . ' WHERE id = :id LIMIT 1');
+        $ticketNoStmt = $pdo->prepare('SELECT ticket_no, student_id FROM ' . $table . ' WHERE id = :id LIMIT 1');
         $ticketNoStmt->execute([':id' => $ticketId]);
         $ticketRow = $ticketNoStmt->fetch(PDO::FETCH_ASSOC);
         $ticketNo = $ticketRow['ticket_no'] ?? 'UNKNOWN';
+        $complainantStudentId = (int)($ticketRow['student_id'] ?? 0);
+
+        $issuedByName = trim($issuedByName);
+        $categoryName = trim($categoryName);
+        $reportDate = trim($reportDate);
+        $reportTime = trim($reportTime);
+        $officeMessage = trim($officeMessage);
+        // Matches the textarea's maxlength="300" - enforced here too since a
+        // direct POST could otherwise bypass the browser-side limit.
+        $reasonNote = mb_substr(trim($reasonNote), 0, 300);
+        $categorySuffix = $categoryName !== '' ? ' about ' . $categoryName : '';
 
         $insertStmt = $pdo->prepare(
-            'INSERT INTO call_slips (ticket_type, ticket_id, student_id, issued_by_role, issued_by_user_id, status)
-             VALUES (:ticket_type, :ticket_id, :student_id, :issued_by_role, :issued_by_user_id, :status)'
+            'INSERT INTO call_slips (ticket_type, ticket_id, student_id, issued_by_role, issued_by_user_id, issued_by_name, report_date, report_time, office_message, reason_note, status)
+             VALUES (:ticket_type, :ticket_id, :student_id, :issued_by_role, :issued_by_user_id, :issued_by_name, :report_date, :report_time, :office_message, :reason_note, :status)'
         );
         $insertStmt->execute([
             ':ticket_type' => $ticketType,
@@ -199,6 +232,11 @@ function issue_call_slip(PDO $pdo, int $ticketId, string $ticketType, int $stude
             ':student_id' => $studentProfileId,
             ':issued_by_role' => $issuedByRole,
             ':issued_by_user_id' => $issuedByUserId > 0 ? $issuedByUserId : null,
+            ':issued_by_name' => $issuedByName !== '' ? $issuedByName : null,
+            ':report_date' => $reportDate !== '' ? $reportDate : null,
+            ':report_time' => $reportTime !== '' ? $reportTime : null,
+            ':office_message' => $officeMessage !== '' ? $officeMessage : null,
+            ':reason_note' => $reasonNote !== '' ? $reasonNote : null,
             ':status' => 'issued',
         ]);
 
@@ -206,13 +244,43 @@ function issue_call_slip(PDO $pdo, int $ticketId, string $ticketType, int $stude
             'INSERT INTO notifications (user_id, type, message, ticket_type, ticket_id, is_read)
              VALUES (:user_id, :type, :message, :ticket_type, :ticket_id, 0)'
         );
+
+        // The call slip itself is a summons: it's addressed to the student
+        // named in the complaint, e.g. "Dr. Shella C. Olaguir issued a call
+        // slip regarding a complaint about Bullying filed against you."
+        $summonsMessage = $issuedByName !== ''
+            ? $issuedByName . ' issued a call slip regarding a ' . $ticketType . $categorySuffix . ' filed against you.'
+            : 'A call slip has been issued for complaint ' . $ticketNo . '.';
         $notifyStmt->execute([
             ':user_id' => (int)$studentRow['user_id'],
             ':type' => 'call_slip_issued',
-            ':message' => 'A call slip has been issued for complaint ' . $ticketNo . '.',
+            ':message' => $summonsMessage,
             ':ticket_type' => $ticketType,
             ':ticket_id' => $ticketId,
         ]);
+
+        // Also let the student who filed the complaint know it led to a call
+        // slip, e.g. "Dr. Shella C. Olaguir issued a call slip for your
+        // complaint about Bullying." Skipped if they're the same person the
+        // call slip above was already addressed to (e.g. no separate reported
+        // student was on record).
+        if ($complainantStudentId > 0 && $complainantStudentId !== $studentProfileId) {
+            $complainantUserStmt = $pdo->prepare('SELECT user_id FROM student_profiles WHERE id = :id LIMIT 1');
+            $complainantUserStmt->execute([':id' => $complainantStudentId]);
+            $complainantUserId = (int)($complainantUserStmt->fetchColumn() ?: 0);
+            if ($complainantUserId > 0) {
+                $complainantMessage = $issuedByName !== ''
+                    ? $issuedByName . ' issued a call slip for your ' . $ticketType . $categorySuffix . '.'
+                    : 'A call slip has been issued for your ' . $ticketType . ' ' . $ticketNo . '.';
+                $notifyStmt->execute([
+                    ':user_id' => $complainantUserId,
+                    ':type' => 'call_slip_issued',
+                    ':message' => $complainantMessage,
+                    ':ticket_type' => $ticketType,
+                    ':ticket_id' => $ticketId,
+                ]);
+            }
+        }
 
         return ['ok' => true, 'message' => 'Call Slip issued successfully.'];
     } catch (Throwable $e) {
@@ -244,6 +312,7 @@ $feedback = null;
 $feedbackReplies = [];
 $feedbackHistory = [];
 $deanRemark = null;
+$callSlipHistory = [];
 $deanOfficeMessage = $deanCallSlipProfile['office_message'];
 
 if ($ticketId > 0) {
@@ -291,7 +360,21 @@ if ($ticketId > 0) {
                 $recipientName = trim((string)($_POST['student_name'] ?? $studentDisplayName));
                 $dateIssued = trim((string)($_POST['date_issued'] ?? ''));
                 $timeIssued = trim((string)($_POST['time_issued'] ?? ''));
-                $result = issue_call_slip($pdo, $ticketId, 'complaint', $reportedStudentId > 0 ? $reportedStudentId : (int)$ticket['student_id'], 'dean', (int)$_SESSION['user_id']);
+                $reasonNote = trim((string)($_POST['reason_note'] ?? ''));
+                $result = issue_call_slip(
+                    $pdo,
+                    $ticketId,
+                    'complaint',
+                    $reportedStudentId > 0 ? $reportedStudentId : (int)$ticket['student_id'],
+                    'dean',
+                    (int)$_SESSION['user_id'],
+                    $deanCallSlipProfile['signatory'],
+                    (string)($ticket['category_name'] ?? ''),
+                    $dateIssued,
+                    format_call_slip_time($timeIssued),
+                    $deanOfficeMessage,
+                    $reasonNote
+                );
                 if ($result['ok']) {
                     $mailResult = send_call_slip_email(
                         $recipientEmail,
@@ -300,7 +383,8 @@ if ($ticketId > 0) {
                         $dateIssued,
                         $timeIssued,
                         $deanOfficeMessage,
-                        $deanCallSlipProfile['signatory']
+                        $deanCallSlipProfile['signatory'],
+                        $reasonNote
                     );
                     $flashMessage = $result['message'];
                     if (!$mailResult['ok']) {
@@ -394,6 +478,15 @@ if ($ticketId > 0) {
                                     }
                                 }
 
+                                // Let the student know their complaint was updated.
+                                $actorInfo = get_person_display($pdo, 'dean', $deanProfileId);
+                                $actorName = $actorInfo['name'] ?? 'Your dean';
+                                $statusLabel = ucwords(str_replace('_', ' ', $newStatus));
+                                $updateMessage = $remark !== ''
+                                    ? $actorName . ' posted an official remark and updated your complaint status to ' . $statusLabel . '.'
+                                    : $actorName . ' updated your complaint status to ' . $statusLabel . '.';
+                                notify_ticket_owner($pdo, 'complaint', $ticketId, (int)$ticket['student_id'], 'complaint_update', $updateMessage);
+
                                 // Reload to show updated data
                                 header('Location: ' . $_SERVER['REQUEST_URI']);
                                 exit;
@@ -423,6 +516,28 @@ if ($ticketId > 0) {
             // load feedback
             $feedback = get_ticket_feedback($pdo, 'complaint', $ticketId, (int)$ticket['student_id']);
             $feedbackReplies = get_ticket_feedback_replies($pdo, 'complaint', $ticketId, (int)$ticket['student_id']);
+
+            try {
+                $callSlipHistoryStmt = $pdo->prepare(
+                    "SELECT cs.id, cs.issued_at, cs.status, cs.issued_by_role, cs.issued_by_user_id,
+                            COALESCE(
+                                NULLIF(TRIM(CONCAT_WS(' ', dp.first_name, dp.last_name)), ''),
+                                NULLIF(ap.name, ''),
+                                NULLIF(u.username, ''),
+                                cs.issued_by_role
+                            ) AS issuer_name
+                     FROM call_slips cs
+                     LEFT JOIN users u ON u.id = cs.issued_by_user_id
+                     LEFT JOIN dean_profiles dp ON dp.user_id = cs.issued_by_user_id
+                     LEFT JOIN admin_profiles ap ON ap.user_id = cs.issued_by_user_id
+                     WHERE cs.ticket_type = 'complaint' AND cs.ticket_id = :ticket_id
+                     ORDER BY cs.issued_at ASC, cs.id ASC"
+                );
+                $callSlipHistoryStmt->execute([':ticket_id' => $ticketId]);
+                $callSlipHistory = $callSlipHistoryStmt->fetchAll(PDO::FETCH_ASSOC);
+            } catch (PDOException $e) {
+                $callSlipHistory = [];
+            }
         }
     } catch (PDOException $e) {
         $flashMessage = 'Unable to load complaint details at this time.';
@@ -468,6 +583,59 @@ body { background: #f4f6fb; }
 .main .card, .main .ticket-header, .main .timeline {
     max-width: 980px;
     margin: 0 auto;
+}
+.complaint-document-layout { max-width: 1180px; margin: 0 auto 18px; display: grid; grid-template-columns: minmax(0, 2fr) minmax(280px, 1fr); gap: 18px; align-items: start; }
+.complaint-document, .call-slip-history-card { max-width: none !important; margin: 0 !important; }
+.status-remarks-card, .response-timeline-card {
+    max-width: calc((min(1180px, 100%) - 18px) * 2 / 3) !important;
+    width: calc((min(1180px, 100%) - 18px) * 2 / 3);
+    margin-left: max(0px, calc((100% - 1180px) / 2)) !important;
+    margin-right: auto !important;
+}
+.complaint-document { padding: 0; overflow: hidden; }
+.document-heading { padding: 16px 22px; border-bottom: 1px solid #e5e7eb; background: linear-gradient(180deg, #ffffff 0%, #fafafa 100%); display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.document-heading-left { min-width: 0; display: flex; align-items: center; gap: 10px; }
+.document-back-btn { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 8px; border: 1px solid #d1d5db; background: #fff; color: #374151; text-decoration: none; flex-shrink: 0; transition: border-color .15s ease, background .15s ease, color .15s ease; }
+.document-back-btn:hover { background: #f3f4f6; border-color: #a5b4fc; color: #111827; }
+.document-back-btn i { font-size: 18px; }
+.document-kicker { color: #6b7280; font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; margin-bottom: 5px; }
+.document-submitted { color: #374151; font-size: 13px; }
+.record-action-dropdown { position: relative; flex-shrink: 0; }
+.record-action-btn { display: inline-flex; align-items: center; gap: 6px; padding: 8px 14px; border-radius: 8px; border: 1px solid #d1d5db; background: #fff; color: #111827; font-weight: 700; font-size: 13px; font-family: 'Poppins', sans-serif; cursor: pointer; transition: border-color .15s ease, box-shadow .15s ease; }
+.record-action-btn:hover { border-color: #a5b4fc; box-shadow: 0 4px 10px rgba(79,140,255,0.15); }
+.record-action-btn i { font-size: 16px; transition: transform .15s ease; }
+.record-action-dropdown.open .record-action-btn i.bx-chevron-down { transform: rotate(180deg); }
+.record-action-menu { position: absolute; top: calc(100% + 6px); right: 0; min-width: 170px; background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; box-shadow: 0 12px 28px rgba(15,23,42,0.16); padding: 6px; display: none; flex-direction: column; gap: 2px; z-index: 50; }
+.record-action-dropdown.open .record-action-menu { display: flex; }
+.record-action-item { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; padding: 9px 10px; border: none; background: transparent; border-radius: 7px; font-size: 13px; font-weight: 600; color: #374151; cursor: pointer; font-family: 'Poppins', sans-serif; }
+.record-action-item:hover { background: #f3f4f6; color: #111827; }
+.record-action-item i { font-size: 16px; color: #6b7280; }
+.update-status-modal { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; z-index: 9998; padding: 20px; }
+.update-status-modal.visible { display: flex; }
+.update-status-backdrop { position: absolute; inset: 0; background: rgba(15, 23, 42, 0.48); }
+.update-status-sheet { position: relative; z-index: 1; width: min(540px, 100%); max-height: 90vh; overflow-y: auto; border-radius: 14px; }
+.update-status-sheet .status-remarks-card { max-width: none !important; width: 100% !important; margin: 0 !important; box-shadow: 0 30px 60px rgba(15, 23, 42, 0.25); }
+.update-status-modal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.update-status-close { background: transparent; border: none; cursor: pointer; color: #6b7280; font-size: 20px; display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 8px; flex-shrink: 0; }
+.update-status-close:hover { background: #f3f4f6; color: #111827; }
+.document-section { padding: 20px 22px; border-bottom: 1px solid #e5e7eb; }
+.document-section:last-child { border-bottom: 0; }
+.document-section-title { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 14px; color: #111827; font-weight: 700; }
+.document-section-title .section-label { font-size: 15px; }
+.call-slip-history-card { padding: 18px; position: sticky; top: 80px; }
+.call-slip-history-card > div:first-child { font-size: 15px; }
+.call-slip-history-list { display: flex; flex-direction: column; gap: 10px; }
+.call-slip-history-entry { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; padding: 12px; background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 10px; }
+.call-slip-history-entry .issuer { color: #111827; font-size: 13px; font-weight: 600; }
+.call-slip-history-entry .meta { color: #6b7280; font-size: 12px; line-height: 1.5; margin-top: 3px; }
+@media (max-width: 900px) {
+    .complaint-document-layout { grid-template-columns: 1fr; }
+    .call-slip-history-card { position: static; }
+    .status-remarks-card, .response-timeline-card {
+        max-width: 100% !important;
+        width: 100%;
+        margin-left: auto !important;
+    }
 }
 
 /* Card utility to match other student pages */
@@ -560,17 +728,24 @@ body { background: #f4f6fb; }
     .timeline-card { display:inline-block; width:fit-content; max-width:min(78%, 720px); padding:16px 18px; border-radius:14px; border:1px solid #e5e7eb; background:#fff; box-shadow:0 6px 18px rgba(15,23,42,0.04); }
     .timeline-card.current-user { background:#f3f0ff; border-color:#c4b5fd; }
     .timeline-card .timeline-text { color:#111827; font-size:14px; line-height:1.6; white-space:pre-wrap; word-break:break-word; text-align:left; }
+    <?php echo response_timeline_styles(); ?>
     .pill { display:inline-flex; align-items:center; gap:8px; padding:6px 10px; border-radius:999px; font-weight:700; font-size:13px; }
+    .pill.very_satisfied { background:#fef3c7; color:#92400e; }
     .pill.satisfied { background:#dcfce7; color:#065f46; }
     .pill.neutral { background:#f3f4f6; color:#374151; }
-    .pill.not_satisfied { background:#fee2e2; color:#b91c1c; }
+    .pill.not_satisfied { background:#ffedd5; color:#9a3412; }
+    .pill.very_unsatisfied { background:#fee2e2; color:#b91c1c; }
     .pill.small { padding:4px 8px; font-size:11px; }
-    .feedback-panel { border:1px solid #e5e7eb; border-radius:14px; padding:16px; background:#f9fafb; }
-    .feedback-summary-card { background:#fff; border:1px solid #e5e7eb; border-radius:14px; padding:18px; display:flex; flex-direction:column; gap:12px; box-shadow:0 4px 14px rgba(15,23,42,0.04); align-items:flex-start; }
-    .feedback-head { display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap; }
-    .feedback-title { font-weight:700; color:#111827; font-size:14px; }
-    .feedback-subtext { font-size:13px; color:#6b7280; }
-    .feedback-summary-card .timeline-text { display:block; width:100%; text-align:left !important; align-self:flex-start; word-break:break-word; white-space:pre-line; margin:0; padding:0; text-indent:0; line-height:1.6; }
+    .feedback-panel { border:1px solid #e5e7eb; border-radius:12px; padding:10px; background:#f9fafb; }
+    .feedback-summary-card { background:#fff; border:1px solid #e5e7eb; border-radius:12px; padding:10px 12px; display:flex; flex-direction:column; gap:8px; box-shadow:0 2px 8px rgba(15,23,42,0.04); align-items:stretch; }
+    .feedback-summary-top { display:flex; align-items:center; gap:10px; width:100%; }
+    .feedback-avatar { width:40px; height:40px; border-radius:999px; display:inline-flex; align-items:center; justify-content:center; overflow:hidden; background:#6b46c1; color:#fff; font-weight:700; font-size:14px; border:1px solid #eef2ff; flex-shrink:0; }
+    .feedback-avatar img { width:100%; height:100%; object-fit:cover; }
+    .feedback-summary-info { flex:1; min-width:0; }
+    .feedback-head { display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap; }
+    .feedback-title { font-weight:700; color:#111827; font-size:13px; line-height:1.3; }
+    .feedback-subtext { font-size:11.5px; color:#6b7280; line-height:1.3; }
+    .feedback-comment-bubble { display:inline-block; max-width:100%; background:#f8fafc; border:1px solid #eef2ff; border-radius:10px; padding:7px 10px; font-size:12px; color:#374151; line-height:1.5; white-space:pre-wrap; word-break:break-word; margin-left:50px; }
     .empty-card { background:#f9fafb; border:1px dashed #d1d5db; border-radius:12px; padding:14px; color:#6b7280; font-size:13px; }
     .reply-box-card { border:1px solid #e5e7eb; border-radius:14px; padding:16px; background:#fff; box-shadow:0 4px 14px rgba(15,23,42,0.06); }
     .reply-box-card textarea { width:100%; min-height:120px; border-radius:12px; padding:14px; border:1px solid #d1d5db; resize:vertical; background:#fff; font-size:14px; line-height:1.5; }
@@ -621,12 +796,24 @@ body { background: #f4f6fb; }
 .call-slip-input { flex: 1; border: none; border-bottom: 1px solid rgba(17,24,39,0.5); background: transparent; padding: 4px 0; font-size: 14px; font-family: 'Poppins', sans-serif; color: #111827; }
 .call-slip-input:focus { outline: none; border-bottom-color: #4F8CFF; }
 .call-slip-input.short { max-width: 180px; }
-.call-slip-notes { margin: 18px 0 20px; font-size: 15px; color: #111827; }
+.call-slip-notes { margin: 18px 0 20px; font-size: 14px; line-height: 1.5; color: #111827; }
+.call-slip-connection { margin: 18px 0; }
+.call-slip-connection > span { display: block; font-size: 14px; font-weight: 700; line-height: 1.5; color: #111827; margin-bottom: 6px; }
+.call-slip-textarea { width: 100%; min-height: 26px; border: none; border-bottom: 1px solid rgba(17,24,39,0.5); background: transparent; padding: 4px 0; font-size: 14px; font-family: 'Poppins', sans-serif; color: #111827; resize: vertical; }
+.call-slip-textarea:focus { outline: none; border-bottom-color: #4F8CFF; }
+.call-slip-closing-note { margin: 18px 0 4px; font-size: 14px; color: #111827; line-height: 1.5; }
 .call-slip-footer-row { display: flex; justify-content: space-between; gap: 30px; margin-top: 14px; }
-.call-slip-signature { display: flex; flex-direction: column; gap: 8px; width: 200px; font-size: 12px; color: #374151; }
-.call-slip-signature input { width: 100%; border: none; border-bottom: 1px solid rgba(17,24,39,0.5); background: transparent; padding: 4px 0; font-size: 14px; font-family: 'Poppins', sans-serif; color: #111827; }
+.call-slip-signature { display: flex; flex-direction: column; gap: 8px; width: 200px; font-size: 12px; color: #374151; text-align: center; }
+.call-slip-signature input { width: 100%; border: none; border-bottom: 1px solid rgba(17,24,39,0.5); background: transparent; padding: 4px 0; font-size: 14px; font-family: 'Poppins', sans-serif; color: #111827; text-align: center; }
 .call-slip-signature input:focus { outline: none; border-bottom-color: #4F8CFF; }
 .call-slip-close-row { display: flex; justify-content: flex-end; margin-top: 12px; }
+.call-slip-success-overlay { position: fixed; inset: 0; z-index: 10000; display: flex; align-items: center; justify-content: center; padding: 20px; background: rgba(15, 23, 42, 0.42); }
+.call-slip-success-card { width: min(360px, 100%); padding: 24px 24px 20px; text-align: center; background: #fff; border: 1px solid #e5e7eb; border-radius: 12px; box-shadow: 0 24px 60px rgba(15, 23, 42, 0.22); }
+.call-slip-success-icon { width: 48px; height: 48px; margin: 0 auto 14px; display: flex; align-items: center; justify-content: center; border-radius: 999px; background: #dcfce7; color: #16a34a; font-size: 26px; }
+.call-slip-success-message { color: #111827; font-size: 13px; line-height: 1.5; margin-bottom: 10px; }
+.call-slip-success-time { color: #6b7280; font-size: 12px; margin-bottom: 18px; }
+.call-slip-success-ok { min-width: 58px; padding: 9px 22px; border: 0; border-radius: 7px; background: #f7c948; color: #111827; box-shadow: 0 3px 10px rgba(247,201,72,0.35); font-size: 12px; font-weight: 700; cursor: pointer; }
+.call-slip-success-ok:hover { background: #eab936; }
 .rating-toggle i { margin-right:6px; }
 .rating-textarea { width:100%; border:1px solid #d1d5db; border-radius:10px; padding:12px; resize:vertical; }
 .feedback-inline-badge { display:inline-flex; gap:8px; align-items:center; padding:6px 10px; border-radius:999px; font-weight:700; font-size:13px; }
@@ -644,29 +831,52 @@ body { background: #f4f6fb; }
 .textarea, .input { width: 100%; border: 1px solid #d1d5db; border-radius: 10px; padding: 12px 14px; background: #fff; }
 .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
 @media (max-width: 1024px) { .main { margin-left: 0; } .grid { grid-template-columns: 1fr; } .feedback-row { grid-template-columns: 1fr; } }
+.scroll-top-btn { position: fixed; right: 24px; bottom: 24px; width: 44px; height: 44px; border-radius: 999px; background: #6b46c1; color: #fff; border: none; display: none; align-items: center; justify-content: center; cursor: pointer; box-shadow: 0 10px 24px rgba(107, 70, 193, 0.35); z-index: 500; transition: background .15s ease, transform .15s ease, opacity .2s ease; opacity: 0; transform: translateY(8px); }
+.scroll-top-btn.visible { display: flex; opacity: 1; transform: translateY(0); }
+.scroll-top-btn:hover { background: #5b3aa8; }
+.scroll-top-btn i { font-size: 22px; }
 </style>
 </head>
 <body>
 <?php include 'dean_topbar.php'; ?>
 <?php include 'dean_sidebar.php'; ?>
-<div class="main">
-    <?php if ($showCallSlipConfirmation): ?>
-        <div class="card" style="max-width:480px;margin:64px auto;padding:40px 32px;text-align:center;">
-            <div style="width:56px;height:56px;border-radius:50%;background:#dcfce7;color:#16a34a;display:flex;align-items:center;justify-content:center;margin:0 auto 20px;font-size:28px;">
-                <i class='bx bx-check'></i>
-            </div>
-            <div style="font-size:16px;color:#111827;line-height:1.5;margin-bottom:20px;"><?php echo e($flashMessage); ?></div>
-            <div class="muted" style="margin-bottom:28px;">Submitted <?php echo e(!empty($ticket['created_at']) ? date('M d, Y h:i A', strtotime((string)$ticket['created_at'])) : ''); ?></div>
-            <a href="dean_ticket_detail.php?id=<?php echo (int)$ticketId; ?>" class="btn" style="background:#f7c948;color:#111827;border:none;box-shadow:0 3px 10px rgba(247,201,72,0.35);font-weight:700;padding:10px 40px;border-radius:8px;text-decoration:none;display:inline-block;">OK</a>
+<?php if ($showCallSlipConfirmation && $flashMessage !== ''): ?>
+    <div id="callSlipSuccessOverlay" class="call-slip-success-overlay" role="dialog" aria-modal="true" aria-labelledby="callSlipSuccessMessage">
+        <div class="call-slip-success-card">
+            <div class="call-slip-success-icon"><i class='bx bx-check'></i></div>
+            <div id="callSlipSuccessMessage" class="call-slip-success-message"><?php echo e($flashMessage); ?></div>
+            <div class="call-slip-success-time">Submitted <?php echo e(!empty($ticket['created_at']) ? date('M d, Y h:i A', strtotime((string)$ticket['created_at'])) : date('M d, Y h:i A')); ?></div>
+            <button type="button" class="call-slip-success-ok" onclick="closeCallSlipSuccess()">OK</button>
         </div>
-    <?php else: ?>
-    <?php if ($flashMessage !== ''): ?>
+    </div>
+<?php endif; ?>
+<div class="main">
+    <?php if ($flashMessage !== '' && !$showCallSlipConfirmation): ?>
         <div class="notice <?php echo e($flashType); ?>"><?php echo e($flashMessage); ?></div>
     <?php endif; ?>
 
-    <div class="ticket-header card" style="margin-bottom:16px;">
-        <div class="muted">Submitted <?php echo e(!empty($ticket['created_at']) ? date('M d, Y h:i A', strtotime((string)$ticket['created_at'])) : ''); ?></div>
-    </div>
+    <div class="complaint-document-layout">
+    <div class="complaint-document card">
+        <div class="document-heading">
+            <div class="document-heading-left">
+                <a href="dean_complaints.php" id="recordBackBtn" class="document-back-btn" aria-label="Back to Complaints" title="Back to Complaints">
+                    <i class='bx bx-arrow-back'></i>
+                </a>
+                <div>
+                    <div class="document-kicker">Official Complaint Record</div>
+                    <div class="document-submitted">Submitted <?php echo e(!empty($ticket['created_at']) ? date('M d, Y h:i A', strtotime((string)$ticket['created_at'])) : ''); ?></div>
+                </div>
+            </div>
+            <div class="record-action-dropdown" id="recordActionDropdown">
+                <button type="button" class="record-action-btn" id="recordActionBtn" aria-haspopup="true" aria-expanded="false">
+                    Action <i class='bx bx-chevron-down'></i>
+                </button>
+                <div class="record-action-menu" id="recordActionMenu" role="menu">
+                    <button type="button" class="record-action-item" id="recordActionCallSlip" role="menuitem"><i class='bx bx-phone-call'></i> Call Slip</button>
+                    <button type="button" class="record-action-item" id="recordActionUpdate" role="menuitem"><i class='bx bx-edit-alt'></i> Update</button>
+                </div>
+            </div>
+        </div>
     <script>
         // The status form is rendered further down the page, so this has to
         // wait for the DOM - inline it was bailing out before binding.
@@ -700,19 +910,16 @@ body { background: #f4f6fb; }
     </script>
 
     <!-- Complaint Details -->
-    <div class="card" style="margin-bottom:18px;">
-        <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px;">
-            <div style="font-weight:700;color:#111827;">Complainant & Incident Details</div>
-            <button id="callSlipIssueBtn" type="button" class="btn" style="background:#f7c948;color:#111827;border:none;box-shadow:0 3px 10px rgba(247,201,72,0.35);font-weight:700;">
-                Call Slip
-            </button>
+    <div class="document-section">
+        <div class="document-section-title">
+            <div class="section-label">Complainant & Incident Details</div>
         </div>
         <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;">
             <div><div style="font-size:12px;color:#6b7280;">Complainant name</div><div style="margin-top:6px;font-weight:600;"><?php echo e((string)($ticket['complainant_name'] ?? '')); ?></div></div>
             <div><div style="font-size:12px;color:#6b7280;">Contact details</div><div style="margin-top:6px;"><?php echo e((string)($ticket['complainant_contact_details'] ?? '')); ?></div></div>
             <div><div style="font-size:12px;color:#6b7280;">Date / Time</div><div style="margin-top:6px;"><?php echo e((string)($ticket['date_of_incident'] ?? '')); ?> <?php echo e((string)($ticket['time_of_incident'] ?? '')); ?></div></div>
             <div><div style="font-size:12px;color:#6b7280;">Place of Incident</div><div style="margin-top:6px;"><?php echo e((string)($ticket['place_of_incident'] ?? '')); ?></div></div>
-            <div class="full" style="grid-column:1 / -1;"><div style="font-size:12px;color:#6b7280;">Person / Office complained of</div><div style="margin-top:6px;"><?php echo e((string)($ticket['person_complained_of'] ?? '')); ?></div></div>
+            <div class="full" style="grid-column:1 / -1;"><div style="font-size:12px;color:#6b7280;">Person complained of</div><div style="margin-top:6px;"><?php echo e((string)($ticket['person_complained_of'] ?? '')); ?></div></div>
             <div class="full" style="grid-column:1 / -1;"><div style="font-size:12px;color:#6b7280;">Act complained of</div><div style="margin-top:6px;white-space:pre-wrap;"><?php echo nl2br(e((string)($ticket['act_complained_of'] ?? ''))); ?></div></div>
         </div>
 
@@ -730,15 +937,49 @@ body { background: #f4f6fb; }
     </div>
 
     <?php if (!empty($ticket['desired_outcome'])): ?>
-        <div class="card" style="margin-bottom:18px;">
-            <div style="font-weight:700;margin-bottom:8px;color:#111827;">Desired Outcome</div>
+        <div class="document-section">
+            <div class="document-section-title"><div class="section-label">Desired Outcome</div></div>
             <div style="white-space:pre-wrap;"><?php echo nl2br(e((string)$ticket['desired_outcome'])); ?></div>
         </div>
     <?php endif; ?>
+    </div>
 
-    <!-- Status Update & Remarks Form -->
-    <div class="card status-remarks-card" style="margin-bottom:18px;">
-        <div style="font-weight:700;margin-bottom:12px;color:#111827;">Update Status & Official Remarks</div>
+    <div class="call-slip-history-card card">
+        <div style="font-weight:700;color:#111827;margin-bottom:12px;">Call Slip History</div>
+        <?php if (empty($callSlipHistory)): ?>
+            <div style="color:#6b7280;font-size:13px;padding:10px 0;">No Call Slips have been sent for this complaint.</div>
+        <?php else: ?>
+            <div class="call-slip-history-list">
+                <?php foreach ($callSlipHistory as $callSlip): ?>
+                    <div class="call-slip-history-entry">
+                        <div>
+                            <div class="issuer"><?php echo e((string)($callSlip['issuer_name'] ?? $callSlip['issued_by_role'] ?? 'Unknown issuer')); ?></div>
+                            <div class="meta">
+                                <?php echo e(date('F j, Y', strtotime((string)$callSlip['issued_at']))); ?> at
+                                <?php echo e(date('g:i A', strtotime((string)$callSlip['issued_at']))); ?>
+                                &middot; <?php echo e(ucfirst((string)($callSlip['issued_by_role'] ?? 'issuer'))); ?>
+                            </div>
+                        </div>
+                        <span style="display:inline-flex;align-items:center;padding:4px 9px;border-radius:999px;background:#dcfce7;color:#166534;font-size:11px;font-weight:700;">
+                            <?php echo e(ucfirst((string)($callSlip['status'] ?? 'issued'))); ?>
+                        </span>
+                    </div>
+                <?php endforeach; ?>
+            </div>
+        <?php endif; ?>
+    </div>
+
+    </div>
+
+    <!-- Status Update & Remarks Form (opened from the Action dropdown) -->
+    <div id="updateStatusModal" class="update-status-modal" aria-hidden="true" role="dialog" aria-modal="true">
+        <div class="update-status-backdrop" onclick="closeUpdateStatusModal()"></div>
+        <div class="update-status-sheet" onclick="event.stopPropagation();">
+        <div class="card status-remarks-card">
+        <div class="update-status-modal-head">
+            <div style="font-weight:700;color:#111827;">Update Status & Official Remarks</div>
+            <button type="button" class="update-status-close" onclick="closeUpdateStatusModal()" aria-label="Close"><i class='bx bx-x'></i></button>
+        </div>
 
 <form method="POST">
                 <input type="hidden" name="action" value="update_status">
@@ -793,10 +1034,7 @@ body { background: #f4f6fb; }
                         <label for="remarkTextarea">Edit Official Remarks (Visible to Student)</label>
                         <textarea id="remarkTextarea" name="remark" class="form-control" placeholder="Type your response or next steps here..." required><?php echo e((string)$deanRemark['message']); ?></textarea>
                     </div>
-                    <div class="status-remarks-actions">
-                        <button type="submit" class="btn">Save Changes</button>
-                        <button type="button" onclick="toggleRemarkEdit()" class="btn btn-secondary">Cancel</button>
-                    </div>
+                    <button type="button" onclick="toggleRemarkEdit()" class="btn btn-secondary" style="margin-bottom:4px;">Cancel Editing</button>
                 </div>
             <?php else: ?>
                 <!-- New remark form -->
@@ -804,11 +1042,17 @@ body { background: #f4f6fb; }
                     <label for="remarkTextarea">Official Remarks (Visible to Student)</label>
                     <textarea id="remarkTextarea" name="remark" class="form-control" placeholder="Type your response or next steps here..." required></textarea>
                 </div>
-                <div class="status-remarks-actions">
-                    <button type="submit" class="btn">Save Changes</button>
-                </div>
             <?php endif; ?>
+
+            <!-- Status changes (and remark edits, if any) are always saved from here -->
+            <!-- so switching just the status dropdown never requires opening "Edit Remarks" first. -->
+            <div class="status-remarks-actions">
+                <button type="button" class="btn btn-secondary" onclick="closeUpdateStatusModal()">Cancel</button>
+                <button type="submit" class="btn">Save Changes</button>
+            </div>
         </form>
+        </div>
+        </div>
     </div>
 
     <div id="callSlipModal" class="call-slip-modal" aria-hidden="true" role="dialog" aria-modal="true">
@@ -839,18 +1083,26 @@ body { background: #f4f6fb; }
                         </div>
                     </div>
                     <div class="call-slip-body">
-                        <div class="call-slip-form-title">CALL SLIP - GUIDANCE</div>
+                        <div class="call-slip-form-title">CALL SLIP - <?php echo e($deanOwnCollegeCode !== '' ? $deanOwnCollegeCode . ' DEAN\'S OFFICE' : 'DEAN\'S OFFICE'); ?></div>
                         <div class="call-slip-meta-row">
-                            <div class="call-slip-field half"><span>To:</span> <input class="call-slip-input" type="email" name="to_name" value="<?php echo e($studentDisplayEmail); ?>" placeholder="Student Gmail address" required></div>
-                            <div class="call-slip-field half"><span>Date:</span> <input class="call-slip-input" type="date" name="date_issued"></div>
+                            <div class="call-slip-field half"><span>To:</span> <input type="text" name="student_name" class="call-slip-input" value="<?php echo e($studentDisplayName); ?>" placeholder="Student / Faculty / Staff Name" required></div>
+                            <div class="call-slip-field half"><span>Date Issued:</span> <?php echo e(date('F j, Y')); ?></div>
+                        </div>
+                        <div class="call-slip-meta-row">
+                            <div class="call-slip-field half"><span>Email:</span> <input class="call-slip-input" type="email" name="to_name" value="<?php echo e($studentDisplayEmail); ?>" placeholder="Student Gmail address" required></div>
                         </div>
                         <div class="call-slip-notes"><?php echo e($deanOfficeMessage); ?></div>
                         <div class="call-slip-meta-row">
-                            <div class="call-slip-field half"><span>Time:</span> <input class="call-slip-input" type="time" name="time_issued"></div>
+                            <div class="call-slip-field half"><span>on Date:</span> <input class="call-slip-input" type="date" name="date_issued"></div>
+                            <div class="call-slip-field half"><span>at Time:</span> <input class="call-slip-input" type="time" name="time_issued"></div>
                         </div>
-                        <div class="call-slip-footer-row">
-                            <div class="call-slip-signature"><span>Student Name</span><input type="text" name="student_name" value="<?php echo e($studentDisplayName); ?>" placeholder="Student Name"></div>
-                            <div class="call-slip-signature"><span>DEAN</span><input type="text" name="issued_by" value="<?php echo e($deanCallSlipProfile['signatory']); ?>" placeholder="Dean name"></div>
+                        <div class="call-slip-connection">
+                            <span>This is in connection with:</span>
+                            <textarea class="call-slip-textarea" name="reason_note" rows="1" maxlength="300" placeholder="General reason / instruction"></textarea>
+                        </div>
+                        <div class="call-slip-closing-note">Please review this Call Slip and report to the designated office at the scheduled date and time. Thank you.</div>
+                        <div class="call-slip-footer-row" style="justify-content:flex-end;">
+                            <div class="call-slip-signature"><input type="text" name="issued_by" value="<?php echo e($deanCallSlipProfile['signatory']); ?>" placeholder="Dean name"><span>DEAN</span></div>
                         </div>
                     </div>
                 </div>
@@ -865,6 +1117,13 @@ body { background: #f4f6fb; }
     </div>
 
     <script>
+    function closeCallSlipSuccess() {
+        const overlay = document.getElementById('callSlipSuccessOverlay');
+        if (overlay) {
+            overlay.remove();
+        }
+    }
+
     function toggleRemarkEdit() {
         const display = document.getElementById('remarkDisplay');
         const form = document.getElementById('remarkFormWrapper');
@@ -906,12 +1165,70 @@ body { background: #f4f6fb; }
         }
     }
 
+    function openUpdateStatusModal() {
+        const modal = document.getElementById('updateStatusModal');
+        if (modal) {
+            modal.classList.add('visible');
+            modal.setAttribute('aria-hidden', 'false');
+        }
+    }
+
+    function closeUpdateStatusModal() {
+        const modal = document.getElementById('updateStatusModal');
+        if (modal) {
+            modal.classList.remove('visible');
+            modal.setAttribute('aria-hidden', 'true');
+        }
+    }
+
     document.addEventListener('DOMContentLoaded', function () {
-        const callSlipButton = document.getElementById('callSlipIssueBtn');
-        if (callSlipButton) {
-            callSlipButton.addEventListener('click', function (event) {
+        // Header "Action" dropdown: Call Slip / Update
+        const actionDropdown = document.getElementById('recordActionDropdown');
+        const actionBtn = document.getElementById('recordActionBtn');
+        const actionCallSlipItem = document.getElementById('recordActionCallSlip');
+        const actionUpdateItem = document.getElementById('recordActionUpdate');
+
+        function closeActionDropdown() {
+            if (actionDropdown) {
+                actionDropdown.classList.remove('open');
+                if (actionBtn) actionBtn.setAttribute('aria-expanded', 'false');
+            }
+        }
+
+        if (actionDropdown && actionBtn) {
+            actionBtn.addEventListener('click', function (event) {
                 event.preventDefault();
+                event.stopPropagation();
+                const isOpen = actionDropdown.classList.toggle('open');
+                actionBtn.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+            });
+
+            document.addEventListener('click', function (event) {
+                if (!actionDropdown.contains(event.target)) {
+                    closeActionDropdown();
+                }
+            });
+
+            document.addEventListener('keydown', function (event) {
+                if (event.key === 'Escape') {
+                    closeActionDropdown();
+                }
+            });
+        }
+
+        if (actionCallSlipItem) {
+            actionCallSlipItem.addEventListener('click', function (event) {
+                event.preventDefault();
+                closeActionDropdown();
                 openCallSlipModal();
+            });
+        }
+
+        if (actionUpdateItem) {
+            actionUpdateItem.addEventListener('click', function (event) {
+                event.preventDefault();
+                closeActionDropdown();
+                openUpdateStatusModal();
             });
         }
     });
@@ -951,6 +1268,10 @@ body { background: #f4f6fb; }
                 if (wrapper && form.id !== 'feedbackReplyForm') {
                     wrapper.style.display = 'none';
                 }
+                // Reload so the reply is picked up from the database and the
+                // whole thread (and anyone else's view of it) stays in sync,
+                // same as the student side already does.
+                setTimeout(() => window.location.reload(), 600);
             } else {
                 statusEl.innerHTML = '<span style="color:#b91c1c;">Unable to send reply. Please try again.</span>';
             }
@@ -966,37 +1287,23 @@ body { background: #f4f6fb; }
     }
 
     function appendDeanReply(form, reply) {
-        if (!reply || typeof reply !== 'object') {
+        if (!reply || typeof reply !== 'object' || !window.VoiceTimeline) {
             return;
         }
 
-        const wrapper = form.closest('.reply-form-wrapper');
-        if (!wrapper) {
-            return;
-        }
+        const roleRaw = String(reply.replier_role || '').toLowerCase();
+        const roleLabel = roleRaw === 'dean' ? 'College Dean' : (roleRaw === 'admin' ? 'Administrator' : 'Student');
+        const box = document.getElementById('globalReplyBox');
 
-        const newReply = document.createElement('div');
-        newReply.className = 'feedback-reply current-user-reply';
-        newReply.style.cssText = 'border:1px solid #e5e7eb;border-radius:10px;padding:14px;display:flex;gap:12px;align-items:flex-start;width:100%;max-width:880px;background:#fff;margin-left:0;';
-        newReply.innerHTML = `
-            <div class="avatar-circle" style="width:36px;height:36px;flex-shrink:0;background:#4f46e5;">
-                <span style="font-size:16px;color:#fff;">${escapeHtml((reply.replier_name || 'You').charAt(0).toUpperCase())}</span>
-            </div>
-            <div style="flex:1;min-width:0;">
-                <div style="display:flex;flex-direction:column;gap:4px;margin-bottom:6px;">
-                    <div style="font-weight:700;font-size:13px;color:#111827;">${escapeHtml(reply.replier_name || 'You')}</div>
-                    <div style="font-size:12px;color:#6b7280;">${escapeHtml(reply.replier_role ? reply.replier_role.charAt(0).toUpperCase() + reply.replier_role.slice(1) : 'Responder')}</div>
-                </div>
-                <div style="font-size:11px;color:#6b7280;margin-bottom:6px;">${escapeHtml(reply.created_at || '')}</div>
-                <div style="font-size:13px;color:#111827;white-space:pre-wrap;">${escapeHtml(reply.message || '')}</div>
-            </div>
-        `;
-
-        if (wrapper.parentNode) {
-            wrapper.parentNode.insertBefore(newReply, wrapper);
-        } else {
-            wrapper.insertAdjacentElement('afterend', newReply);
-        }
+        window.VoiceTimeline.appendReply({
+            name: reply.replier_name || 'You',
+            roleLabel: roleLabel,
+            isCurrentUser: true,
+            photo: null,
+            timeText: reply.created_at || '',
+            messageHtml: escapeHtml(reply.message || '').replace(/\n/g, '<br>'),
+            replyTargetId: box ? box.id : null,
+        });
     }
 
     document.addEventListener('DOMContentLoaded', function () {
@@ -1055,17 +1362,15 @@ body { background: #f4f6fb; }
         $canReply = !$threadResolved;
         $globalFeedbackId = !empty($feedback['id']) ? (int)$feedback['id'] : '';
     ?>
-    <div class="card" style="padding:0;margin-bottom:18px;">
+    <?php if ($officialRemark || !empty($feedback) || !empty($timelineReplies)): ?>
+    <div class="card response-timeline-card" style="padding:0;margin-bottom:18px;">
         <div style="display:flex;align-items:center;padding:12px 16px;border-bottom:1px solid #eef2ff;">
             <div style="font-weight:700;flex:1;">Response Timeline</div>
         </div>
         <div style="padding:16px;">
-            <?php if (!$officialRemark && empty($feedback) && empty($timelineReplies)): ?>
-                <div class="muted">No responses yet.</div>
-            <?php else: ?>
                 <div class="timeline-shell">
                     <div class="ticket-section">
-                        <div class="section-title">Official Remark</div>
+                        <div class="section-title">Responses</div>
                         <?php if ($officialRemark): ?>
                             <?php
                                 $officialRole = strtolower((string)($officialRemark['sender_role'] ?? ''));
@@ -1073,31 +1378,46 @@ body { background: #f4f6fb; }
                                 $officialPerson = $officialSenderId > 0 ? get_person_display($pdo, $officialRole, $officialSenderId) : ['name' => ucfirst($officialRole), 'photo' => null];
                                 $officialName = $officialPerson['name'] ?? (ucfirst($officialRole) ?: 'Staff');
                                 $officialPhoto = !empty($officialPerson['photo']) ? ('../' . ltrim($officialPerson['photo'], '/')) : null;
-                                $officialInitial = strtoupper(substr(trim($officialName), 0, 1));
                                 $officialRoleLabel = $officialRole === 'dean' ? 'College Dean' : ($officialRole === 'admin' ? 'Administrator' : 'Student');
                                 $officialCurrentUser = ($officialRole === 'dean');
+                                echo response_timeline_entry([
+                                    'name' => $officialName,
+                                    'role_label' => $officialRoleLabel,
+                                    'is_current_user' => $officialCurrentUser,
+                                    'photo' => $officialPhoto,
+                                    'time_text' => date('M d, Y h:i A', strtotime((string)$officialRemark['created_at'])),
+                                    'message_html' => nl2br(e((string)$officialRemark['message'])),
+                                    'reply_target_id' => $canReply ? 'globalReplyBox' : null,
+                                ]);
                             ?>
-                            <div class="timeline-entry">
-                                <div class="timeline-avatar">
-                                    <?php if ($officialPhoto): ?>
-                                        <img src="<?php echo e($officialPhoto); ?>" alt="<?php echo e($officialName); ?>">
-                                    <?php else: ?>
-                                        <?php echo e($officialInitial); ?>
-                                    <?php endif; ?>
-                                </div>
-                                <div class="timeline-body">
-                                    <div class="timeline-heading">
-                                        <div class="timeline-name"><?php echo e($officialName . ($officialCurrentUser ? ' (You)' : '')); ?></div>
-                                        <div class="timeline-role"><?php echo e($officialRoleLabel); ?></div>
-                                    </div>
-                                    <div class="timeline-time"><?php echo e(date('M d, Y h:i A', strtotime((string)$officialRemark['created_at']))); ?></div>
-                                    <div class="timeline-card current-user">
-                                        <div class="timeline-text"><?php echo nl2br(e((string)$officialRemark['message'])); ?></div>
-                                    </div>
-                                </div>
-                            </div>
                         <?php else: ?>
                             <div class="empty-card">No official remark has been posted yet.</div>
+                        <?php endif; ?>
+
+                        <?php if (!empty($timelineReplies)): ?>
+                            <div class="timeline-replies">
+                                <?php foreach ($timelineReplies as $replyItem): ?>
+                                    <?php
+                                        $replyRoleRaw = strtolower((string)($replyItem['sender_role'] ?? ''));
+                                        $replySenderId = isset($replyItem['sender_id']) ? (int)$replyItem['sender_id'] : 0;
+                                        $replyPerson = $replySenderId > 0 ? get_person_display($pdo, $replyRoleRaw, $replySenderId) : ['name' => ucfirst($replyRoleRaw), 'photo' => null];
+                                        $replyName = $replyPerson['name'] ?? ucfirst($replyRoleRaw);
+                                        $replyPhoto = !empty($replyPerson['photo']) ? ('../' . ltrim($replyPerson['photo'], '/')) : null;
+                                        $replyRoleLabel = $replyRoleRaw === 'dean' ? 'College Dean' : ($replyRoleRaw === 'admin' ? 'Administrator' : 'Student');
+                                        $replyIsCurrentUser = ($replyRoleRaw === 'dean');
+                                        echo response_timeline_entry([
+                                            'name' => $replyName,
+                                            'role_label' => $replyRoleLabel,
+                                            'is_current_user' => $replyIsCurrentUser,
+                                            'photo' => $replyPhoto,
+                                            'time_text' => date('M d, Y h:i A', strtotime((string)($replyItem['created_at'] ?? ''))),
+                                            'message_html' => nl2br(e((string)($replyItem['message'] ?? ''))),
+                                            'is_reply' => true,
+                                            'reply_target_id' => $canReply ? 'globalReplyBox' : null,
+                                        ]);
+                                    ?>
+                                <?php endforeach; ?>
+                            </div>
                         <?php endif; ?>
                     </div>
 
@@ -1109,21 +1429,35 @@ body { background: #f4f6fb; }
                                     $m = feedback_option_meta((string)$feedback['satisfaction']);
                                     $studentInfo = isset($ticket['student_id']) ? get_person_display($pdo, 'student', (int)$ticket['student_id']) : ['name' => 'Student', 'photo' => null];
                                     $stuName = $studentInfo['name'] ?? 'Student';
+                                    $stuPhoto = !empty($studentInfo['photo']) ? ('../' . ltrim($studentInfo['photo'], '/')) : null;
+                                    $stuInitial = strtoupper(substr(trim($stuName), 0, 1)) ?: 'S';
+                                    $stuComment = trim((string)($feedback['comment'] ?? ''));
                                 ?>
                                 <div class="feedback-summary-card">
-                                    <div class="feedback-head">
-                                        <div>
-                                            <div class="feedback-title"><?php echo e($stuName); ?></div>
-                                            <div class="feedback-subtext">Submitted feedback for this response</div>
+                                    <div class="feedback-summary-top">
+                                        <div class="feedback-avatar">
+                                            <?php if ($stuPhoto): ?>
+                                                <img src="<?php echo e($stuPhoto); ?>" alt="<?php echo e($stuName); ?>">
+                                            <?php else: ?>
+                                                <?php echo e($stuInitial); ?>
+                                            <?php endif; ?>
                                         </div>
-                                        <span class="pill <?php echo e((string)$feedback['satisfaction']); ?>">
-                                            <i class='bx <?php echo e($m['icon']); ?>'></i>
-                                            <?php echo e($m['label']); ?>
-                                        </span>
+                                        <div class="feedback-summary-info">
+                                            <div class="feedback-head">
+                                                <div>
+                                                    <div class="feedback-title"><?php echo e($stuName); ?></div>
+                                                    <div class="feedback-subtext">Submitted feedback for this response</div>
+                                                </div>
+                                                <span class="pill small <?php echo e((string)$feedback['satisfaction']); ?>">
+                                                    <i class='bx <?php echo e($m['icon']); ?>'></i>
+                                                    <?php echo e($m['label']); ?>
+                                                </span>
+                                            </div>
+                                        </div>
                                     </div>
-                                    <div class="timeline-text" style="display:block; width:100%; font-size:13px; color:#374151; white-space:pre-line; text-align:left; word-break:break-word; margin:0; padding:0; text-indent:0; line-height:1.6;">
-                                        <?php echo nl2br(e((string)($feedback['comment'] ?? ''))); ?>
-                                    </div>
+                                    <?php if ($stuComment !== ''): ?>
+                                    <div class="feedback-comment-bubble"><?php echo nl2br(e($stuComment)); ?></div>
+                                    <?php endif; ?>
                                 </div>
                             <?php else: ?>
                                 <div class="empty-card">No rating has been submitted yet.</div>
@@ -1131,50 +1465,9 @@ body { background: #f4f6fb; }
                         </div>
                     </div>
 
-                    <div class="ticket-section">
-                        <div class="section-title">Conversation Replies</div>
-                        <?php if (empty($timelineReplies)): ?>
-                            <div class="empty-card">No conversation replies yet.</div>
-                        <?php else: ?>
-                            <div class="timeline-list">
-                                <?php foreach ($timelineReplies as $replyItem): ?>
-                                    <?php
-                                        $replyRoleRaw = strtolower((string)($replyItem['sender_role'] ?? ''));
-                                        $replySenderId = isset($replyItem['sender_id']) ? (int)$replyItem['sender_id'] : 0;
-                                        $replyPerson = $replySenderId > 0 ? get_person_display($pdo, $replyRoleRaw, $replySenderId) : ['name' => ucfirst($replyRoleRaw), 'photo' => null];
-                                        $replyName = $replyPerson['name'] ?? ucfirst($replyRoleRaw);
-                                        $replyPhoto = !empty($replyPerson['photo']) ? ('../' . ltrim($replyPerson['photo'], '/')) : null;
-                                        $replyInitial = strtoupper(substr(trim($replyName), 0, 1));
-                                        $replyRoleLabel = $replyRoleRaw === 'dean' ? 'College Dean' : ($replyRoleRaw === 'admin' ? 'Administrator' : 'Student');
-                                        $replyIsCurrentUser = ($replyRoleRaw === 'dean');
-                                    ?>
-                                    <div class="timeline-entry">
-                                        <div class="timeline-avatar">
-                                            <?php if ($replyPhoto): ?>
-                                                <img src="<?php echo e($replyPhoto); ?>" alt="<?php echo e($replyName); ?>">
-                                            <?php else: ?>
-                                                <?php echo e($replyInitial); ?>
-                                            <?php endif; ?>
-                                        </div>
-                                        <div class="timeline-body">
-                                            <div class="timeline-heading">
-                                                <div class="timeline-name"><?php echo e($replyName . ($replyIsCurrentUser ? ' (You)' : '')); ?></div>
-                                                <div class="timeline-role"><?php echo e($replyRoleLabel); ?></div>
-                                            </div>
-                                            <div class="timeline-time"><?php echo e(date('M d, Y h:i A', strtotime((string)($replyItem['created_at'] ?? '')))); ?></div>
-                                            <div class="timeline-card<?php echo $replyIsCurrentUser ? ' current-user' : ''; ?>">
-                                                <div class="timeline-text"><?php echo nl2br(e((string)($replyItem['message'] ?? ''))); ?></div>
-                                            </div>
-                                        </div>
-                                    </div>
-                                <?php endforeach; ?>
-                            </div>
-                        <?php endif; ?>
-                    </div>
-
                     <?php if ($canReply): ?>
                         <div class="ticket-section">
-                            <div class="reply-box-card">
+                            <div id="globalReplyBox" class="reply-box-card timeline-reply-box">
                                 <form id="feedbackReplyForm" class="dean-feedback-reply-form" method="POST">
                                     <input type="hidden" name="csrf_token" value="<?php echo e((string)($_SESSION['csrf_token'] ?? '')); ?>">
                                     <input type="hidden" name="ticket_type" value="complaint">
@@ -1196,12 +1489,51 @@ body { background: #f4f6fb; }
                         </div>
                     <?php endif; ?>
                 </div>
-            <?php endif; ?>
         </div>
     </div>
 
-    <div style="height:18px;"></div>
     <?php endif; ?>
+    <div style="height:18px;"></div>
 </div>
+
+<?php echo response_timeline_script(); ?>
+<button type="button" id="scrollTopBtn" class="scroll-top-btn" aria-label="Scroll to top" title="Back to top">
+    <i class='bx bx-up-arrow-alt'></i>
+</button>
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    // Back arrow: prefer returning to the exact complaints-list page the
+    // dean came from (same filters/search/pagination/scroll position, via
+    // normal browser back-navigation) instead of a fresh navigation that
+    // would reset it back to the top.
+    var backBtn = document.getElementById('recordBackBtn');
+    if (backBtn) {
+        backBtn.addEventListener('click', function (event) {
+            var cameFromList = document.referrer && document.referrer.indexOf(window.location.origin) === 0;
+            if (cameFromList && window.history.length > 1) {
+                event.preventDefault();
+                window.history.back();
+            }
+            // Otherwise let the plain href navigate to dean_complaints.php
+            // (e.g. this page was opened directly or from elsewhere).
+        });
+    }
+
+    var scrollTopBtn = document.getElementById('scrollTopBtn');
+    if (!scrollTopBtn) return;
+    var toggleScrollTopBtn = function () {
+        if (window.scrollY > 300) {
+            scrollTopBtn.classList.add('visible');
+        } else {
+            scrollTopBtn.classList.remove('visible');
+        }
+    };
+    window.addEventListener('scroll', toggleScrollTopBtn, { passive: true });
+    toggleScrollTopBtn();
+    scrollTopBtn.addEventListener('click', function () {
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+    });
+});
+</script>
 </body>
 </html>
