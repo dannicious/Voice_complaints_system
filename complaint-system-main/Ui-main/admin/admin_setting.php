@@ -320,6 +320,37 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             redirect_settings('school_year', 'success', 'Override removed - the school year is calculated automatically again.');
         }
 
+        if ($action === 'save_academic_calendar') {
+            $calendarInput = [
+                'school_year' => trim((string)($_POST['school_year'] ?? '')),
+                'sy_start_date' => trim((string)($_POST['sy_start_date'] ?? '')),
+                'sy_end_date' => trim((string)($_POST['sy_end_date'] ?? '')),
+                'sem1_start_date' => trim((string)($_POST['sem1_start_date'] ?? '')),
+                'sem1_end_date' => trim((string)($_POST['sem1_end_date'] ?? '')),
+                'sem2_start_date' => trim((string)($_POST['sem2_start_date'] ?? '')),
+                'sem2_end_date' => trim((string)($_POST['sem2_end_date'] ?? '')),
+            ];
+
+            $result = sy_save_academic_calendar($pdo, $calendarInput);
+            if (!$result['ok']) {
+                redirect_settings('school_year', 'error', $result['error']);
+            }
+
+            log_admin_activity($pdo, $adminUserId, 'Saved academic calendar for ' . $calendarInput['school_year'], 'academic_calendars');
+            redirect_settings('school_year', 'success', 'Academic calendar for ' . $calendarInput['school_year'] . ' saved.');
+        }
+
+        if ($action === 'delete_academic_calendar') {
+            $calendarId = (int)($_POST['calendar_id'] ?? 0);
+            if ($calendarId <= 0) {
+                redirect_settings('school_year', 'error', 'Invalid academic calendar.');
+            }
+
+            sy_delete_academic_calendar($pdo, $calendarId);
+            log_admin_activity($pdo, $adminUserId, 'Deleted academic calendar #' . $calendarId, 'academic_calendars', $calendarId);
+            redirect_settings('school_year', 'success', 'Academic calendar removed.');
+        }
+
         redirect_settings($activeTab, 'error', 'Unknown action requested.');
     } catch (PDOException $e) {
         if ($pdo->inTransaction()) {
@@ -762,6 +793,95 @@ $profileImage = trim($profile['profile_pic']) !== '' ? '../' . ltrim($profile['p
             font-size: 14px;
             cursor: pointer;
         }
+        .back-to-top { position: fixed; right: 24px; bottom: 24px; width: 44px; height: 44px; border-radius: 50%; border: 0; background: #6d28d9; color: #fff; font-size: 20px; display: flex; align-items: center; justify-content: center; cursor: pointer; box-shadow: 0 6px 16px rgba(109,40,217,.35); z-index: 500; opacity: 0; visibility: hidden; transform: translateY(8px); transition: opacity .2s, transform .2s, visibility .2s; }
+        .back-to-top.visible { opacity: 1; visibility: visible; transform: translateY(0); }
+        .back-to-top:hover { background: #5b21b6; }
+        .settings-tab-iframe {
+            display: block;
+            width: 100%;
+            height: calc(100vh - 150px);
+            min-height: 720px;
+            border: 0;
+            border-radius: 10px;
+            background: #f8fafc;
+        }
+        /* On a phone-width screen, a 720px minimum is often taller than the
+           entire screen - the outer page then has to scroll just to reveal
+           the rest of a mostly-empty iframe box, instead of the tab's own
+           content scrolling naturally inside it. Let the iframe size itself
+           to what's actually visible there instead. */
+        @media (max-width: 768px) {
+            .settings-tab-iframe {
+                height: calc(100vh - 190px);
+                min-height: 50vh;
+            }
+        }
+
+        /* This page uses its own .page-wrapper instead of the shared .main
+           class the sidebar's own mobile rule resets - without this, the
+           sidebar's off-canvas fix never applied here and the entire page
+           stayed shoved 260px to the right on every phone. */
+        @media (max-width: 1024px) {
+            .page-wrapper { margin-left: 0 !important; }
+        }
+
+        @media (max-width: 768px) {
+            .nav-header { padding: 0 16px; gap: 24px; }
+            .nav-tabs { gap: 24px; }
+        }
+
+        @media (max-width: 640px) {
+            .main-content { padding: 20px 16px !important; }
+            .section-header h1 { font-size: 20px; }
+
+            /* auto-fit with a 400px floor forces a column wider than most
+               phone screens, so the grid itself overflows sideways - drop
+               the floor and let cards take the full width instead. */
+            .card-grid { grid-template-columns: 1fr; gap: 16px; }
+            .form-card { padding: 20px; }
+
+            /* Other tables here (Skipped Rows, CSV format, Activity Logs)
+               can't squeeze into a phone width without wrapping into
+               unreadable ragged text - scroll sideways within the card
+               instead of clipping content that doesn't fit. */
+            .table-container { overflow: auto; }
+            table { min-width: 640px; }
+
+            /* The Academic Calendar table's Edit/Delete buttons sat off to
+               the right of a horizontally-scrolling table, so reaching them
+               meant swiping sideways first - stack each row into its own
+               card instead, with the actions always visible up front. */
+            .academic-calendar-table { min-width: 0; }
+            .academic-calendar-table thead { display: none; }
+            .academic-calendar-table, .academic-calendar-table tbody,
+            .academic-calendar-table tr, .academic-calendar-table td { display: block; width: 100%; }
+            .academic-calendar-table tbody tr {
+                border: 1px solid #eef0f3;
+                border-radius: 10px;
+                padding: 12px 14px;
+                margin-bottom: 12px;
+            }
+            .academic-calendar-table tbody tr:last-child { margin-bottom: 0; }
+            .academic-calendar-table td { padding: 4px 0; border-bottom: none; }
+            .academic-calendar-table td[data-label]::before {
+                content: attr(data-label);
+                display: block;
+                font-size: 11px;
+                font-weight: 700;
+                color: #9ca3af;
+                text-transform: uppercase;
+                letter-spacing: .03em;
+                margin-bottom: 2px;
+            }
+            .academic-calendar-table td.td-ac-actions { padding-top: 10px; white-space: normal !important; }
+
+            /* The Academic Calendar form's date fields (flex-basis 140px)
+               only fit two per row on a phone, wrapping into a lopsided
+               grid that's fiddly to tap accurately - one full-width field
+               per row is far easier to use here. */
+            #academicCalendarForm .form-group { flex: 1 1 100% !important; }
+            #academicCalendarForm > div { gap: 12px !important; }
+        }
     </style>
 </head>
 <body>
@@ -790,11 +910,11 @@ $profileImage = trim($profile['profile_pic']) !== '' ? '../' . ltrim($profile['p
             <?php endif; ?>
 
             <div id="faq" class="tab-panel <?php echo $activeTab === 'faq' ? 'active' : ''; ?>">
-                <iframe src="admin_faq.php?embedded=1" title="FAQ Management" style="display:block;width:100%;height:calc(100vh - 150px);min-height:720px;border:0;border-radius:10px;background:#f8fafc;"></iframe>
+                <iframe class="settings-tab-iframe" src="admin_faq.php?embedded=1" title="FAQ Management"></iframe>
             </div>
 
             <div id="types" class="tab-panel <?php echo $activeTab === 'types' ? 'active' : ''; ?>">
-                <iframe src="admin_types.php?embedded=1" title="Complaint and Suggestion Types" style="display:block;width:100%;height:calc(100vh - 150px);min-height:720px;border:0;border-radius:10px;background:#f8fafc;"></iframe>
+                <iframe class="settings-tab-iframe" src="admin_types.php?embedded=1" title="Complaint and Suggestion Types"></iframe>
             </div>
 
             <div id="bulk_upload" class="tab-panel <?php echo $activeTab === 'bulk_upload' ? 'active' : ''; ?>">
@@ -868,56 +988,20 @@ $profileImage = trim($profile['profile_pic']) !== '' ? '../' . ltrim($profile['p
                             </div>
                         </form>
                     </div>
-
-                    <div class="form-card">
-                        <div class="form-group">
-                            <label><i class='bx bx-help-circle'></i> Student CSV Format</label>
-                            <p style="font-size: 12.5px; color: var(--text-light); margin-bottom: 12px;">
-                                The first row must be the column headers. Column order does not matter, and
-                                colleges and programs may be given either by code or by full name.
-                            </p>
-                            <div class="table-container">
-                                <table>
-                                    <thead>
-                                        <tr>
-                                            <th>Column</th>
-                                            <th>Required</th>
-                                            <th>Notes</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        <?php $bulkColumns = student_bulk_upload_columns(); ?>
-                                        <?php foreach ($bulkColumns['required'] as $column => $description): ?>
-                                            <tr>
-                                                <td><strong><?php echo e($column); ?></strong></td>
-                                                <td>Yes</td>
-                                                <td><?php echo e($description); ?></td>
-                                            </tr>
-                                        <?php endforeach; ?>
-                                        <?php foreach ($bulkColumns['optional'] as $column => $description): ?>
-                                            <tr>
-                                                <td><?php echo e($column); ?></td>
-                                                <td>No</td>
-                                                <td><?php echo e($description); ?></td>
-                                            </tr>
-                                        <?php endforeach; ?>
-                                    </tbody>
-                                </table>
-                            </div>
-                        </div>
-                    </div>
                 </div>
             </div>
 
             <div id="school_year" class="tab-panel <?php echo $activeTab === 'school_year' ? 'active' : ''; ?>">
                 <?php
-                    $sySettingAutomatic = sy_label_for_date(date('Y-m-d'));
+                    $sySettingAutomatic = sy_label_for_date(date('Y-m-d'), $pdo);
                     $sySettingOverride = sy_get_override($pdo);
                     $sySettingEffective = $sySettingOverride !== '' ? $sySettingOverride : $sySettingAutomatic;
+                    $academicCalendars = sy_get_academic_calendars($pdo);
+                    $currentAcademicCalendar = sy_find_academic_calendar_for_date($pdo, date('Y-m-d'));
+                    $currentAcademicCalendarId = $currentAcademicCalendar['id'] ?? null;
                 ?>
                 <div class="section-header">
                     <h1>School Year</h1>
-                    <p>The school year used everywhere in VOICE (new submissions, the student switcher, reports) is calculated automatically from today's date - August 1 through July 31 counts as one school year. Only set an override below if the actual academic calendar needs to differ from that for some reason (e.g. a delayed start).</p>
                 </div>
                 <div class="card-grid">
                     <div class="form-card">
@@ -929,31 +1013,128 @@ $profileImage = trim($profile['profile_pic']) !== '' ? '../' . ltrim($profile['p
                             <?php if ($sySettingOverride !== ''): ?>
                                 Set manually by an admin. Without this override, today's date would calculate to <strong><?php echo e($sySettingAutomatic); ?></strong>.
                             <?php else: ?>
-                                Calculated automatically from today's date. No override is set.
+                                Calculated automatically from today's date using the Academic Calendar below.
                             <?php endif; ?>
                         </p>
                     </div>
+                </div>
 
-                    <div class="form-card">
-                        <h2 style="font-size: 16px; margin-bottom: 20px; display: flex; align-items: center; gap: 8px;">
-                            <i class='bx bx-slider-alt' style="color: var(--primary); font-size: 20px;"></i> Override
+                <div class="section-header" style="margin-top: 28px;">
+                    <h1 style="font-size: 20px;">Academic Calendar</h1>
+                </div>
+                <div class="card-grid">
+                    <div class="form-card" style="grid-column: 1 / -1;">
+                        <h2 style="font-size: 16px; margin-bottom: 12px; display: flex; align-items: center; gap: 8px;">
+                            <i class='bx bx-calendar-week' style="color: var(--primary); font-size: 20px;"></i> Configured School Years
                         </h2>
-                        <form method="POST">
-                            <input type="hidden" name="csrf_token" value="<?php echo e($_SESSION['csrf_token']); ?>">
-                            <input type="hidden" name="action" value="set_school_year_override">
-                            <div class="form-group">
-                                <label>Treat this as the current school year</label>
-                                <input type="text" name="school_year_override" class="input-field" inputmode="numeric" maxlength="9" placeholder="e.g. 2026-2027" value="<?php echo e($sySettingOverride); ?>" oninput="formatSchoolYearInput(this, false, event)">
+                        <?php if ($academicCalendars === []): ?>
+                            <p style="font-size: 13px; color: #6b7280;">No academic calendar configured yet. Add one using the form below.</p>
+                        <?php else: ?>
+                            <?php if ($currentAcademicCalendarId === null): ?>
+                                <p style="font-size: 13px; color: #b91c1c; background: #fef2f2; border: 1px solid #fecaca; border-radius: 8px; padding: 10px 14px; margin-bottom: 14px;">
+                                    <i class='bx bx-error-circle'></i> No configured school year covers today's date - filing is currently disabled until one is added or adjusted below.
+                                </p>
+                            <?php endif; ?>
+                            <?php $academicCalendarHistoryCount = ($currentAcademicCalendarId !== null ? count($academicCalendars) - 1 : count($academicCalendars)); ?>
+                            <div class="table-container">
+                                <table class="academic-calendar-table">
+                                    <thead>
+                                        <tr>
+                                            <th>School Year</th>
+                                            <th>SY Dates</th>
+                                            <th>1st Sem</th>
+                                            <th>2nd Sem</th>
+                                            <th></th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <?php foreach ($academicCalendars as $cal): ?>
+                                            <?php $isCurrentCal = $currentAcademicCalendarId !== null && (int)$cal['id'] === (int)$currentAcademicCalendarId; ?>
+                                            <tr<?php echo $isCurrentCal ? '' : ' class="ac-history-row" style="display: none;"'; ?>>
+                                                <td data-label="School Year">
+                                                    <strong><?php echo e((string)$cal['school_year']); ?></strong>
+                                                    <?php if ($isCurrentCal): ?>
+                                                        <span style="display: inline-block; margin-left: 6px; font-size: 11px; font-weight: 600; color: #166534; background: #dcfce7; padding: 2px 8px; border-radius: 999px;">Current</span>
+                                                    <?php endif; ?>
+                                                </td>
+                                                <td data-label="SY Dates"><?php echo e(date('M j, Y', strtotime((string)$cal['sy_start_date']))); ?> &ndash; <?php echo e(date('M j, Y', strtotime((string)$cal['sy_end_date']))); ?></td>
+                                                <td data-label="1st Sem"><?php echo e(date('M j, Y', strtotime((string)$cal['sem1_start_date']))); ?> &ndash; <?php echo e(date('M j, Y', strtotime((string)$cal['sem1_end_date']))); ?></td>
+                                                <td data-label="2nd Sem"><?php echo e(date('M j, Y', strtotime((string)$cal['sem2_start_date']))); ?> &ndash; <?php echo e(date('M j, Y', strtotime((string)$cal['sem2_end_date']))); ?></td>
+                                                <td class="td-ac-actions" style="white-space: nowrap;">
+                                                    <button type="button" class="btn-secondary" style="padding: 6px 10px; font-size: 12px;"
+                                                        data-id="<?php echo (int)$cal['id']; ?>"
+                                                        data-school-year="<?php echo e((string)$cal['school_year']); ?>"
+                                                        data-sy-start="<?php echo e((string)$cal['sy_start_date']); ?>"
+                                                        data-sy-end="<?php echo e((string)$cal['sy_end_date']); ?>"
+                                                        data-sem1-start="<?php echo e((string)$cal['sem1_start_date']); ?>"
+                                                        data-sem1-end="<?php echo e((string)$cal['sem1_end_date']); ?>"
+                                                        data-sem2-start="<?php echo e((string)$cal['sem2_start_date']); ?>"
+                                                        data-sem2-end="<?php echo e((string)$cal['sem2_end_date']); ?>"
+                                                        onclick="editAcademicCalendar(this)" title="Edit">
+                                                        <i class='bx bx-edit'></i>
+                                                    </button>
+                                                    <form method="POST" style="display: inline;" onsubmit="return confirm('Remove the academic calendar for <?php echo e((string)$cal['school_year']); ?>? Existing submissions keep the school year and semester they were filed under.');">
+                                                        <input type="hidden" name="csrf_token" value="<?php echo e($_SESSION['csrf_token']); ?>">
+                                                        <input type="hidden" name="action" value="delete_academic_calendar">
+                                                        <input type="hidden" name="calendar_id" value="<?php echo (int)$cal['id']; ?>">
+                                                        <button class="btn-secondary" style="padding: 6px 10px; font-size: 12px; background: #fee2e2; color: #b91c1c;" type="submit" title="Delete"><i class='bx bx-trash'></i></button>
+                                                    </form>
+                                                </td>
+                                            </tr>
+                                        <?php endforeach; ?>
+                                    </tbody>
+                                </table>
                             </div>
-                            <button class="btn-primary" type="submit"><i class='bx bx-save'></i> Save Override</button>
-                        </form>
-                        <?php if ($sySettingOverride !== ''): ?>
-                            <form method="POST" style="margin-top: 10px;">
-                                <input type="hidden" name="csrf_token" value="<?php echo e($_SESSION['csrf_token']); ?>">
-                                <input type="hidden" name="action" value="clear_school_year_override">
-                                <button class="btn-primary" style="background: #e2e8f0; color: #475569;" type="submit"><i class='bx bx-x'></i> Clear Override (use automatic)</button>
-                            </form>
+                            <?php if ($academicCalendarHistoryCount > 0): ?>
+                                <button type="button" class="btn-secondary" id="acHistoryToggle" style="margin-top: 12px; padding: 6px 14px; font-size: 12px;" data-count="<?php echo $academicCalendarHistoryCount; ?>" onclick="toggleAcademicCalendarHistory()">
+                                    <i class='bx bx-history'></i> <span id="acHistoryToggleLabel">Show other school years (<?php echo $academicCalendarHistoryCount; ?>)</span>
+                                </button>
+                            <?php endif; ?>
                         <?php endif; ?>
+                    </div>
+
+                    <div class="form-card" style="grid-column: 1 / -1;">
+                        <h2 id="academic-calendar-form-title" style="font-size: 16px; margin-bottom: 20px; display: flex; align-items: center; gap: 8px;">
+                            <i class='bx bx-calendar-plus' style="color: var(--primary); font-size: 20px;"></i> Add / Update School Year
+                        </h2>
+                        <form method="POST" id="academicCalendarForm">
+                            <input type="hidden" name="csrf_token" value="<?php echo e($_SESSION['csrf_token']); ?>">
+                            <input type="hidden" name="action" value="save_academic_calendar">
+                            <div style="display: flex; gap: 14px; flex-wrap: wrap; align-items: flex-end;">
+                                <div class="form-group" style="margin-bottom: 0; flex: 1 1 140px;">
+                                    <label>School Year</label>
+                                    <input type="text" name="school_year" id="ac_school_year" class="input-field" inputmode="numeric" maxlength="9" placeholder="e.g. 2027-2028" required oninput="formatSchoolYearInput(this, false, event)">
+                                </div>
+                                <div class="form-group" style="margin-bottom: 0; flex: 1 1 140px;">
+                                    <label>SY Start Date</label>
+                                    <input type="date" name="sy_start_date" id="ac_sy_start_date" class="input-field" required>
+                                </div>
+                                <div class="form-group" style="margin-bottom: 0; flex: 1 1 140px;">
+                                    <label>SY End Date</label>
+                                    <input type="date" name="sy_end_date" id="ac_sy_end_date" class="input-field" required>
+                                </div>
+                                <div class="form-group" style="margin-bottom: 0; flex: 1 1 140px;">
+                                    <label>1st Sem Start</label>
+                                    <input type="date" name="sem1_start_date" id="ac_sem1_start_date" class="input-field" required>
+                                </div>
+                                <div class="form-group" style="margin-bottom: 0; flex: 1 1 140px;">
+                                    <label>1st Sem End</label>
+                                    <input type="date" name="sem1_end_date" id="ac_sem1_end_date" class="input-field" required>
+                                </div>
+                                <div class="form-group" style="margin-bottom: 0; flex: 1 1 140px;">
+                                    <label>2nd Sem Start</label>
+                                    <input type="date" name="sem2_start_date" id="ac_sem2_start_date" class="input-field" required>
+                                </div>
+                                <div class="form-group" style="margin-bottom: 0; flex: 1 1 140px;">
+                                    <label>2nd Sem End</label>
+                                    <input type="date" name="sem2_end_date" id="ac_sem2_end_date" class="input-field" required>
+                                </div>
+                                <div style="display: flex; gap: 10px; flex: 0 0 auto;">
+                                    <button class="btn-primary" type="submit"><i class='bx bx-save'></i> Save Calendar</button>
+                                    <button class="btn-secondary" type="button" onclick="resetAcademicCalendarForm()">Clear</button>
+                                </div>
+                            </div>
+                        </form>
                     </div>
                 </div>
             </div>
@@ -1080,6 +1261,10 @@ $profileImage = trim($profile['profile_pic']) !== '' ? '../' . ltrim($profile['p
             evt.currentTarget.classList.add('active');
 
             window.history.replaceState({}, '', 'admin_setting.php?tab=' + encodeURIComponent(tabId));
+            // Re-check whether the back-to-top button should show for the tab
+            // just switched to (it hides itself on the FAQ/Types iframe tabs,
+            // which otherwise have no scroll event of their own to react to).
+            window.dispatchEvent(new Event('scroll'));
         }
 
         function previewImage(input) {
@@ -1129,8 +1314,75 @@ $profileImage = trim($profile['profile_pic']) !== '' ? '../' . ltrim($profile['p
             icon.className = isPassword ? 'bx bx-show' : 'bx bx-hide';
             toggleButton.setAttribute('aria-label', isPassword ? 'Hide password' : 'Show password');
         }
+
+        function editAcademicCalendar(button) {
+            const form = document.getElementById('academicCalendarForm');
+            if (!form) {
+                return;
+            }
+
+            document.getElementById('ac_school_year').value = button.dataset.schoolYear || '';
+            document.getElementById('ac_sy_start_date').value = button.dataset.syStart || '';
+            document.getElementById('ac_sy_end_date').value = button.dataset.syEnd || '';
+            document.getElementById('ac_sem1_start_date').value = button.dataset.sem1Start || '';
+            document.getElementById('ac_sem1_end_date').value = button.dataset.sem1End || '';
+            document.getElementById('ac_sem2_start_date').value = button.dataset.sem2Start || '';
+            document.getElementById('ac_sem2_end_date').value = button.dataset.sem2End || '';
+
+            const formTitle = document.getElementById('academic-calendar-form-title');
+            if (formTitle) {
+                formTitle.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }
+        }
+
+        function resetAcademicCalendarForm() {
+            const form = document.getElementById('academicCalendarForm');
+            if (form) {
+                form.reset();
+            }
+        }
+
+        function toggleAcademicCalendarHistory() {
+            const rows = document.querySelectorAll('.ac-history-row');
+            const btn = document.getElementById('acHistoryToggle');
+            const label = document.getElementById('acHistoryToggleLabel');
+            if (!rows.length || !btn || !label) {
+                return;
+            }
+
+            const count = btn.dataset.count || rows.length;
+            const isCurrentlyHidden = rows[0].style.display === 'none';
+            rows.forEach(row => { row.style.display = isCurrentlyHidden ? '' : 'none'; });
+            label.textContent = (isCurrentlyHidden ? 'Hide other school years (' : 'Show other school years (') + count + ')';
+        }
     </script>
     <?php echo sy_smart_input_script(); ?>
-
+    <button type="button" id="backToTopBtn" class="back-to-top" title="Back to top" aria-label="Back to top"><i class="bx bx-up-arrow-alt"></i></button>
+    <script>
+    (function () {
+        const backToTop = document.getElementById('backToTopBtn');
+        if (!backToTop) {
+            return;
+        }
+        // The FAQ and Types tabs are iframes with their own internal scroll
+        // and their own back-to-top button already - this outer one is for
+        // the other tabs (Bulk Upload, School Year, etc.) whose content
+        // lives directly on this page. Showing both at once on the same
+        // tab would just stack two overlapping arrows in the same corner.
+        const iframeTabIds = ['faq', 'types'];
+        const isIframeTabActive = function () {
+            const activePanel = document.querySelector('.tab-panel.active');
+            return !!activePanel && iframeTabIds.indexOf(activePanel.id) !== -1;
+        };
+        const toggleBackToTop = function () {
+            backToTop.classList.toggle('visible', !isIframeTabActive() && window.scrollY > 80);
+        };
+        window.addEventListener('scroll', toggleBackToTop, { passive: true });
+        toggleBackToTop();
+        backToTop.addEventListener('click', function () {
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+        });
+    })();
+    </script>
 </body>
 </html>

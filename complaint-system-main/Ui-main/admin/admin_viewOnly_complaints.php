@@ -314,19 +314,7 @@ body { background: #f4f6fb; }
                     <div class="detail-value"><?php echo e((string)($complaint['complainant_contact_details'] ?? 'N/A')); ?></div>
                 </div>
                 <div class="detail-item">
-                    <div class="label">Address</div>
-                    <div class="detail-value"><?php echo e((string)($complaint['complainant_address'] ?? 'N/A')); ?></div>
-                </div>
-                <div class="detail-item">
-                    <div class="label">Category</div>
-                    <div class="detail-value"><?php echo e((string)($complaint['category_name'] ?? 'N/A')); ?></div>
-                </div>
-                <div class="detail-item">
-                    <div class="label">Sex / Age / Civil status</div>
-                    <div class="detail-value"><?php echo e((string)($complaint['complainant_sex'] ?? 'N/A')); ?> &middot; <?php echo e((string)($complaint['complainant_age'] ?? 'N/A')); ?> &middot; <?php echo e((string)($complaint['complainant_civil_status'] ?? 'N/A')); ?></div>
-                </div>
-                <div class="detail-item">
-                    <div class="label">Date / Time</div>
+                    <div class="label">Date / Time of Incident</div>
                     <div class="detail-value"><?php echo e((string)($complaint['date_of_incident'] ?? 'N/A')); ?> <?php echo e((string)($complaint['time_of_incident'] ?? '')); ?></div>
                 </div>
                 <div class="detail-item">
@@ -340,10 +328,6 @@ body { background: #f4f6fb; }
                 <div class="detail-item full" style="grid-column:1 / -1;">
                     <div class="label">Act Complained Of</div>
                     <div class="detail-value detail-value--paragraph"><?php echo nl2br(e((string)($complaint['act_complained_of'] ?? 'N/A'))); ?></div>
-                </div>
-                <div class="detail-item full" style="grid-column:1 / -1;">
-                    <div class="label">Narrative Report</div>
-                    <div class="detail-value detail-value--paragraph"><?php echo nl2br(e((string)($complaint['narrative_report'] ?? 'N/A'))); ?></div>
                 </div>
             </div>
 
@@ -361,19 +345,27 @@ body { background: #f4f6fb; }
                         <?php endif; ?>
                     </div>
                 </div>
-            <?php else: ?>
-                <div class="section-block">
-                    <div class="empty-message">No attachment uploaded.</div>
-                </div>
             <?php endif; ?>
         </div>
 
         <?php if (!empty($complaint['desired_outcome'])): ?>
         <div class="document-section">
-            <div class="document-section-title"><div class="section-label">Desired Outcome</div></div>
+            <div class="document-section-title"><div class="section-label">Expected Outcome</div></div>
             <div class="detail-value detail-value--paragraph"><?php echo nl2br(e((string)($complaint['desired_outcome'] ?? ''))); ?></div>
         </div>
         <?php endif; ?>
+
+        <?php $termsAccepted = array_key_exists('terms_agreement_accepted', $complaint) ? (int)$complaint['terms_agreement_accepted'] : null; ?>
+        <div class="document-section">
+            <div class="document-section-title"><div class="section-label">Terms of Agreement</div></div>
+            <?php if ($termsAccepted === 1): ?>
+                <div class="detail-value detail-value--paragraph"><?php echo e(complaint_terms_agreement_statement()); ?> <?php echo e(complaint_terms_agreement_checkbox_label()); ?></div>
+            <?php elseif ($termsAccepted === 0): ?>
+                <div class="detail-value">Not agreed</div>
+            <?php else: ?>
+                <div class="detail-value">Unknown</div>
+            <?php endif; ?>
+        </div>
     </div>
 
     <div class="call-slip-history-card card">

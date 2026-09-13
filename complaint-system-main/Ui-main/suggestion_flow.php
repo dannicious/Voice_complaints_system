@@ -456,10 +456,9 @@ function check_suggestion_duplicate(PDO $pdo, int $categoryId, string $descripti
 }
 
 /**
- * How long ago a suggestion was submitted, as a short handler-facing label:
- * "New" for anything under 1 hour old, otherwise the whole number of hours
- * elapsed ("1hr", "2hr", "27hr", ...) - it just keeps counting, it doesn't
- * switch to a "days" format.
+ * How long ago a suggestion was submitted, as a short handler-facing label.
+ * Same-day submissions are "New"; older submissions use days, weeks, or
+ * months so the label stays readable in report tables.
  */
 function suggestion_age_label(string $createdAt): string
 {
@@ -474,9 +473,22 @@ function suggestion_age_label(string $createdAt): string
     if ($elapsedSeconds < 0) {
         $elapsedSeconds = 0;
     }
-    $elapsedHours = intdiv($elapsedSeconds, 3600);
+    $elapsedDays = intdiv($elapsedSeconds, 86400);
 
-    return $elapsedHours < 1 ? 'New' : $elapsedHours . 'hr';
+    if ($elapsedDays < 1) {
+        return 'New';
+    }
+    if ($elapsedDays < 7) {
+        return $elapsedDays . ($elapsedDays === 1 ? ' day ago' : ' days ago');
+    }
+
+    $elapsedWeeks = intdiv($elapsedDays, 7);
+    if ($elapsedDays < 30) {
+        return $elapsedWeeks . ($elapsedWeeks === 1 ? ' week ago' : ' weeks ago');
+    }
+
+    $elapsedMonths = intdiv($elapsedDays, 30);
+    return $elapsedMonths . ($elapsedMonths === 1 ? ' month ago' : ' months ago');
 }
 
 /**
@@ -524,4 +536,21 @@ function check_and_send_suggestion_overdue_notifications(PDO $pdo): void
     } catch (PDOException $e) {
         // Best-effort - never break a page load over this.
     }
+}
+
+/**
+ * The exact Terms of Agreement wording shown on the student suggestion form
+ * (see Ui-main/student/student_complaints.php, "TERMS & AGREEMENT SECTION"
+ * of the suggestion form). Kept here so every suggestion detail view quotes
+ * the same text the student actually agreed to, instead of a paraphrase -
+ * mirrors complaint_terms_agreement_statement() in ticket_flow.php.
+ */
+function suggestion_terms_agreement_statement(): string
+{
+    return 'Upon filling-up this form, I declare that the information provided is true and accurate to the best of my knowledge. I understand that my suggestion will be reviewed by the University administration for consideration.';
+}
+
+function suggestion_terms_agreement_checkbox_label(): string
+{
+    return 'I agree that the provided information is true and may be used by the University for improvement purposes.';
 }

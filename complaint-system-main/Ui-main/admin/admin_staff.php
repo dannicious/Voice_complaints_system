@@ -48,6 +48,14 @@ function normalize_username(string $name): string
     return substr($base, 0, 40);
 }
 
+// "health" -> "Health", "computer lab issues" -> "Computer Lab Issues" - the
+// Area name shows up on the student-facing suggestion form, so it should
+// read properly regardless of how the admin happened to type it in.
+function title_case(string $value): string
+{
+    return mb_convert_case(trim($value), MB_CASE_TITLE, 'UTF-8');
+}
+
 function generate_unique_username(PDO $pdo, string $name): string
 {
     $base = normalize_username($name);
@@ -119,7 +127,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // suggestion form as the Level 1 picker, so each one has to be a
         // considered, singular addition to that list, not something that
         // multiplies as a side effect of routine staff account creation.
-        $suggestionAreaName = trim((string)($_POST['suggestion_area_text'] ?? ''));
+        $suggestionAreaName = title_case((string)($_POST['suggestion_area_text'] ?? ''));
 
         if ($name === '' || $email === '' || $password === '' || $office === '' || $suggestionAreaName === '') {
             $flashMessage = 'Name, email, password, office, and a General Suggestion Area are required.';
@@ -186,14 +194,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     );
                     $existingWireStmt->execute([':area_id' => $areaId, ':office' => $office]);
                     if (!$existingWireStmt->fetchColumn()) {
-                        // Not already wired for this office - file the starter category.
-                        $catName = $office . ' - General ' . $suggestionAreaName;
+                        // Not already wired for this office - file the starter category
+                        // under exactly the typed name (title-cased), no auto prefix.
+                        // Category names are still unique table-wide, so if that exact
+                        // name is already taken by an unrelated category, this is
+                        // skipped rather than silently renamed to something the admin
+                        // didn't type.
                         $nameTakenStmt = $pdo->prepare('SELECT id FROM suggestion_categories WHERE LOWER(name) = LOWER(:name) LIMIT 1');
-                        $nameTakenStmt->execute([':name' => $catName]);
+                        $nameTakenStmt->execute([':name' => $suggestionAreaName]);
                         if (!$nameTakenStmt->fetchColumn()) {
                             $pdo->prepare(
                                 "INSERT INTO suggestion_categories (name, area_id, route_type, office, is_active) VALUES (:name, :area_id, 'office', :office, 1)"
-                            )->execute([':name' => $catName, ':area_id' => $areaId, ':office' => $office]);
+                            )->execute([':name' => $suggestionAreaName, ':area_id' => $areaId, ':office' => $office]);
                             $wiredArea = true;
                         }
                     }
@@ -526,7 +538,8 @@ body {
     background: #f4f6fb;
     padding: 8px 15px;
     border-radius: 8px;
-    width: 360px;
+    width: 100%;
+    max-width: 360px;
     border: 1px solid #e5e7eb;
 }
 
@@ -661,6 +674,8 @@ tbody tr:hover { background-color: #fcfcfc; }
 .modal-overlay {
     position: fixed;
     top: 0; left: 0; width: 100%; height: 100%;
+    box-sizing: border-box;
+    padding: 16px;
     background: rgba(0,0,0,0.5);
     display: none;
     align-items: center;
@@ -675,6 +690,7 @@ tbody tr:hover { background-color: #fcfcfc; }
 .modal-content {
     background: #fff;
     width: 450px;
+    max-width: 100%;
     border-radius: 12px;
     padding: 18px 22px;
     box-shadow: 0 10px 30px rgba(0,0,0,0.1);
@@ -802,6 +818,15 @@ tbody tr:hover { background-color: #fcfcfc; }
 
 .btn-warning:hover {
     background: #d97706;
+}
+
+@media (max-width: 1024px) {
+    .main { margin-left: 0 !important; padding: 16px !important; }
+}
+
+@media (max-width: 640px) {
+    .page-header { flex-wrap: wrap; gap: 12px; }
+    .search-box { max-width: 100%; }
 }
 </style>
 </head>

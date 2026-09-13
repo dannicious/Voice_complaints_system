@@ -859,3 +859,19 @@ if (!function_exists('notify_ticket_handlers')) {
         }
     }
 }
+
+/**
+ * The exact Terms of Agreement wording shown on the student complaint form
+ * (see Ui-main/student/student_complaints.php, "TERMS & AGREEMENT SECTION").
+ * Kept here so every admin/dean complaint detail view quotes the same text
+ * the complainant actually agreed to, instead of a paraphrase.
+ */
+function complaint_terms_agreement_statement(): string
+{
+    return 'Upon filling-up this form, I bind myself to stand on the truth of this complaint as a COMPLAINANT/AGGRIEVED PARTY on behalf of the public and the institution for legal proceedings may be required as provided by the existing laws.';
+}
+
+function complaint_terms_agreement_checkbox_label(): string
+{
+    return 'I agree that the provided information asked herein will be used by the University for whatever legal purpose it may serve.';
+}

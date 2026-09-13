@@ -763,6 +763,28 @@ textarea.form-control { resize:vertical; min-height:100px; }
 .call-slip-success-time { color: #6b7280; font-size: 12px; margin-bottom: 18px; }
 .call-slip-success-ok { min-width: 58px; padding: 9px 22px; border: 0; border-radius: 7px; background: #f7c948; color: #111827; box-shadow: 0 3px 10px rgba(247,201,72,0.35); font-size: 12px; font-weight: 700; cursor: pointer; }
 .call-slip-success-ok:hover { background: #eab936; }
+
+/* The Call Slip is styled like a printable paper form - a wide header
+   (letterhead + brand badge side by side) and 2-up field rows that were
+   never given a phone-width fallback, so they squeezed unreadably instead
+   of stacking. */
+@media (max-width: 640px) {
+    .call-slip-sheet { width: min(680px, 95vw); }
+    .call-slip-paper { padding: 14px 14px 10px; }
+    .call-slip-header { flex-direction: column; align-items: stretch; gap: 14px; text-align: center; }
+    .call-slip-company-block { flex-direction: column; text-align: center; gap: 8px; }
+    .call-slip-company-copy { text-align: center; }
+    .call-slip-right-badge { justify-content: center; }
+    .call-slip-bisu-mark { width: 56px; height: 56px; margin: 0 auto; }
+    .call-slip-right-badge img { width: 72px; height: 56px; }
+    .call-slip-form-title { font-size: 18px; }
+    .call-slip-meta-row { flex-direction: column; gap: 10px; }
+    .call-slip-field.half { flex: 1 1 100%; }
+    .call-slip-footer-row { justify-content: center !important; }
+    .call-slip-signature { width: 100%; max-width: 240px; }
+    .call-slip-close-row { flex-wrap: wrap; }
+}
+
 .scroll-top-btn { position: fixed; right: 24px; bottom: 24px; width: 44px; height: 44px; border-radius: 999px; background: #6b46c1; color: #fff; border: none; display: none; align-items: center; justify-content: center; cursor: pointer; box-shadow: 0 10px 24px rgba(107, 70, 193, 0.35); z-index: 500; transition: background .15s ease, transform .15s ease, opacity .2s ease; opacity: 0; transform: translateY(8px); }
 .scroll-top-btn.visible { display: flex; opacity: 1; transform: translateY(0); }
 .scroll-top-btn:hover { background: #5b3aa8; }
@@ -844,13 +866,31 @@ textarea.form-control { resize:vertical; min-height:100px; }
         <div class="document-section-title">
             <div class="section-label">Complainant & Incident Details</div>
         </div>
-        <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;">
-            <div><div class="label">Complainant name</div><div class="detail-value"><?php echo e((string)($ticket['complainant_name'] ?? '')); ?></div></div>
-            <div><div class="label">Contact details</div><div class="detail-value"><?php echo e((string)($ticket['complainant_contact_details'] ?? '')); ?></div></div>
-            <div><div class="label">Date / Time</div><div class="detail-value"><?php echo e((string)($ticket['date_of_incident'] ?? '')); ?> <?php echo e((string)($ticket['time_of_incident'] ?? '')); ?></div></div>
-            <div><div class="label">Place of Incident</div><div class="detail-value"><?php echo e((string)($ticket['place_of_incident'] ?? '')); ?></div></div>
-            <div class="full" style="grid-column:1 / -1;"><div class="label">Person complained of</div><div class="detail-value"><?php echo e((string)($ticket['person_complained_of'] ?? '')); ?></div></div>
-            <div class="full" style="grid-column:1 / -1;"><div class="label">Act complained of</div><div class="detail-value detail-value--paragraph"><?php echo nl2br(e((string)($ticket['act_complained_of'] ?? ''))); ?></div></div>
+        <div class="grid">
+            <div class="detail-item">
+                <div class="label">Complainant name</div>
+                <div class="detail-value"><?php echo e((string)($ticket['complainant_name'] ?? '')); ?></div>
+            </div>
+            <div class="detail-item">
+                <div class="label">Contact details</div>
+                <div class="detail-value"><?php echo e((string)($ticket['complainant_contact_details'] ?? '')); ?></div>
+            </div>
+            <div class="detail-item">
+                <div class="label">Date / Time of Incident</div>
+                <div class="detail-value"><?php echo e((string)($ticket['date_of_incident'] ?? '')); ?> <?php echo e((string)($ticket['time_of_incident'] ?? '')); ?></div>
+            </div>
+            <div class="detail-item">
+                <div class="label">Place of Incident</div>
+                <div class="detail-value"><?php echo e((string)($ticket['place_of_incident'] ?? '')); ?></div>
+            </div>
+            <div class="detail-item full" style="grid-column:1 / -1;">
+                <div class="label">Person complained of</div>
+                <div class="detail-value"><?php echo e((string)($ticket['person_complained_of'] ?? '')); ?></div>
+            </div>
+            <div class="detail-item full" style="grid-column:1 / -1;">
+                <div class="label">Act complained of</div>
+                <div class="detail-value detail-value--paragraph"><?php echo nl2br(e((string)($ticket['act_complained_of'] ?? ''))); ?></div>
+            </div>
         </div>
 
         <?php if (!empty($ticket['attachments'])): ?>
@@ -868,10 +908,22 @@ textarea.form-control { resize:vertical; min-height:100px; }
 
     <?php if (!empty($ticket['desired_outcome'])): ?>
         <div class="document-section">
-            <div class="label">Desired Outcome</div>
+            <div class="label">Expected Outcome</div>
             <div class="detail-value detail-value--paragraph"><?php echo nl2br(e((string)$ticket['desired_outcome'])); ?></div>
         </div>
     <?php endif; ?>
+
+    <?php $termsAccepted = array_key_exists('terms_agreement_accepted', $ticket) ? (int)$ticket['terms_agreement_accepted'] : null; ?>
+    <div class="document-section">
+        <div class="label">Terms of Agreement</div>
+        <?php if ($termsAccepted === 1): ?>
+            <div class="detail-value detail-value--paragraph"><?php echo e(complaint_terms_agreement_statement()); ?> <?php echo e(complaint_terms_agreement_checkbox_label()); ?></div>
+        <?php elseif ($termsAccepted === 0): ?>
+            <div class="detail-value">Not agreed</div>
+        <?php else: ?>
+            <div class="detail-value">Unknown</div>
+        <?php endif; ?>
+    </div>
     </div>
 
     <div class="call-slip-history-card card">

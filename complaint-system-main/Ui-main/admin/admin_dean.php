@@ -448,7 +448,8 @@ body {
     background: #f4f6fb;
     padding: 8px 15px;
     border-radius: 8px;
-    width: 360px;
+    width: 100%;
+    max-width: 360px;
     border: 1px solid #e5e7eb;
 }
 
@@ -583,6 +584,8 @@ tbody tr:hover { background-color: #fcfcfc; }
 .modal-overlay {
     position: fixed;
     top: 0; left: 0; width: 100%; height: 100%;
+    box-sizing: border-box;
+    padding: 16px;
     background: rgba(0,0,0,0.5);
     display: none;
     align-items: center;
@@ -597,6 +600,9 @@ tbody tr:hover { background-color: #fcfcfc; }
 .modal-content {
     background: #fff;
     width: 450px;
+    max-width: 100%;
+    max-height: 90vh;
+    overflow-y: auto;
     border-radius: 12px;
     padding: 25px;
     box-shadow: 0 10px 30px rgba(0,0,0,0.1);
@@ -705,6 +711,15 @@ tbody tr:hover { background-color: #fcfcfc; }
 
 .btn-danger:hover {
     background: #dc2626;
+}
+
+@media (max-width: 1024px) {
+    .main { margin-left: 0 !important; padding: 16px !important; }
+}
+
+@media (max-width: 640px) {
+    .page-header { flex-wrap: wrap; gap: 12px; }
+    .search-box { max-width: 100%; }
 }
 </style>
 </head>

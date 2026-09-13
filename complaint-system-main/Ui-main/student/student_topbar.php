@@ -314,7 +314,7 @@ $studentPhoto = '../assets/images/default-avatar.svg';
 $studentProfileId = 0;
 $schoolYearCurrent = sy_current($pdo);
 $schoolYearSelected = $schoolYearCurrent;
-$semesterCurrent = semester_current();
+$semesterCurrent = semester_current($pdo);
 $semesterSelected = $semesterCurrent;
 
 if (isset($_SESSION['user_id']) && isset($pdo)) {
@@ -368,7 +368,7 @@ if (isset($_SESSION['user_id']) && isset($pdo)) {
 
     if ($studentProfileId > 0) {
         $schoolYearSelected = sy_get_selected($pdo, $studentProfileId);
-        $semesterSelected = semester_get_selected();
+        $semesterSelected = semester_get_selected($pdo);
     }
 }
 $isPastSchoolYear = $schoolYearSelected !== $schoolYearCurrent;
@@ -826,10 +826,36 @@ $isPastSemester = $semesterSelected !== $semesterCurrent;
         display: none;
     }
 
+    /* The school year/semester pill had no size limits here, so its text
+       would wrap onto a second line and squash awkwardly between the logo
+       and the bell/profile icons. Keep it on one line and let the wordmark
+       step aside to make room, same as the profile name already does. */
+    .topbar-sy-pill {
+        font-size: 12px;
+        padding: 6px 9px;
+        gap: 4px;
+        white-space: nowrap;
+    }
+
+    .topbar-sy-pill i {
+        font-size: 13px;
+    }
+
     .notification-dropdown {
         right: -50px;
         width: 90vw;
         max-width: 360px;
+    }
+}
+
+@media (max-width: 480px) {
+    .topbar-logo span {
+        display: none;
+    }
+
+    .topbar-sy-pill {
+        font-size: 11px;
+        padding: 5px 8px;
     }
 }
 

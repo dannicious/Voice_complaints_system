@@ -22,10 +22,18 @@ function e(string $value): string
 $studentProfileId = sy_resolve_student_profile_id($pdo);
 $schoolYearCurrent = sy_current($pdo);
 $schoolYearSelected = $studentProfileId > 0 ? sy_get_selected($pdo, $studentProfileId) : $schoolYearCurrent;
-$semesterCurrent = semester_current();
-$semesterSelected = $studentProfileId > 0 ? semester_get_selected() : $semesterCurrent;
+$semesterCurrent = semester_current($pdo);
+$semesterSelected = $studentProfileId > 0 ? semester_get_selected($pdo) : $semesterCurrent;
 
-if ($studentProfileId > 0 && ($schoolYearSelected !== $schoolYearCurrent || $semesterSelected !== $semesterCurrent)) {
+// Fail safely rather than silently guess: if nobody has configured an
+// academic calendar covering today at all, block filing entirely instead of
+// stamping a new complaint/suggestion with a semester the system had to
+// guess. This is the one place that guess would be permanent (see
+// process_complaint.php/process_suggestion.php for the matching
+// defense-in-depth check).
+$calendarConfiguredToday = sy_calendar_configured_for_date($pdo, date('Y-m-d'));
+
+if (!$calendarConfiguredToday || ($studentProfileId > 0 && ($schoolYearSelected !== $schoolYearCurrent || $semesterSelected !== $semesterCurrent))) {
     $lockedIsSuggestion = $pageMode === 'suggestion';
     $lockedTitle = $lockedIsSuggestion ? 'Send a Suggestion' : 'File a Complaint';
     $lockedAction = $lockedIsSuggestion ? 'Sending a suggestion' : 'Filing a complaint';
@@ -61,18 +69,26 @@ if ($studentProfileId > 0 && ($schoolYearSelected !== $schoolYearCurrent || $sem
             <h2 class="page-title"><?php echo e($lockedTitle); ?></h2>
             <div class="locked-card">
                 <i class='bx bx-lock-alt'></i>
-                <h3>You're viewing School Year <?php echo e($schoolYearSelected); ?>, <?php echo e(semester_display_label($semesterSelected)); ?></h3>
-                <p>
-                    <?php echo e($lockedAction); ?> is only available while viewing the current school year and semester
-                    (<?php echo e($schoolYearCurrent); ?>, <?php echo e(semester_display_label($semesterCurrent)); ?>). This past period's records are read-only.
-                    Switch back to the current school year to continue.
-                </p>
-                <form method="POST" action="set_school_year.php">
-                    <input type="hidden" name="school_year" value="<?php echo e($schoolYearCurrent); ?>">
-                    <input type="hidden" name="semester" value="<?php echo e($semesterCurrent); ?>">
-                    <input type="hidden" name="redirect_to" value="<?php echo e($_SERVER['REQUEST_URI'] ?? 'student_complaints.php'); ?>">
-                    <button type="submit" class="btn-blue"><i class='bx bx-refresh'></i> Switch to <?php echo e($schoolYearCurrent); ?></button>
-                </form>
+                <?php if (!$calendarConfiguredToday): ?>
+                    <h3>Filing is temporarily unavailable</h3>
+                    <p>
+                        The academic calendar for the current period hasn't been set up yet, so <?php echo e(strtolower($lockedAction)); ?> would have no
+                        school year/semester to record it under. Please try again shortly, or contact the SAS Office if this continues.
+                    </p>
+                <?php else: ?>
+                    <h3>You're viewing School Year <?php echo e($schoolYearSelected); ?>, <?php echo e(semester_display_label($semesterSelected)); ?></h3>
+                    <p>
+                        <?php echo e($lockedAction); ?> is only available while viewing the current school year and semester
+                        (<?php echo e($schoolYearCurrent); ?>, <?php echo e(semester_display_label($semesterCurrent)); ?>). This past period's records are read-only.
+                        Switch back to the current school year to continue.
+                    </p>
+                    <form method="POST" action="set_school_year.php">
+                        <input type="hidden" name="school_year" value="<?php echo e($schoolYearCurrent); ?>">
+                        <input type="hidden" name="semester" value="<?php echo e($semesterCurrent); ?>">
+                        <input type="hidden" name="redirect_to" value="<?php echo e($_SERVER['REQUEST_URI'] ?? 'student_complaints.php'); ?>">
+                        <button type="submit" class="btn-blue"><i class='bx bx-refresh'></i> Switch to <?php echo e($schoolYearCurrent); ?></button>
+                    </form>
+                <?php endif; ?>
             </div>
         </div>
     </div>
@@ -572,6 +588,49 @@ body {
 
 @media (max-width: 600px) {
     .incident-details-grid { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 640px) {
+    /* The search box + "Browse Student" button used to sit in one row that
+       never wrapped, squeezing both down to an unusable width on a phone. */
+    .student-search-row { flex-wrap: wrap; }
+    .student-search-row .student-picker-input { flex: 1 1 100%; }
+    .student-search-row .browse-students-btn { flex: 1 1 100%; justify-content: center; }
+
+    .browse-modal-overlay { padding: 10px; }
+    .browse-modal { max-height: min(680px, 94vh); }
+    .browse-modal-header { padding: 14px 16px; }
+    .browse-modal-title { font-size: 15px; }
+    .browse-modal-subtitle { font-size: 12px; }
+    .browse-modal-filters { padding: 12px 16px 0; }
+    .browse-modal-toolbar { padding: 10px 16px 6px; }
+    .browse-modal-footer { padding: 12px 16px; }
+
+    /* A 6-column table can't fit a phone screen readably even with
+       horizontal scroll, so each row becomes a stacked card instead - the
+       column labels (set via data-label in the JS that builds these rows)
+       show through ::before since the header row is hidden here. */
+    .browse-table-wrap { padding: 0 12px 8px; }
+    .browse-table thead { display: none; }
+    .browse-table, .browse-table tbody, .browse-table tr, .browse-table td { display: block; width: 100%; }
+    .browse-table tbody tr {
+        position: relative;
+        border: 1px solid #e5e7eb;
+        border-radius: 10px;
+        padding: 10px 40px 10px 12px;
+        margin-bottom: 8px;
+    }
+    .browse-table tbody tr.checked { border-color: #93c5fd; }
+    .browse-table td { padding: 3px 0; }
+    .browse-table td.browse-td-check { position: absolute; top: 10px; right: 10px; width: auto; padding: 0; }
+    .browse-table td[data-label]::before {
+        content: attr(data-label) ': ';
+        font-size: 11px;
+        font-weight: 700;
+        color: #6b7280;
+        text-transform: uppercase;
+        letter-spacing: .02em;
+    }
 }
 
 /* File Upload Styles */
@@ -1263,6 +1322,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 s.row = tr;
 
                 const checkCell = document.createElement('td');
+                checkCell.className = 'browse-td-check';
                 const checkbox = document.createElement('input');
                 checkbox.type = 'checkbox';
                 checkbox.checked = staged.has(s.id);
@@ -1286,9 +1346,18 @@ document.addEventListener('DOMContentLoaded', function() {
                 nameCell.appendChild(nameWrap);
                 tr.appendChild(nameCell);
 
-                [s.college, s.program, s.yearLevel, s.section].forEach(function (value) {
+                [
+                    ['College', s.college],
+                    ['Department', s.program],
+                    ['Year Level', s.yearLevel],
+                    ['Section', s.section],
+                ].forEach(function (pair) {
                     const td = document.createElement('td');
-                    td.textContent = value;
+                    td.textContent = pair[1];
+                    // Read by the mobile card layout below (td::before), which
+                    // shows this as a label since the table header row is
+                    // hidden there.
+                    td.setAttribute('data-label', pair[0]);
                     tr.appendChild(td);
                 });
 

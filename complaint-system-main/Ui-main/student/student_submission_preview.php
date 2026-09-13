@@ -159,8 +159,8 @@ if ($svSchoolYearSelected !== $svSchoolYearCurrent) {
     ));
     exit;
 }
-$svSemesterCurrent = semester_current();
-$svSemesterSelected = $svStudentProfileId > 0 ? semester_get_selected() : $svSemesterCurrent;
+$svSemesterCurrent = semester_current($pdo);
+$svSemesterSelected = $svStudentProfileId > 0 ? semester_get_selected($pdo) : $svSemesterCurrent;
 if ($svSemesterSelected !== $svSemesterCurrent) {
     header('Location: student_complaints.php?mode=' . $mode . '&status=error&msg=' . urlencode(
         'Switch to the current semester (' . semester_display_label($svSemesterCurrent) . ') to file a new complaint or suggestion.'

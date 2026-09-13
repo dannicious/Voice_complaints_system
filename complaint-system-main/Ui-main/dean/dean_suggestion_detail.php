@@ -62,6 +62,15 @@ if (!function_exists('get_person_display')) {
                     return ['name' => $r['name'] ?? 'Admin', 'photo' => $r['profile_pic'] ?? null];
                 }
             }
+
+            if ($role === 'staff') {
+                $stmt = $pdo->prepare('SELECT sp.name, u.profile_pic FROM staff_profiles sp LEFT JOIN users u ON u.id = sp.user_id WHERE sp.id = :id LIMIT 1');
+                $stmt->execute([':id' => (int)$id]);
+                $r = $stmt->fetch(PDO::FETCH_ASSOC);
+                if ($r) {
+                    return ['name' => $r['name'] ?? 'Staff', 'photo' => $r['profile_pic'] ?? null];
+                }
+            }
         } catch (Throwable $e) {
             // ignore and fallback
         }
@@ -245,6 +254,11 @@ body { background: #f4f6fb; }
 .document-section:last-child { border-bottom: 0; }
 .document-section-title { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 14px; color: #111827; font-weight: 700; }
 .document-section-title .section-label { font-size: 15px; }
+/* Field label/value typography matched to admin_suggestion_detail.php /
+   admin_complaints_details.php, so a record looks the same on every side. */
+.label { font-size: 12px; color: #6b7280; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.08em; }
+.detail-value { color: #111827; font-size: 15px; line-height: 1.8; font-weight: 500; }
+.detail-value--paragraph { white-space: pre-wrap; }
 
 /* Card utility to match other dean pages */
 .card { background: #fff; border: 1px solid #e5e7eb; border-radius: 12px; padding: 14px; box-shadow: 0 6px 18px rgba(15,23,42,0.04); }
@@ -431,18 +445,17 @@ body { background: #f4f6fb; }
                 <div class="section-label">Suggestion Details</div>
             </div>
             <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;">
-                <div><div style="font-size:12px;color:#6b7280;">Submitted By</div><div style="margin-top:6px;font-weight:600;"><?php echo e(trim(((int)($suggestion['is_anonymous'] ?? 0) === 1) ? 'Anonymous Student' : trim((string)($suggestion['first_name'] ?? '') . ' ' . (string)($suggestion['last_name'] ?? '')))); ?></div></div>
-                <div><div style="font-size:12px;color:#6b7280;">Category</div><div style="margin-top:6px;"><?php echo e((string)($suggestion['category_name'] ?? '')); ?></div></div>
-                <div><div style="font-size:12px;color:#6b7280;">Date of Suggestion</div><div style="margin-top:6px;"><?php echo e(!empty($suggestion['date_of_suggestion']) ? date('M d, Y', strtotime((string)$suggestion['date_of_suggestion'])) : 'N/A'); ?></div></div>
-                <div><div style="font-size:12px;color:#6b7280;">Terms of Agreement</div><div style="margin-top:6px;"><?php echo e(array_key_exists('terms_agreement_accepted', $suggestion) ? (((int)$suggestion['terms_agreement_accepted'] === 1) ? 'Yes' : 'No') : 'Unknown'); ?></div></div>
-                <div class="full" style="grid-column:1 / -1;"><div style="font-size:12px;color:#6b7280;">Subject / Idea</div><div style="margin-top:6px;"><?php echo e((string)($suggestion['subject'] ?? '')); ?></div></div>
-                <div class="full" style="grid-column:1 / -1;"><div style="font-size:12px;color:#6b7280;">Detailed Suggestion</div><div style="margin-top:6px;white-space:pre-wrap;"><?php echo nl2br(e((string)($suggestion['description'] ?? ''))); ?></div></div>
+                <div><div class="label">Submitted By</div><div class="detail-value"><?php echo e(trim(((int)($suggestion['is_anonymous'] ?? 0) === 1) ? 'Anonymous Student' : trim((string)($suggestion['first_name'] ?? '') . ' ' . (string)($suggestion['last_name'] ?? '')))); ?></div></div>
+                <div><div class="label">Category</div><div class="detail-value"><?php echo e((string)($suggestion['category_name'] ?? '')); ?></div></div>
+                <div><div class="label">Date of Suggestion</div><div class="detail-value"><?php echo e(!empty($suggestion['date_of_suggestion']) ? date('M d, Y', strtotime((string)$suggestion['date_of_suggestion'])) : 'N/A'); ?></div></div>
+                <div class="full" style="grid-column:1 / -1;"><div class="label">Subject / Idea</div><div class="detail-value"><?php echo e((string)($suggestion['subject'] ?? '')); ?></div></div>
+                <div class="full" style="grid-column:1 / -1;"><div class="label">Detailed Suggestion</div><div class="detail-value detail-value--paragraph"><?php echo nl2br(e((string)($suggestion['description'] ?? ''))); ?></div></div>
             </div>
 
             <?php if (!empty($suggestion['attachment'])): ?>
                 <?php $att = (string)$suggestion['attachment']; $attPath = '../' . ltrim($att, '/'); $ext = strtolower(pathinfo($att, PATHINFO_EXTENSION)); $isImage = in_array($ext, ['jpg','jpeg','png','gif'], true); ?>
                 <div style="margin-top:12px;">
-                    <div style="font-size:12px;color:#6b7280;margin-bottom:6px;">Attachments / References</div>
+                    <div class="label" style="margin-bottom:6px;">Attachments / References</div>
                     <?php if ($isImage): ?>
                         <a href="<?php echo e($attPath); ?>" target="_blank"><img src="<?php echo e($attPath); ?>" alt="attachment" style="max-width:360px;border-radius:8px;border:1px solid #eef2ff;"></a>
                     <?php else: ?>
@@ -455,9 +468,21 @@ body { background: #f4f6fb; }
         <?php if (!empty($suggestion['expected_outcome'])): ?>
             <div class="document-section">
                 <div class="document-section-title"><div class="section-label">Expected Outcome</div></div>
-                <div style="white-space:pre-wrap;"><?php echo nl2br(e((string)$suggestion['expected_outcome'])); ?></div>
+                <div class="detail-value detail-value--paragraph"><?php echo nl2br(e((string)$suggestion['expected_outcome'])); ?></div>
             </div>
         <?php endif; ?>
+
+        <?php $suggestionTermsAccepted = array_key_exists('terms_agreement_accepted', $suggestion) ? (int)$suggestion['terms_agreement_accepted'] : null; ?>
+        <div class="document-section">
+            <div class="label">Terms of Agreement</div>
+            <?php if ($suggestionTermsAccepted === 1): ?>
+                <div class="detail-value detail-value--paragraph"><?php echo e(suggestion_terms_agreement_statement()); ?> <?php echo e(suggestion_terms_agreement_checkbox_label()); ?></div>
+            <?php elseif ($suggestionTermsAccepted === 0): ?>
+                <div class="detail-value">Not agreed</div>
+            <?php else: ?>
+                <div class="detail-value">Unknown</div>
+            <?php endif; ?>
+        </div>
     </div>
 
     <!-- Status Update & Remarks Form (opened from the Action dropdown) -->
@@ -726,7 +751,7 @@ body { background: #f4f6fb; }
                 'sender_id' => isset($replyItem['sender_id']) ? (int)$replyItem['sender_id'] : 0,
                 'sender_role' => $replyRoleRaw,
             ];
-            if (($replyRoleRaw === 'dean' || $replyRoleRaw === 'admin') && $officialRemark === null) {
+            if (in_array($replyRoleRaw, ['dean', 'admin', 'staff'], true) && $officialRemark === null) {
                 $officialRemark = $entry;
             } else {
                 $timelineReplies[] = $entry;
@@ -770,7 +795,7 @@ body { background: #f4f6fb; }
                                 $officialPerson = $officialSenderId > 0 ? get_person_display($pdo, $officialRole, $officialSenderId) : ['name' => ucfirst($officialRole), 'photo' => null];
                                 $officialName = $officialPerson['name'] ?? (ucfirst($officialRole) ?: 'Staff');
                                 $officialPhoto = !empty($officialPerson['photo']) ? ('../' . ltrim($officialPerson['photo'], '/')) : null;
-                                $officialRoleLabel = $officialRole === 'dean' ? 'College Dean' : ($officialRole === 'admin' ? 'Administrator' : 'Student');
+                                $officialRoleLabel = $officialRole === 'dean' ? 'College Dean' : ($officialRole === 'admin' ? 'Administrator' : ($officialRole === 'staff' ? 'Staff' : 'Student'));
                                 $officialCurrentUser = ($officialRole === 'dean');
                                 echo response_timeline_entry([
                                     'name' => $officialName,
@@ -795,7 +820,7 @@ body { background: #f4f6fb; }
                                         $replyPerson = $replySenderId > 0 ? get_person_display($pdo, $replyRoleRaw, $replySenderId) : ['name' => ucfirst($replyRoleRaw), 'photo' => null];
                                         $replyName = $replyPerson['name'] ?? ucfirst($replyRoleRaw);
                                         $replyPhoto = !empty($replyPerson['photo']) ? ('../' . ltrim($replyPerson['photo'], '/')) : null;
-                                        $replyRoleLabel = $replyRoleRaw === 'dean' ? 'College Dean' : ($replyRoleRaw === 'admin' ? 'Administrator' : 'Student');
+                                        $replyRoleLabel = $replyRoleRaw === 'dean' ? 'College Dean' : ($replyRoleRaw === 'admin' ? 'Administrator' : ($replyRoleRaw === 'staff' ? 'Staff' : 'Student'));
                                         $replyIsCurrentUser = ($replyRoleRaw === 'dean');
                                         echo response_timeline_entry([
                                             'name' => $replyName,
@@ -813,10 +838,10 @@ body { background: #f4f6fb; }
                         <?php endif; ?>
                     </div>
 
+                    <?php if (!empty($feedback)): ?>
                     <div class="ticket-section">
                         <div class="section-title">Student Feedback</div>
                         <div class="feedback-panel">
-                            <?php if (!empty($feedback)): ?>
                                 <?php
                                     $meta = feedback_option_meta((string)$feedback['satisfaction']);
                                     $studentInfo = get_person_display($pdo, 'student', (int)$suggestion['student_id']);
@@ -851,11 +876,9 @@ body { background: #f4f6fb; }
                                     <div class="feedback-comment-bubble"><?php echo nl2br(e($stuComment)); ?></div>
                                     <?php endif; ?>
                                 </div>
-                            <?php else: ?>
-                                <div class="empty-card">No rating has been submitted yet.</div>
-                            <?php endif; ?>
                         </div>
                     </div>
+                    <?php endif; ?>
 
                     <?php if ($canReply): ?>
                         <div class="ticket-section">

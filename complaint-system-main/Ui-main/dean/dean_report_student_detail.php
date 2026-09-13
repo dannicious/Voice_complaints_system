@@ -107,14 +107,12 @@ function report_detail_filter_sql(string $alias, string $schoolYear, string $sem
         $sql .= " AND {$alias}.school_year = :{$prefix}_school_year";
         $params[":{$prefix}_school_year"] = $schoolYear;
     }
-    if ($semester === '1') {
-        $sql .= " AND (DATE_FORMAT({$alias}.created_at, '%m-%d') >= :{$prefix}_semester_start OR DATE_FORMAT({$alias}.created_at, '%m-%d') < :{$prefix}_semester_end)";
-        $params[":{$prefix}_semester_start"] = '08-01';
-        $params[":{$prefix}_semester_end"] = '01-01';
-    } elseif ($semester === '2') {
-        $sql .= " AND DATE_FORMAT({$alias}.created_at, '%m-%d') >= :{$prefix}_semester_start AND DATE_FORMAT({$alias}.created_at, '%m-%d') < :{$prefix}_semester_end";
-        $params[":{$prefix}_semester_start"] = '01-01';
-        $params[":{$prefix}_semester_end"] = '08-01';
+    if ($semester === '1' || $semester === '2') {
+        // The stored column, set once at submission time from whichever
+        // academic calendar was in effect then - not a hardcoded Aug1/Jan1
+        // date guess, so this stays correct even if the calendar changes.
+        $sql .= " AND {$alias}.semester = :{$prefix}_semester";
+        $params[":{$prefix}_semester"] = $semester;
     }
     if ($rangeStart !== '') {
         $sql .= " AND {$alias}.created_at >= :{$prefix}_range_start";
@@ -125,11 +123,6 @@ function report_detail_filter_sql(string $alias, string $schoolYear, string $sem
         $params[":{$prefix}_range_end"] = $rangeEnd;
     }
     return $sql;
-}
-
-function report_detail_semester(string $date): string
-{
-    return date('m-d', strtotime($date)) >= '08-01' ? '1st Semester' : '2nd Semester';
 }
 
 function report_detail_status_label(string $status): string { return $status !== '' ? ucwords(str_replace('_', ' ', $status)) : 'Not set'; }
@@ -482,7 +475,7 @@ select.filter-select { appearance: none; -webkit-appearance: none; -moz-appearan
                             <td><?php echo e($record['category_name'] ?? 'Uncategorized'); ?></td>
                             <td><?php echo e($record['created_at']); ?></td>
                             <td><?php echo e($record['school_year'] ?? 'Not set'); ?></td>
-                            <td><?php echo e(report_detail_semester($record['created_at'])); ?></td>
+                            <td><?php echo e(semester_display_label((string)($record['semester'] ?? ''))); ?></td>
                             <td><span class="pill <?php echo report_detail_status_class((string)$record['status']); ?>"><?php echo e(report_detail_status_label((string)$record['status'])); ?></span></td>
                             <td><a class="row-view" href="dean_ticket_detail.php?id=<?php echo (int)$record['id']; ?>">View Details <i class="bx bx-right-arrow-alt"></i></a></td>
                         </tr>
@@ -525,7 +518,7 @@ select.filter-select { appearance: none; -webkit-appearance: none; -moz-appearan
                 <div><strong>Category</strong><span><?php echo e($record['category_name'] ?? 'Uncategorized'); ?></span></div>
                 <div><strong>Date submitted</strong><span><?php echo e($record['date_of_suggestion'] ?: $record['created_at']); ?></span></div>
                 <div><strong>School Year</strong><span><?php echo e($record['school_year'] ?? 'Not set'); ?></span></div>
-                <div><strong>Semester</strong><span><?php echo e(report_detail_semester($record['created_at'])); ?></span></div>
+                <div><strong>Semester</strong><span><?php echo e(semester_display_label((string)($record['semester'] ?? ''))); ?></span></div>
                 <div><strong>Status</strong><span><?php echo e(ucwords(str_replace('_', ' ', (string)$record['status']))); ?></span></div>
                 <div><strong>Review status</strong><span><?php echo e(ucwords(str_replace('_', ' ', (string)$record['status']))); ?></span></div>
                 <div><strong>Forwarded</strong><span><?php echo !empty($record['is_forwarded']) ? 'Yes' : 'No'; ?></span></div>

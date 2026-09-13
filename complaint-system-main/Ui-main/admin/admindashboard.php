@@ -60,6 +60,17 @@ $stmt = $pdo->prepare('SELECT COUNT(*) as count FROM users WHERE role = "student
 $stmt->execute();
 $stats['students'] = $stmt->fetch(PDO::FETCH_ASSOC)['count'];
 
+// Complaints + suggestions submitted today
+$stmt = $pdo->prepare('SELECT COUNT(*) as count FROM complaints WHERE DATE(created_at) = CURDATE()');
+$stmt->execute();
+$todayComplaints = (int)$stmt->fetch(PDO::FETCH_ASSOC)['count'];
+
+$stmt = $pdo->prepare('SELECT COUNT(*) as count FROM suggestions WHERE DATE(created_at) = CURDATE()');
+$stmt->execute();
+$todaySuggestions = (int)$stmt->fetch(PDO::FETCH_ASSOC)['count'];
+
+$stats['today_total'] = $todayComplaints + $todaySuggestions;
+
 // Get complaints and suggestions per college for chart
 $collegeSql = $pdo->prepare('
     SELECT c.code, 
@@ -86,8 +97,9 @@ foreach ($collegeData as $college) {
 
 // Get recent complaints and suggestions (6 most recent)
 $recentSql = $pdo->prepare('
-    (SELECT c.ticket_no as ticket_number, sp.first_name, sp.last_name, "complaint" as type, 
-            COALESCE(cc.name, "Uncategorized") as category, c.status, c.created_at as submission_date, c.id
+    (SELECT c.ticket_no as ticket_number, sp.first_name, sp.last_name, "complaint" as type,
+            COALESCE(cc.name, "Uncategorized") as category, c.status, c.created_at as submission_date, c.id,
+            c.college_id, NULL as office
      FROM complaints c
      LEFT JOIN student_profiles sp ON c.student_id = sp.id
      LEFT JOIN complaint_categories cc ON c.category_id = cc.id
@@ -95,7 +107,8 @@ $recentSql = $pdo->prepare('
      ORDER BY c.created_at DESC LIMIT 3)
     UNION ALL
     (SELECT s.ticket_no as ticket_number, sp.first_name, sp.last_name, "suggestion" as type,
-            COALESCE(sc.name, "Uncategorized") as category, s.status, s.created_at as submission_date, s.id
+            COALESCE(sc.name, "Uncategorized") as category, s.status, s.created_at as submission_date, s.id,
+            s.college_id, s.office
      FROM suggestions s
      LEFT JOIN student_profiles sp ON s.student_id = sp.id
      LEFT JOIN suggestion_categories sc ON s.category_id = sc.id
@@ -192,53 +205,65 @@ body {
 /* Stat Cards */
 .stats-grid {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 20px;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 22px;
     margin-bottom: 25px;
+    align-items: stretch;
 }
 
 .stat-card {
     background: #fff;
-    padding: 20px;
-    border-radius: 12px;
+    padding: 22px 20px;
+    border-radius: 16px;
     position: relative;
     display: flex;
     align-items: center;
-    gap: 15px;
+    justify-content: flex-start;
+    gap: 16px;
     box-shadow: 0 4px 15px rgba(0,0,0,0.03);
+    min-height: 120px;
+    border: 1px solid #edf1f7;
 }
 
 .dashboard-badge {
     position: absolute;
-    top: 10px;
-    right: 10px;
-    min-width: 22px;
-    height: 22px;
-    padding: 0 6px;
-    border-radius: 11px;
+    top: 14px;
+    right: 18px;
+    min-width: 28px;
+    height: 28px;
+    padding: 0 8px;
+    border-radius: 50%;
     background: #dc2626;
     color: #fff;
     display: inline-flex;
     align-items: center;
     justify-content: center;
     font-size: 11px;
-    font-weight: 600;
+    font-weight: 700;
     line-height: 1;
 }
 
 .stat-icon {
-    width: 45px;
-    height: 45px;
+    width: 52px;
+    height: 52px;
     border-radius: 50%;
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 20px;
+    font-size: 24px;
     color: #fff;
+    flex-shrink: 0;
 }
 
-.stat-info h3 { font-size: 20px; font-weight: 600; color: #333; margin-bottom: 2px; }
-.stat-info p  { font-size: 12px; color: #888; }
+.stat-info {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    min-width: 0;
+}
+
+.stat-info h3 { font-size: 26px; font-weight: 700; color: #222; margin: 0 0 4px; line-height: 1.1; }
+.stat-info p  { font-size: 13px; color: #666; margin: 0; line-height: 1.4; }
 
 .bg-green  { background: #10b981; }
 .bg-blue   { background: #3b82f6; }
@@ -287,6 +312,7 @@ body {
     padding: 25px;
     border-radius: 12px;
     box-shadow: 0 4px 15px rgba(0,0,0,0.03);
+    overflow-x: auto;
 }
 
 .card-header-flex {
@@ -329,7 +355,7 @@ body {
     font-size: 16px;
 }
 
-table { width: 100%; border-collapse: collapse; }
+table { width: 100%; border-collapse: collapse; min-width: 760px; }
 
 th {
     text-align: left;
@@ -387,6 +413,42 @@ td {
 
 @media (max-width: 768px) {
     .welcome-banner { flex-direction: column; text-align: center; gap: 15px; }
+    .stats-grid { grid-template-columns: repeat(2, 1fr); }
+}
+
+@media (max-width: 480px) {
+    .stats-grid { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 700px) {
+    .card-header-flex { flex-wrap: wrap; gap: 10px; }
+
+    /* A 7-column glance table is the very first thing an admin sees - on a
+       phone it should read like a short list of cards, not a table you
+       have to scroll sideways to make sense of. */
+    table { min-width: 0; }
+    thead { display: none; }
+    table, tbody, tr, td { display: block; width: 100%; }
+    tbody tr {
+        border: 1px solid #eef0f3;
+        border-radius: 10px;
+        padding: 12px 14px;
+        margin-bottom: 12px;
+    }
+    tbody tr:last-child { margin-bottom: 0; }
+    td { padding: 4px 0; border-bottom: none; }
+    td[data-label]::before {
+        content: attr(data-label);
+        display: block;
+        font-size: 11px;
+        font-weight: 700;
+        color: #9ca3af;
+        text-transform: uppercase;
+        letter-spacing: .03em;
+        margin-bottom: 2px;
+    }
+    td.td-action { padding-top: 8px; }
+    td.td-action .btn-blue { display: inline-block; width: 100%; text-align: center; box-sizing: border-box; }
 }
 </style>
 </head>
@@ -414,17 +476,19 @@ td {
     <div class="stats-grid">
         <div class="stat-card">
             <div class="stat-icon bg-blue"><i class='bx bx-file'></i></div>
-            <div class="stat-info"><h3><?php echo $stats['complaints']; ?></h3><p>Total Complaints</p></div>
+            <div class="stat-info">
+                <h3><?php echo $todayComplaints; ?></h3>
+                <p>New Complaints Filed Today</p>
+            </div>
             <span class="dashboard-badge" aria-label="<?php echo $stats['pending_complaints']; ?> pending complaints"><?php echo $stats['pending_complaints']; ?></span>
         </div>
         <div class="stat-card">
             <div class="stat-icon bg-green"><i class='bx bx-bulb'></i></div>
-            <div class="stat-info"><h3><?php echo $stats['suggestions']; ?></h3><p>Total Suggestions</p></div>
+            <div class="stat-info">
+                <h3><?php echo $todaySuggestions; ?></h3>
+                <p>New Suggestions Submitted Today</p>
+            </div>
             <span class="dashboard-badge" aria-label="<?php echo $stats['pending_suggestions']; ?> pending suggestions"><?php echo $stats['pending_suggestions']; ?></span>
-        </div>
-        <div class="stat-card">
-            <div class="stat-icon bg-purple"><i class='bx bx-group'></i></div>
-            <div class="stat-info"><h3><?php echo number_format($stats['students']); ?></h3><p>Registered Students</p></div>
         </div>
     </div>
 
@@ -433,30 +497,53 @@ td {
         <div class="data-card">
             <div class="card-header-flex">
                 <h4>Recent Suggestions & Complaints</h4>
-                <a href="admin_complaints.php" class="btn-blue">View All Tickets</a>
+                <a href="report.php" class="btn-blue">View All</a>
             </div>
             <table>
                 <thead>
                     <tr>
                         <th>Student</th><th>Type</th>
-                        <th>Date</th><th>Category</th><th>Status</th>
+                        <th>Date</th><th>Category</th><th>Managed By</th><th>Status</th><th>Action</th>
                     </tr>
                 </thead>
                 <tbody>
                     <?php if (empty($recentItems)): ?>
                     <tr>
-                        <td colspan="5" style="text-align: center; color: #aaa;">No recent submissions</td>
+                        <td colspan="7" style="text-align: center; color: #aaa;">No recent submissions</td>
                     </tr>
                     <?php else: ?>
                         <?php foreach ($recentItems as $item): ?>
+                        <?php
+                            $officeName = trim((string)($item['office'] ?? ''));
+                            if ($officeName !== '') {
+                                $managedBy = $officeName;
+                            } elseif ($item['college_id'] !== null) {
+                                $managedBy = 'Dean';
+                            } else {
+                                $managedBy = 'Admin (SAS Director)';
+                            }
+
+                            if ($item['type'] === 'complaint') {
+                                $viewUrl = 'admin_complaints_details.php?id=' . (int)$item['id'];
+                            } else {
+                                // Dean-routed suggestions (college_id set) aren't
+                                // admin-manageable - same distinction report.php
+                                // uses to pick the right detail page per row.
+                                $viewUrl = $item['college_id'] !== null
+                                    ? 'admin_viewOnly_suggestions.php?id=' . (int)$item['id']
+                                    : 'admin_suggestion_detail.php?id=' . (int)$item['id'];
+                            }
+                        ?>
                         <tr>
-                            <td><?php echo htmlspecialchars($item['first_name'] . ' ' . $item['last_name']) ?: 'Anonymous Student'; ?></td>
-                            <td><span class="type-badge"><?php echo ucfirst($item['type']); ?></span></td>
-                            <td><?php echo date('M d, Y', strtotime($item['submission_date'])); ?></td>
-                            <td><?php echo htmlspecialchars($item['category'] ?? 'N/A'); ?></td>
-                            <td class="text-<?php echo $item['status'] === 'resolved' ? 'green' : ($item['status'] === 'pending' ? 'yellow' : 'blue'); ?>">
+                            <td data-label="Student"><?php echo htmlspecialchars($item['first_name'] . ' ' . $item['last_name']) ?: 'Anonymous Student'; ?></td>
+                            <td data-label="Type"><span class="type-badge"><?php echo ucfirst($item['type']); ?></span></td>
+                            <td data-label="Date"><?php echo date('M d, Y', strtotime($item['submission_date'])); ?></td>
+                            <td data-label="Category"><?php echo htmlspecialchars($item['category'] ?? 'N/A'); ?></td>
+                            <td data-label="Managed By"><?php echo htmlspecialchars($managedBy); ?></td>
+                            <td data-label="Status" class="text-<?php echo $item['status'] === 'resolved' ? 'green' : ($item['status'] === 'pending' ? 'yellow' : 'blue'); ?>">
                                 <?php echo ucfirst($item['status']); ?>
                             </td>
+                            <td class="td-action"><a href="<?php echo htmlspecialchars($viewUrl, ENT_QUOTES, 'UTF-8'); ?>" class="btn-blue" style="padding:6px 14px;font-size:12px;">View</a></td>
                         </tr>
                         <?php endforeach; ?>
                     <?php endif; ?>

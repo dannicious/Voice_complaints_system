@@ -153,14 +153,24 @@ function render_suggestion_category_row(array $item, array $allAreas, array $kno
         </td>
         <td><span class="status <?php echo $isActive ? '' : 'off'; ?>"><?php echo $isActive ? 'Active' : 'Inactive'; ?></span></td>
         <td>
-            <form method="post" class="row-inline-form">
-                <input type="hidden" name="csrf_token" value="<?php echo e($csrfToken); ?>">
-                <input type="hidden" name="action" value="toggle">
-                <input type="hidden" name="type" value="suggestion">
-                <input type="hidden" name="id" value="<?php echo $itemId; ?>">
-                <?php echo $embeddedField; ?>
-                <button type="submit" class="icon-btn warning" title="<?php echo $isActive ? 'Deactivate' : 'Activate'; ?> category"><i class="bx <?php echo $isActive ? 'bx-power-off' : 'bx-check'; ?>"></i></button>
-            </form>
+            <div class="actions">
+                <form method="post" class="row-inline-form">
+                    <input type="hidden" name="csrf_token" value="<?php echo e($csrfToken); ?>">
+                    <input type="hidden" name="action" value="toggle">
+                    <input type="hidden" name="type" value="suggestion">
+                    <input type="hidden" name="id" value="<?php echo $itemId; ?>">
+                    <?php echo $embeddedField; ?>
+                    <button type="submit" class="icon-btn warning" title="<?php echo $isActive ? 'Deactivate' : 'Activate'; ?> category"><i class="bx <?php echo $isActive ? 'bx-power-off' : 'bx-check'; ?>"></i></button>
+                </form>
+                <form method="post" class="row-inline-form">
+                    <input type="hidden" name="csrf_token" value="<?php echo e($csrfToken); ?>">
+                    <input type="hidden" name="action" value="delete_category">
+                    <input type="hidden" name="type" value="suggestion">
+                    <input type="hidden" name="id" value="<?php echo $itemId; ?>">
+                    <?php echo $embeddedField; ?>
+                    <button type="submit" class="icon-btn danger" onclick="return confirm('Delete &quot;<?php echo e(addslashes($itemName)); ?>&quot;? Any suggestion that used it will show as Uncategorized. This cannot be undone.');" title="Delete category"><i class="bx bx-trash"></i></button>
+                </form>
+            </div>
         </td>
     </tr>
     <?php
@@ -517,6 +527,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             redirect_types('success', 'Area deleted.' . $note);
         }
 
+        // Deleting a suggestion category never deletes the suggestions that
+        // used it - it's a leaf node, nothing needs to move anywhere. Any
+        // suggestion that used it keeps existing, it just shows as
+        // "Uncategorized" afterward (same graceful fallback already used
+        // everywhere a category is looked up for display).
+        if ($action === 'delete_category') {
+            $id = (int)($_POST['id'] ?? 0);
+            if ($id <= 0) {
+                redirect_types('error', 'Invalid category.');
+            }
+            $catNameStmt = $pdo->prepare('SELECT name FROM suggestion_categories WHERE id = :id LIMIT 1');
+            $catNameStmt->execute([':id' => $id]);
+            $catName = (string)$catNameStmt->fetchColumn();
+            if ($catName === '') {
+                redirect_types('error', 'Category not found.');
+            }
+            $pdo->prepare('DELETE FROM suggestion_categories WHERE id = :id')->execute([':id' => $id]);
+            redirect_types('success', 'Category "' . $catName . '" deleted.');
+        }
+
         // Quick rename, triggered from the Area board (no modal).
         if ($action === 'rename') {
             $id = (int)($_POST['id'] ?? 0);
@@ -545,13 +575,6 @@ $search = trim((string)($_GET['search'] ?? ''));
 $typeFilter = (string)($_GET['type'] ?? 'all');
 $statusFilter = (string)($_GET['status_filter'] ?? 'all');
 $areaFilter = (int)($_GET['area'] ?? 0);
-$hasActiveFilter = $search !== '' || $typeFilter !== 'all' || $statusFilter !== 'all' || $areaFilter > 0;
-// The Area filter only ever affects Suggestion Categories, and "Type =
-// Suggestion" means that's the only section with results at all - in both
-// cases the plain top-of-results anchor (which sits above Complaint
-// Categories, first in the page) would still leave the admin scrolling
-// past an irrelevant/empty section to reach what they actually filtered.
-$resultsAnchorId = ($typeFilter === 'suggestion' || $areaFilter > 0) ? 'suggestionResultsAnchor' : 'resultsAnchor';
 $where = [];
 $params = [];
 if ($search !== '') {
@@ -778,7 +801,8 @@ tbody tr:last-child td { border-bottom:0; }
 .row-select { padding:6px 7px; font-size:12px; border-radius:6px; }
 .cat-name { border:0; background:none; padding:0; font:600 12px 'Poppins',sans-serif; color:#4338ca; cursor:pointer; text-align:left; }
 .cat-name.inactive { color:#9ca3af; text-decoration:line-through; }
-.back-to-top { position:fixed; right:24px; bottom:24px; width:44px; height:44px; border-radius:50%; border:0; background:#6d28d9; color:#fff; font-size:20px; display:flex; align-items:center; justify-content:center; cursor:pointer; box-shadow:0 6px 16px rgba(109,40,217,.35); z-index:500; }
+.back-to-top { position:fixed; right:24px; bottom:24px; width:44px; height:44px; border-radius:50%; border:0; background:#6d28d9; color:#fff; font-size:20px; display:flex; align-items:center; justify-content:center; cursor:pointer; box-shadow:0 6px 16px rgba(109,40,217,.35); z-index:500; opacity:0; visibility:hidden; transform:translateY(8px); transition:opacity .2s, transform .2s, visibility .2s; }
+.back-to-top.visible { opacity:1; visibility:visible; transform:translateY(0); }
 .back-to-top:hover { background:#5b21b6; }
 @media (max-width:1024px) { .main { margin-left:0; padding:18px; } }
 @media (max-width:700px) { .page-header { flex-direction:column; } .filters { grid-template-columns:1fr 1fr; } .filter-actions { grid-column:1 / -1; } .form-grid { grid-template-columns:1fr; } .form-group.full { grid-column:auto; } }
@@ -828,6 +852,14 @@ tbody tr:last-child td { border-bottom:0; }
         // anchors, the back-to-top button - are declared further down in the
         // HTML; looking them up immediately, before the parser reaches them,
         // would silently find nothing and skip that behavior entirely.
+
+        // This page is normally loaded inside a same-origin iframe (Settings
+        // > Types), sized to fit the visible viewport - its own content
+        // scrolls inside that iframe box (the iframe's own window), the
+        // outer Settings page doesn't need to move. So every scroll-related
+        // feature below just operates on this document's own window.
+        const scrollWin = window;
+
         const searchInput = document.getElementById('searchTypes');
         const form = document.getElementById('typesFilterForm');
         const typeSelect = document.getElementById('typeFilter');
@@ -842,10 +874,7 @@ tbody tr:last-child td { border-bottom:0; }
             // The live search reloads the whole page, which drops focus like
             // any normal navigation would - put it right back in the search
             // box (cursor at the end) so typing can continue without having
-            // to click back in after every pause. preventScroll matters here:
-            // the page is about to scroll down to the results below (see the
-            // active-filter block further down), and a normal .focus() would
-            // otherwise yank the viewport back up to the search box.
+            // to click back in after every pause.
             if (searchInput.value !== '') {
                 searchInput.focus({ preventScroll: true });
                 const end = searchInput.value.length;
@@ -858,22 +887,20 @@ tbody tr:last-child td { border-bottom:0; }
             });
         }
 
-        // Any filter/search actually applied: jump straight to the results
-        // instead of leaving the admin staring at the (now unchanged) filter
-        // bar and having to scroll down themselves.
-        const hasActiveFilter = <?php echo json_encode($hasActiveFilter); ?>;
-        const resultsAnchor = document.getElementById(<?php echo json_encode($resultsAnchorId); ?>);
-        if (hasActiveFilter && resultsAnchor) {
-            resultsAnchor.scrollIntoView({ behavior: 'smooth', block: 'start' });
-        }
-
-        // Floating back-to-top button - always visible (not just once
-        // scrolled down some threshold) so it's never a matter of scrolling
-        // a bit first just to make it appear.
+        // Floating back-to-top button: hidden right at the top of the page
+        // (where it would otherwise sit on top of real content, like a
+        // table row's own action buttons), fades in after just a small
+        // scroll, and jumps straight back to the very top on click. Uses the
+        // same scrollWin resolved above, for the same reason.
         const backToTop = document.getElementById('backToTopBtn');
         if (backToTop) {
+            const toggleBackToTop = function () {
+                backToTop.classList.toggle('visible', scrollWin.scrollY > 80);
+            };
+            scrollWin.addEventListener('scroll', toggleBackToTop, { passive: true });
+            toggleBackToTop();
             backToTop.addEventListener('click', function () {
-                window.scrollTo({ top: 0, behavior: 'smooth' });
+                scrollWin.scrollTo({ top: 0, behavior: 'smooth' });
             });
         }
     });
@@ -1037,11 +1064,26 @@ document.addEventListener('DOMContentLoaded', function () {
         modal.addEventListener('click', function (event) {
             if (event.target === modal) modal.classList.remove('open');
         });
+        // Also covers a modal the server already opened on this page load
+        // (an Edit link, e.g. ?edit=5), which never goes through the
+        // data-open-modal click handler below.
+        if (modal.classList.contains('open')) {
+            modal.scrollTop = 0;
+        }
     });
     document.querySelectorAll('[data-open-modal]').forEach(function (button) {
         button.addEventListener('click', function () {
             const modal = document.getElementById(button.getAttribute('data-open-modal'));
-            if (modal) modal.classList.add('open');
+            if (!modal) return;
+            modal.classList.add('open');
+            // The overlay is the scroll container (.modal { overflow:auto }) and
+            // its scroll position persists across close/reopen since the element
+            // is only hidden, never removed - without this it can reopen still
+            // scrolled to wherever it was left (showing the bottom of the form,
+            // Status/Save, instead of the top).
+            modal.scrollTop = 0;
+            const card = modal.querySelector('.modal-card');
+            if (card) card.scrollTop = 0;
         });
     });
     document.querySelectorAll('[data-close-modal]').forEach(function (button) {

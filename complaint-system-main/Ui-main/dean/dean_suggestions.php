@@ -124,6 +124,7 @@ try {
             sp.first_name,
             sp.last_name,
             sp.year_level,
+            p.name AS department_name,
             tf.id AS feedback_id,
             tf.satisfaction AS feedback_satisfaction,
             tf.comment AS feedback_comment,
@@ -149,6 +150,7 @@ try {
          FROM suggestions s
          LEFT JOIN suggestion_categories sc ON sc.id = s.category_id
          LEFT JOIN student_profiles sp ON sp.id = s.student_id
+         LEFT JOIN programs p ON p.id = sp.program_id
          LEFT JOIN ticket_feedback tf ON tf.ticket_type = 'suggestion' AND tf.ticket_id = s.id AND tf.student_id = sp.id";
 
     $conditions = [];
@@ -169,14 +171,12 @@ try {
         $params[':school_year'] = $schoolYearFilter;
     }
 
-    if ($semesterFilter === '1') {
-        $conditions[] = "(DATE_FORMAT(s.created_at, '%m-%d') >= :semester_start OR DATE_FORMAT(s.created_at, '%m-%d') < :semester_end)";
-        $params[':semester_start'] = '08-01';
-        $params[':semester_end'] = '01-01';
-    } elseif ($semesterFilter === '2') {
-        $conditions[] = "DATE_FORMAT(s.created_at, '%m-%d') >= :semester_start AND DATE_FORMAT(s.created_at, '%m-%d') < :semester_end";
-        $params[':semester_start'] = '01-01';
-        $params[':semester_end'] = '08-01';
+    if ($semesterFilter === '1' || $semesterFilter === '2') {
+        // The stored column, set once at submission time from whichever
+        // academic calendar was in effect then - not a hardcoded Aug1/Jan1
+        // date guess, so this stays correct even if the calendar changes.
+        $conditions[] = 's.semester = :semester';
+        $params[':semester'] = $semesterFilter;
     }
 
     if ($dateFrom !== '') {
@@ -989,17 +989,19 @@ textarea.form-control { resize: vertical; min-height: 100px; }
             <table>
                 <thead>
                     <tr>
-                        <th>Date Submitted</th>
-                        <th>Idea & Submitter</th>
+                        <th>Student</th>
+                        <th>Department</th>
                         <th>Category</th>
+                        <th>Year</th>
+                        <th>Submitted</th>
                         <th>Status</th>
-                        <th>Action</th>
+                        <th>Actions</th>
                     </tr>
                 </thead>
                 <tbody>
                     <?php if (count($suggestions) === 0): ?>
                         <tr>
-                            <td colspan="5">No suggestions found for your college.</td>
+                            <td colspan="7">No suggestions found for your college.</td>
                         </tr>
                     <?php else: ?>
                         <?php foreach ($suggestions as $row): ?>
@@ -1010,20 +1012,20 @@ textarea.form-control { resize: vertical; min-height: 100px; }
                                 $statusLabel = $rowStatusMeta['label'];
 
                                 $yearLevel = (int)($row['year_level'] ?? 0);
-                                $yearLabel = [1 => '1st', 2 => '2nd', 3 => '3rd', 4 => '4th'][$yearLevel] ?? (string)$yearLevel;
                                 $submitter = ((int)$row['is_anonymous'] === 1)
                                     ? 'Anonymous Student'
-                                    : trim((string)$row['first_name'] . ' ' . (string)$row['last_name']) . ((string)$row['year_level'] !== '' ? ' (' . $yearLabel . ' Year)' : '');
+                                    : trim((string)$row['first_name'] . ' ' . (string)$row['last_name']);
                                 $description = trim((string)$row['description']) !== '' ? (string)$row['description'] : 'No description provided.';
                                 $attachment = trim((string)$row['attachment']) !== '' ? (string)$row['attachment'] : '';
                             ?>
                             <tr>
-                                <td><?php echo e(date('M d, Y', strtotime((string)$row['created_at']))); ?></td>
                                 <td>
-                                    <div class="subject-text"><?php echo e((string)$row['subject']); ?></div>
-                                    <div class="small-text"><?php echo e($submitter); ?></div>
+                                    <div class="subject-text"><?php echo e($submitter); ?></div>
                                 </td>
+                                <td><?php echo e((string)($row['department_name'] ?? 'Unassigned')); ?></td>
                                 <td><?php echo e((string)$row['category_name']); ?></td>
+                                <td><?php echo e($yearLevel > 0 ? (string)$yearLevel : 'N/A'); ?></td>
+                                <td><?php echo e(date('M d, Y', strtotime((string)$row['created_at']))); ?></td>
                                 <td><span class="status-badge <?php echo e($statusClass); ?>"><?php echo e($statusLabel); ?></span></td>
                                 <td>
                                     <a href="dean_suggestion_detail.php?id=<?php echo (int)$row['id']; ?>" class="btn-manage" style="text-decoration:none;"><i class='bx bx-edit-alt'></i> Manage</a>

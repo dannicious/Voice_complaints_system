@@ -120,6 +120,17 @@ function get_person_display(PDO $pdo, string $role, int|string $id): array
                 return ['name' => $name, 'photo' => $photo];
             }
         }
+
+        if ($role === 'staff') {
+            $stmt = $pdo->prepare('SELECT sp.name, u.profile_pic FROM staff_profiles sp LEFT JOIN users u ON u.id = sp.user_id WHERE sp.id = :id LIMIT 1');
+            $stmt->execute([':id' => (int)$id]);
+            $r = $stmt->fetch(PDO::FETCH_ASSOC);
+            if ($r && (!empty($r['name']) || !empty($r['profile_pic']))) {
+                $name = $r['name'] ?? 'Staff';
+                $photo = $r['profile_pic'] ?? null;
+                return ['name' => $name, 'photo' => $photo];
+            }
+        }
     } catch (Exception $e) {
         // ignore and fallback
     }
@@ -392,6 +403,11 @@ body { background: #f4f6fb; }
 .document-section-title { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 14px; color: #111827; font-weight: 700; }
 .document-section-title .section-label { font-size: 15px; }
 .document-status-pill { padding: 8px 12px; border-radius: 999px; font-weight: 700; font-size: 13px; flex-shrink: 0; }
+/* Field label/value typography matched to admin_complaints_details.php /
+   admin_viewOnly_complaints.php, so a ticket looks the same on every side. */
+.label { font-size: 12px; color: #6b7280; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.08em; }
+.detail-value { color: #111827; font-size: 15px; line-height: 1.8; font-weight: 500; }
+.detail-value--paragraph { white-space: pre-wrap; }
 
 /* Call Slip - same plain card style dean/admin see in their Call Slip History */
 .call-slip-card { border: 1px solid #e5e7eb; background: #f9fafb; border-radius: 10px; padding: 12px; }
@@ -664,18 +680,18 @@ body { background: #f4f6fb; }
             <div class="document-section">
                 <div class="document-section-title"><div class="section-label">Complainant & Incident Details</div></div>
                 <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;">
-                    <div><div style="font-size:12px;color:#6b7280;">Complainant name</div><div style="margin-top:6px;font-weight:600;"><?php echo e((string)($ticket['complainant_name'] ?? '')); ?></div></div>
-                    <div><div style="font-size:12px;color:#6b7280;">Contact details</div><div style="margin-top:6px;"><?php echo e((string)($ticket['complainant_contact_details'] ?? '')); ?></div></div>
-                    <div><div style="font-size:12px;color:#6b7280;">Date / Time</div><div style="margin-top:6px;"><?php echo e((string)($ticket['date_of_incident'] ?? '')); ?> <?php echo e((string)($ticket['time_of_incident'] ?? '')); ?></div></div>
-                    <div><div style="font-size:12px;color:#6b7280;">Place of Incident</div><div style="margin-top:6px;"><?php echo e((string)($ticket['place_of_incident'] ?? '')); ?></div></div>
-                    <div class="full" style="grid-column:1 / -1;"><div style="font-size:12px;color:#6b7280;">Person complained of</div><div style="margin-top:6px;"><?php echo e((string)($ticket['person_complained_of'] ?? '')); ?></div></div>
-                    <div class="full" style="grid-column:1 / -1;"><div style="font-size:12px;color:#6b7280;">Act complained of</div><div style="margin-top:6px;white-space:pre-wrap;"><?php echo nl2br(e((string)($ticket['act_complained_of'] ?? ''))); ?></div></div>
+                    <div><div class="label">Complainant name</div><div class="detail-value"><?php echo e((string)($ticket['complainant_name'] ?? '')); ?></div></div>
+                    <div><div class="label">Contact details</div><div class="detail-value"><?php echo e((string)($ticket['complainant_contact_details'] ?? '')); ?></div></div>
+                    <div><div class="label">Date / Time of Incident</div><div class="detail-value"><?php echo e((string)($ticket['date_of_incident'] ?? '')); ?> <?php echo e((string)($ticket['time_of_incident'] ?? '')); ?></div></div>
+                    <div><div class="label">Place of Incident</div><div class="detail-value"><?php echo e((string)($ticket['place_of_incident'] ?? '')); ?></div></div>
+                    <div class="full" style="grid-column:1 / -1;"><div class="label">Person complained of</div><div class="detail-value"><?php echo e((string)($ticket['person_complained_of'] ?? '')); ?></div></div>
+                    <div class="full" style="grid-column:1 / -1;"><div class="label">Act complained of</div><div class="detail-value detail-value--paragraph"><?php echo nl2br(e((string)($ticket['act_complained_of'] ?? ''))); ?></div></div>
                 </div>
 
                 <?php if (!empty($ticket['attachments'])): ?>
                     <?php $att = (string)$ticket['attachments']; $attPath = '../' . ltrim($att, '/'); $ext = strtolower(pathinfo($att, PATHINFO_EXTENSION)); $isImage = in_array($ext, ['jpg','jpeg','png','gif'], true); ?>
                     <div style="margin-top:12px;">
-                        <div style="font-size:12px;color:#6b7280;margin-bottom:6px;">Proof / Attachment</div>
+                        <div class="label" style="margin-bottom:6px;">Proof / Attachment</div>
                         <?php if ($isImage): ?>
                             <a href="<?php echo e($attPath); ?>" target="_blank"><img src="<?php echo e($attPath); ?>" alt="attachment" style="max-width:360px;border-radius:8px;border:1px solid #eef2ff;"></a>
                         <?php else: ?>
@@ -687,20 +703,33 @@ body { background: #f4f6fb; }
         <?php elseif ($ticketType === 'suggestion'): ?>
             <div class="document-section">
                 <div class="document-section-title"><div class="section-label">Suggestion Details</div></div>
+                <?php
+                    // Same "who handles this" logic as the My Tracking List
+                    // page - an office name wins if set, otherwise a college
+                    // means the dean handles it, otherwise it's the SAS Office.
+                    $suggestionOfficeName = trim((string)($ticket['office'] ?? ''));
+                    if ($suggestionOfficeName !== '') {
+                        $suggestionManagedBy = $suggestionOfficeName;
+                    } elseif (($ticket['college_id'] ?? null) !== null) {
+                        $suggestionManagedBy = 'Dean';
+                    } else {
+                        $suggestionManagedBy = 'SAS Office';
+                    }
+                ?>
                 <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;">
-                    <div><div style="font-size:12px;color:#6b7280;">Subject</div><div style="margin-top:6px;font-weight:600;"><?php echo e((string)($ticket['subject'] ?? '')); ?></div></div>
-                    <div><div style="font-size:12px;color:#6b7280;">Category</div><div style="margin-top:6px;"><?php echo e((string)($ticket['category_name'] ?? '')); ?></div></div>
-                    <div><div style="font-size:12px;color:#6b7280;">Date submitted</div><div style="margin-top:6px;"><?php echo e(!empty($ticket['created_at']) ? date('M d, Y', strtotime((string)$ticket['created_at'])) : ''); ?></div></div>
-                    <div class="full" style="grid-column:1 / -1;"><div style="font-size:12px;color:#6b7280;">Description</div><div style="margin-top:6px;white-space:pre-wrap;"><?php echo nl2br(e((string)($ticket['description'] ?? ''))); ?></div></div>
+                    <div><div class="label">Office</div><div class="detail-value"><?php echo e($suggestionManagedBy); ?></div></div>
+                    <div><div class="label">Category</div><div class="detail-value"><?php echo e((string)($ticket['category_name'] ?? '')); ?></div></div>
+                    <div><div class="label">Date submitted</div><div class="detail-value"><?php echo e(!empty($ticket['created_at']) ? date('M d, Y', strtotime((string)$ticket['created_at'])) : ''); ?></div></div>
+                    <div class="full" style="grid-column:1 / -1;"><div class="label">Description</div><div class="detail-value detail-value--paragraph"><?php echo nl2br(e((string)($ticket['description'] ?? ''))); ?></div></div>
                     <?php if (!empty($ticket['expected_outcome'])): ?>
-                        <div class="full" style="grid-column:1 / -1;"><div style="font-size:12px;color:#6b7280;">Expected outcome</div><div style="margin-top:6px;white-space:pre-wrap;"><?php echo nl2br(e((string)$ticket['expected_outcome'])); ?></div></div>
+                        <div class="full" style="grid-column:1 / -1;"><div class="label">Expected outcome</div><div class="detail-value detail-value--paragraph"><?php echo nl2br(e((string)$ticket['expected_outcome'])); ?></div></div>
                     <?php endif; ?>
                 </div>
 
                 <?php if (!empty($ticket['attachment'])): ?>
                     <?php $att = (string)$ticket['attachment']; $attPath = '../' . ltrim($att, '/'); $ext = strtolower(pathinfo($att, PATHINFO_EXTENSION)); $isImage = in_array($ext, ['jpg','jpeg','png','gif'], true); ?>
                     <div style="margin-top:12px;">
-                        <div style="font-size:12px;color:#6b7280;margin-bottom:6px;">Reference / Attachment</div>
+                        <div class="label" style="margin-bottom:6px;">Reference / Attachment</div>
                         <?php if ($isImage): ?>
                             <a href="<?php echo e($attPath); ?>" target="_blank"><img src="<?php echo e($attPath); ?>" alt="attachment" style="max-width:360px;border-radius:8px;border:1px solid #eef2ff;"></a>
                         <?php else: ?>
@@ -713,8 +742,36 @@ body { background: #f4f6fb; }
 
         <?php if ($ticketType === 'complaint' && !empty($ticket['desired_outcome'])): ?>
             <div class="document-section">
-                <div class="document-section-title"><div class="section-label">Desired Outcome</div></div>
-                <div style="white-space:pre-wrap;"><?php echo nl2br(e((string)$ticket['desired_outcome'])); ?></div>
+                <div class="label">Expected Outcome</div>
+                <div class="detail-value detail-value--paragraph"><?php echo nl2br(e((string)$ticket['desired_outcome'])); ?></div>
+            </div>
+        <?php endif; ?>
+
+        <?php if ($ticketType === 'complaint'): ?>
+            <?php $termsAccepted = array_key_exists('terms_agreement_accepted', $ticket) ? (int)$ticket['terms_agreement_accepted'] : null; ?>
+            <div class="document-section">
+                <div class="label">Terms of Agreement</div>
+                <?php if ($termsAccepted === 1): ?>
+                    <div class="detail-value detail-value--paragraph"><?php echo e(complaint_terms_agreement_statement()); ?> <?php echo e(complaint_terms_agreement_checkbox_label()); ?></div>
+                <?php elseif ($termsAccepted === 0): ?>
+                    <div class="detail-value">Not agreed</div>
+                <?php else: ?>
+                    <div class="detail-value">Unknown</div>
+                <?php endif; ?>
+            </div>
+        <?php endif; ?>
+
+        <?php if ($ticketType === 'suggestion'): ?>
+            <?php $suggestionTermsAccepted = array_key_exists('terms_agreement_accepted', $ticket) ? (int)$ticket['terms_agreement_accepted'] : null; ?>
+            <div class="document-section">
+                <div class="label">Terms of Agreement</div>
+                <?php if ($suggestionTermsAccepted === 1): ?>
+                    <div class="detail-value detail-value--paragraph"><?php echo e(suggestion_terms_agreement_statement()); ?> <?php echo e(suggestion_terms_agreement_checkbox_label()); ?></div>
+                <?php elseif ($suggestionTermsAccepted === 0): ?>
+                    <div class="detail-value">Not agreed</div>
+                <?php else: ?>
+                    <div class="detail-value">Unknown</div>
+                <?php endif; ?>
             </div>
         <?php endif; ?>
     </div>
@@ -754,6 +811,8 @@ body { background: #f4f6fb; }
     </div>
     <?php endif; ?>
 
+    <?php $hasResponseTimelineContent = !(count($rounds) === 0 && empty($feedback) && empty($replies)); ?>
+    <?php if ($hasResponseTimelineContent): ?>
     <div class="card response-timeline-card" style="padding:0;margin-bottom:18px;">
         <div style="display:flex;align-items:center;padding:12px 16px;border-bottom:1px solid #eef2ff;">
             <div style="font-weight:700;flex:1;">Response timeline</div>
@@ -777,7 +836,7 @@ body { background: #f4f6fb; }
                             'sender_role' => $replyRoleRaw,
                         ];
 
-                        if (($replyRoleRaw === 'dean' || $replyRoleRaw === 'admin') && $officialRemark === null) {
+                        if (in_array($replyRoleRaw, ['dean', 'admin', 'staff'], true) && $officialRemark === null) {
                             $officialRemark = $replyEntry;
                         } else {
                             $timelineReplies[] = $replyEntry;
@@ -836,7 +895,7 @@ body { background: #f4f6fb; }
                                 $officialPerson = $officialSenderId > 0 ? get_person_display($pdo, $officialRole, $officialSenderId) : ['name' => 'Staff', 'photo' => null];
                                 $officialName = $officialPerson['name'] ?? (ucfirst($officialRole) ?: 'Staff');
                                 $officialPhoto = !empty($officialPerson['photo']) ? ('../' . ltrim($officialPerson['photo'], '/')) : null;
-                                $officialRoleLabel = $officialRole === 'dean' ? 'College Dean' : ($officialRole === 'admin' ? 'Administrator' : 'Student');
+                                $officialRoleLabel = $officialRole === 'dean' ? 'College Dean' : ($officialRole === 'admin' ? 'Administrator' : ($officialRole === 'staff' ? 'Staff' : 'Student'));
                                 $officialCurrentUser = false;
                                 $currentSessionUserId = isset($_SESSION['user_id']) ? (int)$_SESSION['user_id'] : 0;
                                 if ($officialRole === 'student') {
@@ -879,7 +938,7 @@ body { background: #f4f6fb; }
                                         $replyPerson = $replySenderId > 0 ? get_person_display($pdo, $replyRoleRaw, $replySenderId) : ['name' => ucfirst($replyRoleRaw), 'photo' => null];
                                         $replyName = $replyPerson['name'] ?? ucfirst($replyRoleRaw);
                                         $replyPhoto = !empty($replyPerson['photo']) ? ('../' . ltrim($replyPerson['photo'], '/')) : null;
-                                        $replyRoleLabel = $replyRoleRaw === 'dean' ? 'College Dean' : ($replyRoleRaw === 'admin' ? 'Administrator' : 'Student');
+                                        $replyRoleLabel = $replyRoleRaw === 'dean' ? 'College Dean' : ($replyRoleRaw === 'admin' ? 'Administrator' : ($replyRoleRaw === 'staff' ? 'Staff' : 'Student'));
                                         $replyIsCurrentUser = false;
                                         $currentSessionUserId = isset($_SESSION['user_id']) ? (int)$_SESSION['user_id'] : 0;
                                         if ($replyRoleRaw === 'student') {
@@ -1033,6 +1092,7 @@ body { background: #f4f6fb; }
             <?php endif; ?>
         </div>
     </div>
+    <?php endif; ?>
     <?php endif; ?>
 </div>
 <script>

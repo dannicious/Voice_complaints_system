@@ -227,6 +227,7 @@ try {
             sp.first_name,
             sp.last_name,
             sp.year_level,
+            p.name AS department_name,
             tf.id AS feedback_id,
             tf.satisfaction AS feedback_satisfaction,
             tf.comment AS feedback_comment,
@@ -234,6 +235,7 @@ try {
          FROM complaints c
          LEFT JOIN complaint_categories cc ON cc.id = c.category_id
          LEFT JOIN student_profiles sp ON sp.id = c.student_id
+         LEFT JOIN programs p ON p.id = sp.program_id
          LEFT JOIN ticket_feedback tf ON tf.ticket_type = 'complaint' AND tf.ticket_id = c.id AND tf.student_id = sp.id
          WHERE c.approval_status = 'approved'";
 
@@ -250,14 +252,12 @@ try {
         $params[':school_year'] = $schoolYearFilter;
     }
 
-    if ($semesterFilter === '1') {
-        $sql .= " AND (DATE_FORMAT(c.created_at, '%m-%d') >= :semester_start OR DATE_FORMAT(c.created_at, '%m-%d') < :semester_end)";
-        $params[':semester_start'] = '08-01';
-        $params[':semester_end'] = '01-01';
-    } elseif ($semesterFilter === '2') {
-        $sql .= " AND DATE_FORMAT(c.created_at, '%m-%d') >= :semester_start AND DATE_FORMAT(c.created_at, '%m-%d') < :semester_end";
-        $params[':semester_start'] = '01-01';
-        $params[':semester_end'] = '08-01';
+    if ($semesterFilter === '1' || $semesterFilter === '2') {
+        // The stored column, set once at submission time from whichever
+        // academic calendar was in effect then - not a hardcoded Aug1/Jan1
+        // date guess, so this stays correct even if the calendar changes.
+        $sql .= ' AND c.semester = :semester';
+        $params[':semester'] = $semesterFilter;
     }
 
     if ($dateFrom !== '') {
@@ -957,17 +957,19 @@ textarea.form-control { resize: vertical; min-height: 100px; }
             <table>
                 <thead>
                     <tr>
-                        <th>Date Filed</th>
-                        <th>Subject & Submitter</th>
+                        <th>Student</th>
+                        <th>Department</th>
                         <th>Category</th>
+                        <th>Year</th>
+                        <th>Submitted</th>
                         <th>Status</th>
-                        <th>Action</th>
+                        <th>Actions</th>
                     </tr>
                 </thead>
                 <tbody>
                     <?php if (count($complaints) === 0): ?>
                         <tr>
-                            <td colspan="5">No complaints found for your college.</td>
+                            <td colspan="7">No complaints found for your college.</td>
                         </tr>
                     <?php else: ?>
                         <?php foreach ($complaints as $row): ?>
@@ -1004,20 +1006,24 @@ textarea.form-control { resize: vertical; min-height: 100px; }
                                 }
 
                                 $yearLevel = (int)($row['year_level'] ?? 0);
-                                $yearLabel = [1 => '1st', 2 => '2nd', 3 => '3rd', 4 => '4th'][$yearLevel] ?? (string)$yearLevel;
                                 $submitter = ((int)$row['is_anonymous'] === 1)
                                     ? 'Anonymous Student'
-                                    : trim((string)$row['first_name'] . ' ' . (string)$row['last_name']) . ((string)$row['year_level'] !== '' ? ' (' . $yearLabel . ' Year)' : '');
+                                    : trim((string)$row['first_name'] . ' ' . (string)$row['last_name']);
                                 $description = trim((string)$row['narrative_report']) !== '' ? (string)$row['narrative_report'] : 'No description provided.';
                                 $attachment = trim((string)$row['attachments']) !== '' ? (string)$row['attachments'] : '';
                             ?>
                             <tr>
-                                <td><?php echo e(date('M d, Y', strtotime((string)$row['created_at']))); ?></td>
                                 <td>
-                                    <div class="subject-text"><?php echo e((string)$row['act_complained_of']); ?></div>
-                                    <div class="small-text"><?php echo e($submitter); ?></div>
+                                    <div class="subject-text"><?php echo e($submitter); ?></div>
                                 </td>
-                                <td><?php echo e((string)$row['category_name']); ?><?php echo groq_language_chip($row['ai_detected_language'] ?? null); ?></td>
+                                <td>
+                                    <?php echo e((string)($row['department_name'] ?? 'Unassigned')); ?>
+                                </td>
+                                <td>
+                                    <?php echo e((string)$row['category_name']); ?><?php echo groq_language_chip($row['ai_detected_language'] ?? null); ?>
+                                </td>
+                                <td><?php echo e($yearLevel > 0 ? (string)$yearLevel : 'N/A'); ?></td>
+                                <td><?php echo e(date('M d, Y', strtotime((string)$row['created_at']))); ?></td>
                                 <td>
                                     <span class="status-badge <?php echo e($statusClass); ?>"><?php echo e($statusLabel); ?></span>
                                     <div><?php echo complaint_age_badge((string)$row['created_at'], (string)$row['status']); ?><?php echo ai_urgency_chip($row['urgency_level'] ?? null); ?></div>
@@ -1035,7 +1041,6 @@ textarea.form-control { resize: vertical; min-height: 100px; }
     </div>
 </div>
 
-<!-- MODAL -->
 <div class="modal-overlay" id="manageModal">
     <div class="modal-content">
         <div class="modal-header">

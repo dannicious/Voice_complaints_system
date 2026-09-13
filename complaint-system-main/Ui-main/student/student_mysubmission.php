@@ -14,7 +14,7 @@ $loadError = '';
 $schoolYearCurrent = sy_current($pdo);
 $schoolYearSelected = $schoolYearCurrent;
 $isPastSchoolYear = false;
-$semesterCurrent = semester_current();
+$semesterCurrent = semester_current($pdo);
 $semesterSelected = $semesterCurrent;
 $isPastSemester = false;
 
@@ -37,7 +37,7 @@ if (!isset($_SESSION['user_id']) || (string)($_SESSION['role'] ?? '') !== 'stude
             $studentProfileId = (int)$student['id'];
             $schoolYearSelected = sy_get_selected($pdo, $studentProfileId);
             $isPastSchoolYear = $schoolYearSelected !== $schoolYearCurrent;
-            $semesterSelected = semester_get_selected();
+            $semesterSelected = semester_get_selected($pdo);
             $isPastSemester = $semesterSelected !== $semesterCurrent;
 
             $sql = "
@@ -47,7 +47,9 @@ if (!isset($_SESSION['user_id']) || (string)($_SESSION['role'] ?? '') !== 'stude
                     c.act_complained_of AS subject,
                     COALESCE(cc.name, 'Uncategorized') AS category_name,
                     c.created_at AS submitted_at,
-                    c.status AS raw_status
+                    c.status AS raw_status,
+                    c.college_id AS college_id,
+                    NULL AS office
                 FROM complaints c
                 LEFT JOIN complaint_categories cc ON cc.id = c.category_id
                                 WHERE c.student_id = :student_id_complaint AND c.school_year = :school_year_complaint AND c.semester = :semester_complaint
@@ -60,7 +62,9 @@ if (!isset($_SESSION['user_id']) || (string)($_SESSION['role'] ?? '') !== 'stude
                     s.subject AS subject,
                     COALESCE(sc.name, 'Uncategorized') AS category_name,
                     s.created_at AS submitted_at,
-                    s.status AS raw_status
+                    s.status AS raw_status,
+                    s.college_id AS college_id,
+                    s.office AS office
                 FROM suggestions s
                 LEFT JOIN suggestion_categories sc ON sc.id = s.category_id
                 WHERE s.student_id = :student_id_suggestion AND s.school_year = :school_year_suggestion AND s.semester = :semester_suggestion
@@ -131,6 +135,19 @@ if (!isset($_SESSION['user_id']) || (string)($_SESSION['role'] ?? '') !== 'stude
                     }
                 }
 
+                // Same "who handles this" logic as admindashboard.php's Recent
+                // Suggestions & Complaints table - an office name wins if set,
+                // otherwise a college means the dean handles it, otherwise it's
+                // routed to the admin (SAS Director).
+                $officeName = trim((string)($row['office'] ?? ''));
+                if ($officeName !== '') {
+                    $managedBy = $officeName;
+                } elseif ($row['college_id'] !== null) {
+                    $managedBy = 'Dean';
+                } else {
+                    $managedBy = 'SAS Office';
+                }
+
                 $submissions[] = [
                     'record_id' => (int)$row['record_id'],
                     'type' => $type,
@@ -138,6 +155,7 @@ if (!isset($_SESSION['user_id']) || (string)($_SESSION['role'] ?? '') !== 'stude
                     'type_label' => $type === 'complaint' ? 'Complaint' : 'Suggestion',
                     'subject' => (string)$row['subject'],
                     'category' => (string)$row['category_name'],
+                    'managed_by' => $managedBy,
                     'date_text' => date('M d, Y', strtotime((string)$row['submitted_at'])),
                     'status_class' => $statusClass,
                     'status_icon' => $statusIcon,
@@ -314,6 +332,43 @@ tr:hover td {
 .scroll-top-btn:hover { background: #5b3aa8; }
 .scroll-top-btn i { font-size: 22px; }
 
+@media (max-width: 1024px) {
+    .main { margin-left: 0 !important; padding: 16px !important; }
+}
+
+@media (max-width: 700px) {
+    .page-title { font-size: 20px; margin-bottom: 16px; }
+    .data-card { padding: 14px; overflow-x: visible; }
+
+    /* A 5-column table can't fit a phone screen readably even scrolled
+       sideways, so each submission becomes a stacked card instead - the
+       column labels (data-label, set in the PHP above) show through
+       td::before since the table header row is hidden here. */
+    table { min-width: 0; }
+    thead { display: none; }
+    table, tbody, tr, td { display: block; width: 100%; }
+    tbody tr {
+        border: 1px solid #eef0f3;
+        border-radius: 10px;
+        padding: 12px 14px;
+        margin-bottom: 12px;
+    }
+    tbody tr:last-child { margin-bottom: 0; }
+    td { padding: 4px 0; border-bottom: none; }
+    td[data-label]::before {
+        content: attr(data-label);
+        display: block;
+        font-size: 11px;
+        font-weight: 700;
+        color: #9ca3af;
+        text-transform: uppercase;
+        letter-spacing: .03em;
+        margin-bottom: 2px;
+    }
+    td.td-action { padding-top: 8px; }
+    td.td-action .btn-view { width: 100%; justify-content: center; padding: 10px 15px; }
+}
+
 </style>
 </head>
 
@@ -344,7 +399,7 @@ tr:hover td {
             <thead>
                 <tr>
                     <th>Type</th>
-                    <th>Subject & Category</th>
+                    <th>Category & Managed By</th>
                     <th>Date Submitted</th>
                     <th>Status</th>
                     <th>Action</th>
@@ -362,14 +417,14 @@ tr:hover td {
                 <?php else: ?>
                     <?php foreach ($submissions as $item): ?>
                         <tr>
-                            <td><span class="badge <?php echo e($item['type_badge_class']); ?>"><?php echo e($item['type_label']); ?></span></td>
-                            <td>
-                                <div class="subject-text"><?php echo e($item['subject']); ?></div>
-                                <div style="font-size: 12px; color: #888;"><?php echo e($item['category']); ?></div>
+                            <td data-label="Type"><span class="badge <?php echo e($item['type_badge_class']); ?>"><?php echo e($item['type_label']); ?></span></td>
+                            <td data-label="Category & Managed By" class="td-category">
+                                <div class="subject-text"><?php echo e($item['category']); ?></div>
+                                <div style="font-size: 12px; color: #888;"><?php echo e($item['managed_by']); ?></div>
                             </td>
-                            <td><span class="date-text"><?php echo e($item['date_text']); ?></span></td>
-                            <td><span class="<?php echo e($item['status_class']); ?>"><?php echo e($item['status_label']); ?></span></td>
-                            <td><a class="btn-view" href="ticket_detail.php?type=<?php echo e($item['type']); ?>&id=<?php echo e((string)$item['record_id']); ?>">View <i class='bx bx-right-arrow-alt'></i></a></td>
+                            <td data-label="Date Submitted"><span class="date-text"><?php echo e($item['date_text']); ?></span></td>
+                            <td data-label="Status"><span class="<?php echo e($item['status_class']); ?>"><?php echo e($item['status_label']); ?></span></td>
+                            <td class="td-action"><a class="btn-view" href="ticket_detail.php?type=<?php echo e($item['type']); ?>&id=<?php echo e((string)$item['record_id']); ?>">View <i class='bx bx-right-arrow-alt'></i></a></td>
                         </tr>
                     <?php endforeach; ?>
                 <?php endif; ?>

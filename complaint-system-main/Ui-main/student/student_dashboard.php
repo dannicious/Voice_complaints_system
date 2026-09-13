@@ -122,6 +122,25 @@ body {
     margin-left: 15px;
     cursor: pointer;
 }
+
+@media (max-width: 1024px) {
+    .main { margin-left: 0 !important; padding: 16px !important; }
+}
+
+@media (max-width: 700px) {
+    .presentation-container { padding: 20px; border-radius: 8px; }
+    .presentation-header h1 { font-size: 24px; }
+    .presentation-embed { height: 260px; }
+    .embed-content h3 { font-size: 19px; letter-spacing: 0.5px; margin-bottom: 12px; }
+    .embed-content p { font-size: 11px; padding: 0 12px; }
+    .embed-arrow { right: 12px; bottom: 40px; font-size: 30px; }
+    .embed-footer { padding: 8px 12px; }
+}
+
+@media (max-width: 420px) {
+    .presentation-header h1 { font-size: 20px; }
+    .presentation-embed { height: 220px; }
+}
 </style>
 </head>
 

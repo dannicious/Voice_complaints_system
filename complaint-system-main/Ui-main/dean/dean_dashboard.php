@@ -308,6 +308,23 @@ th { text-align: left; font-size: 12px; color: #888; padding-bottom: 15px; borde
 td { padding: 15px 0; font-size: 14px; color: #444; border-bottom: 1px solid #f9f9f9; vertical-align: middle; }
 .type-complaint { color: #dc2626; font-weight: 500; background: #fee2e2; padding: 4px 8px; border-radius: 6px; font-size: 12px;}
 .type-suggestion { color: #16a34a; font-weight: 500; background: #dcfce7; padding: 4px 8px; border-radius: 6px; font-size: 12px;}
+.view-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 7px 12px;
+    border-radius: 8px;
+    background: #6d28d9;
+    color: #fff;
+    text-decoration: none;
+    font-size: 12px;
+    font-weight: 500;
+    transition: background 0.2s ease;
+}
+.view-btn:hover {
+    background: #5b1fc0;
+}
 
 /* ===== URGENT LIST ===== */
 .urgent-list {
@@ -436,21 +453,27 @@ td { padding: 15px 0; font-size: 14px; color: #444; border-bottom: 1px solid #f9
                     <thead>
                         <tr>
                             <th>Type</th>
-                            <th>Subject</th>
+                            <th>Categories</th>
                             <th>Date</th>
                             <th>Status</th>
+                            <th>Action</th>
                         </tr>
                     </thead>
                     <tbody>
                         <?php if (empty($recentItems)): ?>
                         <tr>
-                            <td colspan="4" style="text-align: center; color: #aaa;">No recent submissions</td>
+                            <td colspan="5" style="text-align: center; color: #aaa;">No recent submissions</td>
                         </tr>
                         <?php else: ?>
                             <?php foreach ($recentItems as $item): ?>
+                            <?php
+                                $viewUrl = $item['type'] === 'complaint'
+                                    ? 'dean_ticket_detail.php?id=' . (int)$item['id']
+                                    : 'dean_suggestion_detail.php?id=' . (int)$item['id'];
+                            ?>
                             <tr>
                                 <td><span class="type-<?php echo strtolower($item['type']); ?>"><?php echo ucfirst($item['type']); ?></span></td>
-                                <td><?php echo htmlspecialchars($item['category'] ?? 'No subject'); ?></td>
+                                <td><?php echo htmlspecialchars($item['category'] ?? 'Uncategorized'); ?></td>
                                 <td><?php echo date('M d, Y', strtotime($item['submission_date'])); ?></td>
                                 <td><span style="color:<?php echo $item['status'] === 'resolved' ? '#16a34a' : (in_array($item['status'], ['new', 'pending']) ? '#3b82f6' : '#d97706'); ?>; font-size:13px; font-weight:500;">
                                     <?php
@@ -461,6 +484,11 @@ td { padding: 15px 0; font-size: 14px; color: #444; border-bottom: 1px solid #f9
                                         echo ucfirst(str_replace('_', ' ', $displayStatus));
                                     ?>
                                 </span></td>
+                                <td>
+                                    <a href="<?php echo htmlspecialchars($viewUrl, ENT_QUOTES, 'UTF-8'); ?>" class="view-btn">
+                                        <i class='bx bx-show'></i> View
+                                    </a>
+                                </td>
                             </tr>
                             <?php endforeach; ?>
                         <?php endif; ?>

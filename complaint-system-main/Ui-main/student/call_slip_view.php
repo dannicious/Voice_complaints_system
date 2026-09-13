@@ -200,6 +200,18 @@ body { background: #f4f6fb; }
 .call-slip-error-card { width: min(440px, 100%); background: #fff; border-radius: 14px; box-shadow: 0 30px 60px rgba(15,23,42,0.3); padding: 30px; text-align: center; }
 .call-slip-error-card i { font-size: 40px; color: #f59e0b; margin-bottom: 12px; }
 .call-slip-error-card p { font-size: 14px; color: #111827; margin-bottom: 18px; line-height: 1.5; }
+
+@media (max-width: 480px) {
+    .call-slip-page-overlay { padding: 10px; }
+    .call-slip-page-paper { padding: 18px 16px 20px; }
+    .call-slip-header { flex-wrap: wrap; gap: 12px; }
+    .call-slip-company-block { gap: 10px; }
+    .call-slip-bisu-mark img { width: 46px; height: 46px; }
+    .call-slip-right-badge img { width: 54px; height: 42px; }
+    .call-slip-meta-row { flex-direction: column; gap: 4px; }
+    .call-slip-page-actions { padding: 14px 16px 20px; }
+    .call-slip-error-card { padding: 22px; }
+}
 </style>
 </head>
 <body>

@@ -33,7 +33,7 @@ function report_period_buckets(PDO $pdo, string $rangeType, ?int $collegeId = nu
         // Anchor the bucket window to the selected school year so a past
         // school year shows its own trend instead of an empty "last 12
         // weeks from today" window that doesn't overlap it at all.
-        [, $syEndExclusive] = sy_bounds($schoolYear);
+        [, $syEndExclusive] = sy_bounds($schoolYear, $pdo);
         $syLastDay = (new DateTimeImmutable($syEndExclusive))->modify('-1 day');
         if ($syLastDay < $now) {
             $now = $syLastDay;
@@ -92,10 +92,12 @@ function report_period_buckets(PDO $pdo, string $rangeType, ?int $collegeId = nu
         $sql .= ' AND c.school_year = :school_year';
         $params[':school_year'] = $schoolYear;
     }
-    if ($semester === '1') {
-        $sql .= " AND (DATE_FORMAT(c.created_at, '%m-%d') >= '08-01' OR DATE_FORMAT(c.created_at, '%m-%d') < '01-01')";
-    } elseif ($semester === '2') {
-        $sql .= " AND DATE_FORMAT(c.created_at, '%m-%d') >= '01-01' AND DATE_FORMAT(c.created_at, '%m-%d') < '08-01'";
+    if ($semester === '1' || $semester === '2') {
+        // The stored column, set once at submission time from whichever
+        // academic calendar was in effect then - not a hardcoded Aug1/Jan1
+        // date guess, so this stays correct even if the calendar changes.
+        $sql .= ' AND c.semester = :semester';
+        $params[':semester'] = $semester;
     }
 
     $stmt = $pdo->prepare($sql);

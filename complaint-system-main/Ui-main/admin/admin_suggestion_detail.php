@@ -62,6 +62,15 @@ if (!function_exists('get_person_display')) {
                     return ['name' => $r['name'] ?? 'Admin', 'photo' => $r['profile_pic'] ?? null];
                 }
             }
+
+            if ($role === 'staff') {
+                $stmt = $pdo->prepare('SELECT sp.name, u.profile_pic FROM staff_profiles sp LEFT JOIN users u ON u.id = sp.user_id WHERE sp.id = :id LIMIT 1');
+                $stmt->execute([':id' => (int)$id]);
+                $r = $stmt->fetch(PDO::FETCH_ASSOC);
+                if ($r) {
+                    return ['name' => $r['name'] ?? 'Staff', 'photo' => $r['profile_pic'] ?? null];
+                }
+            }
         } catch (Throwable $e) {
             // ignore and fallback
         }
@@ -188,6 +197,42 @@ body { background: #f4f6fb; }
 .main { margin-left: 260px; margin-top: 61px; padding: 25px; min-height: calc(100vh - 61px); }
 .main .card, .main .ticket-header, .main .timeline { max-width: 980px; margin: 0 auto; }
 .card { background: #fff; border: 1px solid #e5e7eb; border-radius: 12px; padding: 14px; box-shadow: 0 6px 18px rgba(15,23,42,0.04); }
+/* Record header, Action dropdown, status modal, and field label/value
+   typography matched to admin_complaints_details.php / dean_suggestion_detail.php,
+   so a suggestion record looks and behaves the same on every side. */
+.complaint-document { padding: 0; overflow: hidden; }
+.document-heading { padding: 16px 22px; border-bottom: 1px solid #e5e7eb; background: linear-gradient(180deg, #ffffff 0%, #fafafa 100%); display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.document-heading-left { min-width: 0; display: flex; align-items: center; gap: 10px; }
+.document-back-btn { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 8px; border: 1px solid #d1d5db; background: #fff; color: #374151; text-decoration: none; flex-shrink: 0; transition: border-color .15s ease, background .15s ease, color .15s ease; }
+.document-back-btn:hover { background: #f3f4f6; border-color: #a5b4fc; color: #111827; }
+.document-back-btn i { font-size: 18px; }
+.document-kicker { color: #6b7280; font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; margin-bottom: 5px; }
+.document-submitted { color: #374151; font-size: 13px; }
+.record-action-dropdown { position: relative; flex-shrink: 0; }
+.record-action-btn { display: inline-flex; align-items: center; gap: 6px; padding: 8px 14px; border-radius: 8px; border: 1px solid #d1d5db; background: #fff; color: #111827; font-weight: 700; font-size: 13px; font-family: 'Poppins', sans-serif; cursor: pointer; transition: border-color .15s ease, box-shadow .15s ease; }
+.record-action-btn:hover { border-color: #a5b4fc; box-shadow: 0 4px 10px rgba(79,140,255,0.15); }
+.record-action-btn i { font-size: 16px; transition: transform .15s ease; }
+.record-action-dropdown.open .record-action-btn i.bx-chevron-down { transform: rotate(180deg); }
+.record-action-menu { position: absolute; top: calc(100% + 6px); right: 0; min-width: 170px; background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; box-shadow: 0 12px 28px rgba(15,23,42,0.16); padding: 6px; display: none; flex-direction: column; gap: 2px; z-index: 50; }
+.record-action-dropdown.open .record-action-menu { display: flex; }
+.record-action-item { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; padding: 9px 10px; border: none; background: transparent; border-radius: 7px; font-size: 13px; font-weight: 600; color: #374151; cursor: pointer; font-family: 'Poppins', sans-serif; }
+.record-action-item:hover { background: #f3f4f6; color: #111827; }
+.record-action-item i { font-size: 16px; color: #6b7280; }
+.update-status-modal { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; z-index: 9998; padding: 20px; }
+.update-status-modal.visible { display: flex; }
+.update-status-backdrop { position: absolute; inset: 0; background: rgba(15, 23, 42, 0.48); }
+.update-status-sheet { position: relative; z-index: 1; width: min(540px, 100%); max-height: 90vh; overflow-y: auto; border-radius: 14px; }
+.update-status-sheet .status-remarks-card { max-width: none !important; width: 100% !important; margin: 0 !important; box-shadow: 0 30px 60px rgba(15, 23, 42, 0.25); }
+.update-status-modal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.update-status-close { background: transparent; border: none; cursor: pointer; color: #6b7280; font-size: 20px; display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 8px; flex-shrink: 0; }
+.update-status-close:hover { background: #f3f4f6; color: #111827; }
+.document-section { padding: 20px 22px; border-bottom: 1px solid #e5e7eb; }
+.document-section:last-child { border-bottom: 0; }
+.document-section-title { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 14px; color: #111827; font-weight: 700; }
+.document-section-title .section-label { font-size: 15px; }
+.label { font-size: 12px; color: #6b7280; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.08em; }
+.detail-value { color: #111827; font-size: 15px; line-height: 1.8; font-weight: 500; }
+.detail-value--paragraph { white-space: pre-wrap; }
 .avatar-circle { width: 40px; height: 40px; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center; overflow: hidden; background: #6b46c1; color: #fff; font-weight: 700; font-size: 14px; border: 1px solid #eef2ff; flex-shrink: 0; }
 .avatar-circle img { width: 100%; height: 100%; object-fit: cover; }
 .feedback-reply { background:#f8fafc; border-color:#eef2ff; }
@@ -261,74 +306,97 @@ body { background: #f4f6fb; }
     <?php endif; ?>
 
     <?php if ($suggestionFound): ?>
-    <div class="ticket-header card" style="display:flex;justify-content:space-between;align-items:center;gap:16px;margin-bottom:16px;">
-        <div>
-            <div style="font-weight:700;font-size:18px;">Suggestion Details</div>
-            <div class="muted">Category: <?php echo e((string)($suggestion['category_name'] ?? '')); ?> · Submitted <?php echo e(!empty($suggestion['created_at']) ? date('M d, Y h:i A', strtotime((string)$suggestion['created_at'])) : ''); ?></div>
-        </div>
-        <?php
-            $status = strtolower(trim((string)($suggestion['status'] ?? '')));
-            $statusMeta = suggestion_status_meta($status);
-            $statusLabel = $statusMeta['label'];
-            $statusColorMap = [
-                'status-review' => 'background:#f59e0b;color:#1f2937;',
-                'status-needs-info' => 'background:#fde68a;color:#78350f;',
-                'status-accepted' => 'background:#dbeafe;color:#1d4ed8;',
-                'status-planned' => 'background:#e0e7ff;color:#3730a3;',
-                'status-progress' => 'background:#ede9fe;color:#5b21b6;',
-                'status-implemented' => 'background:#dcfce7;color:#065f46;',
-                'status-declined' => 'background:#fee2e2;color:#b91c1c;',
-            ];
-            $statusColor = $statusColorMap[$statusMeta['badge']] ?? 'background:#f3f4f6;color:#374151;';
-        ?>
-        <div style="display:flex;align-items:center;gap:10px;">
-            <span style="padding:8px 12px;border-radius:999px;font-weight:700;<?php echo $statusColor; ?>"><?php echo e($statusLabel); ?></span>
-        </div>
-    </div>
-
-    <!-- Suggestion Details -->
-    <div class="card" style="margin-bottom:18px;">
-        <div style="font-weight:700;margin-bottom:8px;color:#111827;">Suggestion Details</div>
-        <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;">
-            <div><div style="font-size:12px;color:#6b7280;">Submitted By</div><div style="margin-top:6px;font-weight:600;"><?php echo e(trim(((int)($suggestion['is_anonymous'] ?? 0) === 1) ? 'Anonymous Student' : trim((string)($suggestion['first_name'] ?? '') . ' ' . (string)($suggestion['last_name'] ?? '')))); ?></div></div>
-            <div><div style="font-size:12px;color:#6b7280;">Category</div><div style="margin-top:6px;"><?php echo e((string)($suggestion['category_name'] ?? '')); ?></div></div>
-            <div><div style="font-size:12px;color:#6b7280;">Date of Suggestion</div><div style="margin-top:6px;"><?php echo e(!empty($suggestion['date_of_suggestion']) ? date('M d, Y', strtotime((string)$suggestion['date_of_suggestion'])) : 'N/A'); ?></div></div>
-            <div><div style="font-size:12px;color:#6b7280;">Terms of Agreement</div><div style="margin-top:6px;"><?php echo e(array_key_exists('terms_agreement_accepted', $suggestion) ? (((int)$suggestion['terms_agreement_accepted'] === 1) ? 'Yes' : 'No') : 'Unknown'); ?></div></div>
-            <div class="full" style="grid-column:1 / -1;"><div style="font-size:12px;color:#6b7280;">Subject / Idea</div><div style="margin-top:6px;"><?php echo e((string)($suggestion['subject'] ?? '')); ?></div></div>
-            <div class="full" style="grid-column:1 / -1;"><div style="font-size:12px;color:#6b7280;">Detailed Suggestion</div><div style="margin-top:6px;white-space:pre-wrap;"><?php echo nl2br(e((string)($suggestion['description'] ?? ''))); ?></div></div>
-        </div>
-
-        <?php if (!empty($suggestion['attachment'])): ?>
-            <?php $att = (string)$suggestion['attachment']; $attPath = '../' . ltrim($att, '/'); $ext = strtolower(pathinfo($att, PATHINFO_EXTENSION)); $isImage = in_array($ext, ['jpg','jpeg','png','gif'], true); ?>
-            <div style="margin-top:12px;">
-                <div style="font-size:12px;color:#6b7280;margin-bottom:6px;">Attachments / References</div>
-                <?php if ($isImage): ?>
-                    <a href="<?php echo e($attPath); ?>" target="_blank"><img src="<?php echo e($attPath); ?>" alt="attachment" style="max-width:360px;border-radius:8px;border:1px solid #eef2ff;"></a>
-                <?php else: ?>
-                    <a href="<?php echo e($attPath); ?>" target="_blank" class="btn" style="display:inline-block;padding:8px 12px;border-radius:8px;">Download attachment</a>
-                <?php endif; ?>
+    <?php
+        $status = strtolower(trim((string)($suggestion['status'] ?? '')));
+        $statusMeta = suggestion_status_meta($status);
+        $statusLabel = $statusMeta['label'];
+        $suggestionAllowedNext = suggestion_allowed_next_statuses((string)($suggestion['status'] ?? ''));
+    ?>
+    <div class="complaint-document card" style="margin-bottom:18px;">
+        <div class="document-heading">
+            <div class="document-heading-left">
+                <a href="admin_suggestions.php" id="recordBackBtn" class="document-back-btn" aria-label="Back to Suggestions" title="Back to Suggestions">
+                    <i class='bx bx-arrow-back'></i>
+                </a>
+                <div>
+                    <div class="document-kicker">Official Suggestion Record</div>
+                    <div class="document-submitted">Submitted <?php echo e(!empty($suggestion['created_at']) ? date('M d, Y h:i A', strtotime((string)$suggestion['created_at'])) : ''); ?> &middot; Status: <?php echo e($statusLabel); ?></div>
+                </div>
             </div>
-        <?php else: ?>
-            <div style="margin-top:12px;">
-                <div style="font-size:12px;color:#6b7280;margin-bottom:6px;">Attachments / References</div>
-                <div style="margin-top:6px;color:#374151;">No attachment uploaded.</div>
+            <?php if (!empty($suggestionAllowedNext)): ?>
+            <div class="record-action-dropdown" id="recordActionDropdown">
+                <button type="button" class="record-action-btn" id="recordActionBtn" aria-haspopup="true" aria-expanded="false">
+                    Action <i class='bx bx-chevron-down'></i>
+                </button>
+                <div class="record-action-menu" id="recordActionMenu" role="menu">
+                    <button type="button" class="record-action-item" id="recordActionUpdate" role="menuitem"><i class='bx bx-edit-alt'></i> Update</button>
+                </div>
+            </div>
+            <?php endif; ?>
+        </div>
+
+        <!-- Suggestion Details -->
+        <div class="document-section">
+            <div class="document-section-title">
+                <div class="section-label">Suggestion Details</div>
+            </div>
+            <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;">
+                <div><div class="label">Submitted By</div><div class="detail-value"><?php echo e(trim(((int)($suggestion['is_anonymous'] ?? 0) === 1) ? 'Anonymous Student' : trim((string)($suggestion['first_name'] ?? '') . ' ' . (string)($suggestion['last_name'] ?? '')))); ?></div></div>
+                <div><div class="label">Category</div><div class="detail-value"><?php echo e((string)($suggestion['category_name'] ?? '')); ?></div></div>
+                <div><div class="label">Date of Suggestion</div><div class="detail-value"><?php echo e(!empty($suggestion['date_of_suggestion']) ? date('M d, Y', strtotime((string)$suggestion['date_of_suggestion'])) : 'N/A'); ?></div></div>
+                <div class="full" style="grid-column:1 / -1;"><div class="label">Subject / Idea</div><div class="detail-value"><?php echo e((string)($suggestion['subject'] ?? '')); ?></div></div>
+                <div class="full" style="grid-column:1 / -1;"><div class="label">Detailed Suggestion</div><div class="detail-value detail-value--paragraph"><?php echo nl2br(e((string)($suggestion['description'] ?? ''))); ?></div></div>
+            </div>
+
+            <?php if (!empty($suggestion['attachment'])): ?>
+                <?php $att = (string)$suggestion['attachment']; $attPath = '../' . ltrim($att, '/'); $ext = strtolower(pathinfo($att, PATHINFO_EXTENSION)); $isImage = in_array($ext, ['jpg','jpeg','png','gif'], true); ?>
+                <div style="margin-top:12px;">
+                    <div class="label" style="margin-bottom:6px;">Attachments / References</div>
+                    <?php if ($isImage): ?>
+                        <a href="<?php echo e($attPath); ?>" target="_blank"><img src="<?php echo e($attPath); ?>" alt="attachment" style="max-width:360px;border-radius:8px;border:1px solid #eef2ff;"></a>
+                    <?php else: ?>
+                        <a href="<?php echo e($attPath); ?>" target="_blank" class="btn" style="display:inline-block;padding:8px 12px;border-radius:8px;">Download attachment</a>
+                    <?php endif; ?>
+                </div>
+            <?php else: ?>
+                <div style="margin-top:12px;">
+                    <div class="label" style="margin-bottom:6px;">Attachments / References</div>
+                    <div class="detail-value">No attachment uploaded.</div>
+                </div>
+            <?php endif; ?>
+        </div>
+
+        <?php if (!empty($suggestion['expected_outcome'])): ?>
+            <div class="document-section">
+                <div class="document-section-title"><div class="section-label">Expected Outcome</div></div>
+                <div class="detail-value detail-value--paragraph"><?php echo nl2br(e((string)$suggestion['expected_outcome'])); ?></div>
             </div>
         <?php endif; ?>
 
-        <div style="margin-top:12px;">
-            <div style="font-size:12px;color:#6b7280;margin-bottom:6px;">Expected Outcome & Benefits</div>
-            <div style="margin-top:6px;white-space:pre-wrap;"><?php echo nl2br(e((string)($suggestion['expected_outcome'] ?? 'No expected outcome provided.'))); ?></div>
+        <?php $suggestionTermsAccepted = array_key_exists('terms_agreement_accepted', $suggestion) ? (int)$suggestion['terms_agreement_accepted'] : null; ?>
+        <div class="document-section">
+            <div class="label">Terms of Agreement</div>
+            <?php if ($suggestionTermsAccepted === 1): ?>
+                <div class="detail-value detail-value--paragraph"><?php echo e(suggestion_terms_agreement_statement()); ?> <?php echo e(suggestion_terms_agreement_checkbox_label()); ?></div>
+            <?php elseif ($suggestionTermsAccepted === 0): ?>
+                <div class="detail-value">Not agreed</div>
+            <?php else: ?>
+                <div class="detail-value">Unknown</div>
+            <?php endif; ?>
         </div>
     </div>
 
-    <!-- Status Update & Remarks Form -->
-    <div class="card status-remarks-card" style="margin-bottom:18px;">
-        <div style="font-weight:700;margin-bottom:12px;color:#111827;">Update Status & Official Remarks</div>
+    <!-- Status Update & Remarks Form (opened from the Action dropdown) -->
+    <?php if (!empty($suggestionAllowedNext)): ?>
+    <div id="updateStatusModal" class="update-status-modal" aria-hidden="true" role="dialog" aria-modal="true">
+        <div class="update-status-backdrop" onclick="closeUpdateStatusModal()"></div>
+        <div class="update-status-sheet" onclick="event.stopPropagation();">
+        <div class="card status-remarks-card">
+        <div class="update-status-modal-head">
+            <div style="font-weight:700;color:#111827;">Update Status & Official Remarks</div>
+            <button type="button" class="update-status-close" onclick="closeUpdateStatusModal()" aria-label="Close"><i class='bx bx-x'></i></button>
+        </div>
 
-        <?php $suggestionAllowedNext = suggestion_allowed_next_statuses((string)($suggestion['status'] ?? '')); ?>
-        <?php if ($statusMeta['locked'] || empty($suggestionAllowedNext)): ?>
-            <div class="empty-card">This suggestion has reached its final status (<?php echo e($statusLabel); ?>) and can no longer be updated.</div>
-        <?php else: ?>
         <form method="POST">
             <input type="hidden" name="action" value="update_suggestion">
             <input type="hidden" name="suggestion_id" value="<?php echo (int)$suggestionId; ?>">
@@ -364,8 +432,8 @@ body { background: #f4f6fb; }
                         <textarea id="remarkTextarea" name="remark" class="form-control" placeholder="Type your response or next steps here..." required><?php echo e((string)$adminRemark['message']); ?></textarea>
                     </div>
                     <div class="status-remarks-actions">
+                        <button type="button" onclick="closeUpdateStatusModal()" class="btn" style="background:#6b7280;">Cancel</button>
                         <button type="submit" class="btn">Save Changes</button>
-                        <button type="button" onclick="toggleRemarkEdit()" class="btn" style="background:#6b7280;">Cancel</button>
                     </div>
                 </div>
             <?php else: ?>
@@ -374,12 +442,15 @@ body { background: #f4f6fb; }
                     <textarea id="remarkTextarea" name="remark" class="form-control" placeholder="Type your response or next steps here..." required></textarea>
                 </div>
                 <div class="status-remarks-actions">
+                    <button type="button" onclick="closeUpdateStatusModal()" class="btn" style="background:#6b7280;">Cancel</button>
                     <button type="submit" class="btn">Save Changes</button>
                 </div>
             <?php endif; ?>
         </form>
-        <?php endif; ?>
+        </div>
+        </div>
     </div>
+    <?php endif; ?>
 
     <script>
     function toggleRemarkEdit() {
@@ -390,6 +461,75 @@ body { background: #f4f6fb; }
             form.style.display = form.style.display === 'none' ? 'block' : 'none';
         }
     }
+
+    function openUpdateStatusModal() {
+        const modal = document.getElementById('updateStatusModal');
+        if (modal) {
+            modal.classList.add('visible');
+            modal.setAttribute('aria-hidden', 'false');
+        }
+    }
+
+    function closeUpdateStatusModal() {
+        const modal = document.getElementById('updateStatusModal');
+        if (modal) {
+            modal.classList.remove('visible');
+            modal.setAttribute('aria-hidden', 'true');
+        }
+    }
+
+    document.addEventListener('DOMContentLoaded', function () {
+        const actionDropdown = document.getElementById('recordActionDropdown');
+        const actionBtn = document.getElementById('recordActionBtn');
+        const actionUpdateItem = document.getElementById('recordActionUpdate');
+
+        function closeActionDropdown() {
+            if (actionDropdown) {
+                actionDropdown.classList.remove('open');
+                if (actionBtn) actionBtn.setAttribute('aria-expanded', 'false');
+            }
+        }
+
+        if (actionDropdown && actionBtn) {
+            actionBtn.addEventListener('click', function (event) {
+                event.preventDefault();
+                event.stopPropagation();
+                const isOpen = actionDropdown.classList.toggle('open');
+                actionBtn.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+            });
+
+            document.addEventListener('click', function (event) {
+                if (!actionDropdown.contains(event.target)) {
+                    closeActionDropdown();
+                }
+            });
+
+            document.addEventListener('keydown', function (event) {
+                if (event.key === 'Escape') {
+                    closeActionDropdown();
+                }
+            });
+        }
+
+        if (actionUpdateItem) {
+            actionUpdateItem.addEventListener('click', function (event) {
+                event.preventDefault();
+                closeActionDropdown();
+                openUpdateStatusModal();
+            });
+        }
+
+        var backBtn = document.getElementById('recordBackBtn');
+        if (backBtn) {
+            backBtn.addEventListener('click', function (event) {
+                var cameFromList = document.referrer && document.referrer.indexOf(window.location.origin) === 0;
+                if (cameFromList && window.history.length > 1) {
+                    event.preventDefault();
+                    window.history.back();
+                }
+            });
+        }
+    });
 
     function toggleFeedbackReplyForm(button) {
         const feedbackHistoryId = button.dataset.feedbackHistoryId;
@@ -491,7 +631,7 @@ body { background: #f4f6fb; }
                 'sender_id' => isset($replyItem['sender_id']) ? (int)$replyItem['sender_id'] : 0,
                 'sender_role' => $replyRoleRaw,
             ];
-            if (($replyRoleRaw === 'dean' || $replyRoleRaw === 'admin') && $officialRemark === null) {
+            if (in_array($replyRoleRaw, ['dean', 'admin', 'staff'], true) && $officialRemark === null) {
                 $officialRemark = $entry;
             } else {
                 $timelineReplies[] = $entry;
@@ -538,7 +678,7 @@ body { background: #f4f6fb; }
                                 $officialPerson = $officialSenderId > 0 ? get_person_display($pdo, $officialRole, $officialSenderId) : ['name' => ucfirst($officialRole), 'photo' => null];
                                 $officialName = $officialPerson['name'] ?? (ucfirst($officialRole) ?: 'Staff');
                                 $officialPhoto = !empty($officialPerson['photo']) ? ('../' . ltrim($officialPerson['photo'], '/')) : null;
-                                $officialRoleLabel = $officialRole === 'dean' ? 'College Dean' : ($officialRole === 'admin' ? 'Administrator' : 'Student');
+                                $officialRoleLabel = $officialRole === 'dean' ? 'College Dean' : ($officialRole === 'admin' ? 'Administrator' : ($officialRole === 'staff' ? 'Staff' : 'Student'));
                                 $officialCurrentUser = ($officialRole === 'admin');
                                 echo response_timeline_entry([
                                     'name' => $officialName,
@@ -563,7 +703,7 @@ body { background: #f4f6fb; }
                                         $replyPerson = $replySenderId > 0 ? get_person_display($pdo, $replyRoleRaw, $replySenderId) : ['name' => ucfirst($replyRoleRaw), 'photo' => null];
                                         $replyName = $replyPerson['name'] ?? ucfirst($replyRoleRaw);
                                         $replyPhoto = !empty($replyPerson['photo']) ? ('../' . ltrim($replyPerson['photo'], '/')) : null;
-                                        $replyRoleLabel = $replyRoleRaw === 'dean' ? 'College Dean' : ($replyRoleRaw === 'admin' ? 'Administrator' : 'Student');
+                                        $replyRoleLabel = $replyRoleRaw === 'dean' ? 'College Dean' : ($replyRoleRaw === 'admin' ? 'Administrator' : ($replyRoleRaw === 'staff' ? 'Staff' : 'Student'));
                                         $replyIsCurrentUser = $replyRoleRaw === 'admin';
                                         echo response_timeline_entry([
                                             'name' => $replyName,
@@ -581,10 +721,10 @@ body { background: #f4f6fb; }
                         <?php endif; ?>
                     </div>
 
+                    <?php if (!empty($feedback)): ?>
                     <div class="ticket-section">
                         <div class="section-title">Student Feedback</div>
                         <div class="feedback-panel">
-                            <?php if (!empty($feedback)): ?>
                                 <?php
                                     $meta = feedback_option_meta((string)$feedback['satisfaction']);
                                     $studentInfo = get_person_display($pdo, 'student', (int)$suggestion['student_id']);
@@ -619,11 +759,9 @@ body { background: #f4f6fb; }
                                     <div class="feedback-comment-bubble"><?php echo nl2br(e($stuComment)); ?></div>
                                     <?php endif; ?>
                                 </div>
-                            <?php else: ?>
-                                <div class="empty-card">No rating has been submitted yet.</div>
-                            <?php endif; ?>
                         </div>
                     </div>
+                    <?php endif; ?>
 
                     <?php if ($canReply): ?>
                         <div class="ticket-section">

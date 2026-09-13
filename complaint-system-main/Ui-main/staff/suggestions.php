@@ -39,9 +39,9 @@ function e($value): string { return htmlspecialchars((string)$value, ENT_QUOTES,
 <?php include __DIR__ . '/staff_sidebar.php'; ?>
 <main class="main"><section class="panel">
     <div class="panel-header"><div><h1>Suggestions</h1><p class="muted">Assigned office: <?= e($office) ?></p></div></div>
-    <table><thead><tr><th>Suggestion</th><th>Subject</th><th>Student</th><th>Category</th><th>Status</th><th>Date</th><th></th></tr></thead><tbody>
+    <table><thead><tr><th>Student</th><th>Category</th><th>Status</th><th>Date</th><th>Action</th></tr></thead><tbody>
     <?php if (!$suggestions): ?><tr><td colspan="7" class="empty">No suggestions are assigned to your office.</td></tr><?php else: foreach ($suggestions as $suggestion): ?>
-        <tr><td><strong>Suggestion #<?= (int)$suggestion['id'] ?></strong></td><td><?= e($suggestion['subject'] ?? 'Untitled') ?></td><td><?= e(trim((string)$suggestion['first_name'] . ' ' . (string)$suggestion['last_name'])) ?></td><td><?= e($suggestion['category_name'] ?? 'Uncategorized') ?></td><td><span class="status"><?= e(staff_status_label((string)$suggestion['status'])) ?></span></td><td><?= e($suggestion['created_at']) ?></td><td><a class="open-link" href="suggestion_detail.php?id=<?= (int)$suggestion['id'] ?>">Open <i class="bx bx-right-arrow-alt"></i></a></td></tr>
+        <tr><td><?= e(trim((string)$suggestion['first_name'] . ' ' . (string)$suggestion['last_name'])) ?></td><td><?= e($suggestion['category_name'] ?? 'Uncategorized') ?></td><td><span class="status"><?= e(staff_status_label((string)$suggestion['status'])) ?></span></td><td><?= e($suggestion['created_at']) ?></td><td><a class="open-link" href="suggestion_detail.php?id=<?= (int)$suggestion['id'] ?>">Open <i class="bx bx-right-arrow-alt"></i></a></td></tr>
     <?php endforeach; endif; ?></tbody></table>
 </section></main>
 </body></html>

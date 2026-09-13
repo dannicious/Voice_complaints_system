@@ -137,6 +137,7 @@ try {
                 sp.id AS student_id,
             sp.first_name,
             sp.last_name,
+                sp.year_level,
             tf.id AS feedback_id,
             tf.satisfaction AS feedback_satisfaction,
             tf.comment AS feedback_comment,
@@ -448,7 +449,8 @@ body {
     background: #f4f6fb;
     padding: 8px 15px;
     border-radius: 8px;
-    width: 320px;
+    width: 100%;
+    max-width: 320px;
     border: 1px solid #e5e7eb;
 }
 
@@ -688,16 +690,15 @@ tbody tr:hover { background-color: #fcfcfc; }
     background: #5d1fa0;
 }
 
-/* Ensure action buttons are clickable above table rows or overlays */
+/* Keep action buttons normal within the table flow; do not lift them into a
+   separate stacking layer or they appear to float while scrolling. */
 .btn-icon, .btn-view, .btn-manage {
-    position: relative !important;
-    z-index: 9999 !important;
-    pointer-events: auto !important;
-    cursor: pointer !important;
-    isolation: isolate;
+    position: static;
+    z-index: auto;
+    pointer-events: auto;
+    cursor: pointer;
+    isolation: auto;
 }
-
-td { position: relative; }
 
 .btn-view    { background: #6d28d9; }
 .btn-view:hover    { background: #5d1fa0; }
@@ -813,6 +814,7 @@ td { position: relative; }
 }
 .age-badge.age-new { background: #dcfce7; color: #166534; }
 .age-badge.age-overdue { background: #fee2e2; color: #b91c1c; }
+#manageable .cell-date .age-badge { display: block; width: max-content; }
 #manageable .btn-manage {
     padding: 6px 8px;
     height: 34px;
@@ -852,6 +854,7 @@ td { position: relative; }
 #manageable .table-card-title { font-size: 17px; font-weight: 700; color: #1f2937; }
 #manageable .table-card-subtitle { margin-top: 4px; font-size: 12px; color: #94a3b8; }
 #manageable .scope-badge { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px; font-size: 11px; font-weight: 700; white-space: nowrap; }
+.mobile-only-field { display: none; }
 #manageable .scope-general { background: #ede9fe; color: #6d28d9; }
 #manageable .scope-college { background: #e0f2fe; color: #0369a1; }
 #manageable table { width: 100%; min-width: 920px; table-layout: fixed; }
@@ -910,6 +913,63 @@ td { position: relative; }
 #view_only .btn-open-view-only { min-width: 96px; height: 38px; padding: 8px 11px; border-radius: 8px; justify-content: center; box-shadow: 0 5px 12px rgba(109, 40, 217, 0.14); transition: transform .18s ease, background-color .18s ease, box-shadow .18s ease; }
 #view_only .btn-open-view-only:hover { background: #5d1fa0; transform: translateY(-1px); box-shadow: 0 7px 16px rgba(109, 40, 217, 0.2); }
 
+/* Both suggestion tabs use the same six-column report layout. */
+#manageable table th:nth-child(1), #manageable table td:nth-child(1),
+#view_only table th:nth-child(1), #view_only table td:nth-child(1) { width: 25%; }
+#manageable table th:nth-child(2), #manageable table td:nth-child(2),
+#view_only table th:nth-child(2), #view_only table td:nth-child(2) { width: 14%; }
+#manageable table th:nth-child(3), #manageable table td:nth-child(3),
+#view_only table th:nth-child(3), #view_only table td:nth-child(3) { width: 20%; }
+#manageable table th:nth-child(4), #manageable table td:nth-child(4),
+#view_only table th:nth-child(4), #view_only table td:nth-child(4) { width: 15%; }
+#manageable table th:nth-child(5), #manageable table td:nth-child(5),
+#view_only table th:nth-child(5), #view_only table td:nth-child(5) { width: 16%; }
+#manageable table th:nth-child(6), #manageable table td:nth-child(6),
+#view_only table th:nth-child(6), #view_only table td:nth-child(6) { width: 10%; text-align: right; }
+#view_only table th:nth-child(1), #view_only table td:nth-child(1) { width: 22%; }
+#view_only table th:nth-child(2), #view_only table td:nth-child(2) { width: 12%; }
+#view_only table th:nth-child(3), #view_only table td:nth-child(3) { width: 15%; }
+#view_only table th:nth-child(4), #view_only table td:nth-child(4) { width: 19%; }
+#view_only table th:nth-child(5), #view_only table td:nth-child(5) { width: 14%; }
+#view_only table th:nth-child(6), #view_only table td:nth-child(6) { width: 12%; text-align: left; }
+#view_only table th:nth-child(7), #view_only table td:nth-child(7) { width: 10%; text-align: right; }
+#manageable table th:nth-child(1), #manageable table td:nth-child(1) { width: 23%; }
+#manageable table th:nth-child(2), #manageable table td:nth-child(2) { width: 13%; }
+#manageable table th:nth-child(3), #manageable table td:nth-child(3) { width: 18%; }
+#manageable table th:nth-child(4), #manageable table td:nth-child(4) { width: 10%; }
+#manageable table th:nth-child(5), #manageable table td:nth-child(5) { width: 14%; }
+#manageable table th:nth-child(6), #manageable table td:nth-child(6) { width: 12%; }
+#manageable table th:nth-child(7), #manageable table td:nth-child(7) { width: 10%; text-align: right; }
+#view_only table th:nth-child(1), #view_only table td:nth-child(1) { width: 20%; }
+#view_only table th:nth-child(2), #view_only table td:nth-child(2) { width: 12%; }
+#view_only table th:nth-child(3), #view_only table td:nth-child(3) { width: 13%; }
+#view_only table th:nth-child(4), #view_only table td:nth-child(4) { width: 17%; }
+#view_only table th:nth-child(5), #view_only table td:nth-child(5) { width: 10%; }
+#view_only table th:nth-child(6), #view_only table td:nth-child(6) { width: 12%; }
+#view_only table th:nth-child(7), #view_only table td:nth-child(7) { width: 8%; }
+#view_only table th:nth-child(8), #view_only table td:nth-child(8) { width: 8%; text-align: right; }
+
+/* Keep the complete table inside the admin content panel on desktop. */
+#manageable.table-card, #view_only.table-card { overflow-x: hidden; }
+#manageable table, #view_only table { min-width: 0; width: 100%; table-layout: fixed; }
+#manageable table thead th, #view_only table thead th { padding-left: 8px; padding-right: 8px; }
+#manageable table td, #view_only table td { padding-left: 8px; padding-right: 8px; }
+#manageable .cell-college, #manageable .cell-category,
+#view_only .cell-college, #view_only .cell-office, #view_only .cell-category {
+    overflow-wrap: anywhere;
+}
+#manageable .btn-manage, #view_only .btn-open-view-only { min-width: 76px; padding-left: 8px; padding-right: 8px; }
+#view_only table th:nth-child(1), #view_only table td:nth-child(1) { width: 17%; }
+#view_only table th:nth-child(2), #view_only table td:nth-child(2) { width: 10%; }
+#view_only table th:nth-child(3), #view_only table td:nth-child(3) { width: 13%; }
+#view_only table th:nth-child(4), #view_only table td:nth-child(4) { width: 15%; }
+#view_only table th:nth-child(5), #view_only table td:nth-child(5) { width: 7%; }
+#view_only table th:nth-child(6), #view_only table td:nth-child(6) { width: 13%; }
+#view_only table th:nth-child(7), #view_only table td:nth-child(7) { width: 14%; text-align: left; }
+#view_only table th:nth-child(8), #view_only table td:nth-child(8) { width: 11%; text-align: right; }
+#view_only .status-badge { min-width: 0; white-space: nowrap; }
+#view_only .btn-open-view-only { min-width: 76px; white-space: nowrap; }
+
 @media (max-width: 900px) {
     #manageable .table-card { padding: 14px 12px 8px; }
     #manageable table { table-layout: auto; }
@@ -938,6 +998,155 @@ td { position: relative; }
 
     .search-box {
         width: 100%;
+    }
+
+    /* Scrolling sideways through a 6-7 column table is hard to make sense
+       of on a phone - one card per record instead, every column labeled,
+       keeps everything readable without any horizontal scrolling. */
+    .table-card table { min-width: 0; }
+    .table-card table thead { display: none; }
+    .table-card table, .table-card table tbody, .table-card table tr, .table-card table td { display: block; width: 100% !important; }
+    .table-card table tbody tr {
+        border: 1px solid #eef0f3;
+        border-radius: 10px;
+        padding: 12px 14px;
+        margin-bottom: 12px;
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        width: 100% !important;
+        max-width: 100% !important;
+        box-sizing: border-box;
+    }
+    .table-card table tbody tr:last-child { margin-bottom: 0; }
+    .table-card table td {
+        padding: 4px 0 !important;
+        border-bottom: none;
+        width: 100% !important;
+        max-width: 100% !important;
+        text-align: left !important;
+        box-sizing: border-box;
+    }
+    .table-card table td.mobile-only-field,
+    .table-card table td[data-label="Management"] {
+        display: block !important;
+        width: 100% !important;
+        text-align: left !important;
+    }
+    .table-card table td.mobile-only-field .scope-badge,
+    .table-card table td[data-label="Management"] .scope-badge {
+        margin-left: 0 !important;
+        display: inline-flex !important;
+        justify-content: flex-start !important;
+    }
+    .table-card table td[data-label]::before {
+        content: attr(data-label);
+        display: block;
+        font-size: 11px;
+        font-weight: 700;
+        color: #9ca3af;
+        text-transform: uppercase;
+        letter-spacing: .03em;
+        margin-bottom: 2px;
+    }
+    .table-card table td.td-action { padding-top: 8px !important; text-align: left !important; }
+
+    /* The "Manage" button is a bigger, chunkier button by design (unlike
+       View Only's compact style) - stretched full width it turned into an
+       oversized purple bar. Keep it at its normal, compact size instead. */
+    .table-card table td.td-action .btn-manage,
+    .table-card table td.td-action .btn-view {
+        width: auto;
+        height: 34px !important;
+        min-width: 0 !important;
+        padding: 0 14px !important;
+        font-size: 12px !important;
+    }
+
+    /* Both tabs' desktop styling truncates long text with an ellipsis to
+       keep everything on one table row - once a row becomes a card
+       there's no need to cut anything off, so let it wrap and read in
+       full instead. */
+    #manageable .cell-date, #manageable .cell-college, #manageable .cell-category,
+    #manageable .cell-status, #manageable .cell-action, #manageable .subject-cell,
+    #manageable .subject-text, #manageable .small-text,
+    #view_only .subject-text, #view_only .small-text, #view_only .cell-college, #view_only .cell-category {
+        white-space: normal !important;
+        overflow: visible !important;
+        text-overflow: clip !important;
+    }
+
+    /* Cards with wrapped, multi-line text are taller than a single table
+       row - don't let the card's height get clipped. */
+    #manageable.table-card,
+    #view_only.table-card {
+        overflow-y: visible !important;
+    }
+
+    /* ROOT CAUSE of the horizontal scroll / Management-pushed-off-to-the-
+       -right bug: #manageable/#view_only's own desktop rules (min-width:
+       920px / 760px on the <table>, plus fixed-pixel nth-child column
+       widths, plus overflow-x:auto on the card) are ID-selectors with
+       higher specificity than the plain-class resets above, so they were
+       still winning and forcing the table wider than the phone screen.
+       Everything here is !important specifically to beat those ID rules -
+       nothing on this page should ever need horizontal scrolling again. */
+    #manageable.table-card,
+    #view_only.table-card {
+        width: 100% !important;
+        max-width: 100% !important;
+        overflow-x: hidden !important;
+        box-sizing: border-box !important;
+        padding: 14px !important;
+    }
+    #manageable table,
+    #view_only table {
+        width: 100% !important;
+        max-width: 100% !important;
+        min-width: 0 !important;
+        table-layout: auto !important;
+    }
+    #manageable table th, #manageable table td,
+    #view_only table th, #view_only table td {
+        width: 100% !important;
+        max-width: 100% !important;
+        min-width: 0 !important;
+    }
+    .table-card table tbody tr > * {
+        min-width: 0 !important;
+        max-width: 100% !important;
+        box-sizing: border-box !important;
+    }
+    .main, .dashboard-container {
+        width: 100% !important;
+        max-width: 100% !important;
+        overflow-x: hidden !important;
+        box-sizing: border-box !important;
+    }
+
+    /* #manageable/#view_only .cell-action forces text-align:right (and the
+       inline style="text-align:center" on the cell fights it too) so the
+       View/Manage button floats over to the right edge instead of sitting
+       directly under Management like every other field. */
+    #manageable .cell-action,
+    #view_only .cell-action {
+        text-align: left !important;
+    }
+}
+
+@media (max-width: 600px) {
+    /* Below 600px even the shrink-then-scroll fallback above makes every
+       filter a sliver you have to swipe sideways to find - stack them full
+       width instead so each one is actually readable and tappable. */
+    .controls-bottom {
+        flex-wrap: wrap;
+    }
+
+    .filter-group,
+    .filter-group:has(input[name="date_from"]),
+    .filter-group:has(input[name="date_to"]) {
+        flex: 1 1 100%;
+        min-width: 0;
     }
 }
 </style>
@@ -1051,33 +1260,25 @@ td { position: relative; }
                 <table>
                     <thead>
                         <tr>
-                            <th>Date Filed</th>
-                            <th>Submitter</th>
+                            <th>Student</th>
                             <th>College</th>
                             <?php if ($tabKey === 'view_only'): ?><th>Office</th><?php endif; ?>
                             <th>Category</th>
+                            <th>Year</th>
+                            <th>Submitted</th>
                             <th>Status</th>
-                            <th>Action</th>
+                            <th>Actions</th>
                         </tr>
                     </thead>
                     <tbody>
                         <?php if (empty($tabConfig['rows'])): ?>
                             <tr>
-                                <td colspan="<?php echo $tabKey === 'view_only' ? 7 : 6; ?>" class="no-data">No <?php echo $tabKey === 'manageable' ? 'manageable' : 'view-only'; ?> suggestions found for the selected filters.</td>
+                                <td colspan="<?php echo $tabKey === 'view_only' ? 8 : 7; ?>" class="no-data">No <?php echo $tabKey === 'manageable' ? 'manageable' : 'view-only'; ?> suggestions found for the selected filters.</td>
                             </tr>
                         <?php else: ?>
                             <?php foreach ($tabConfig['rows'] as $row): ?>
                                 <tr>
-                                    <td class="cell-date">
-                                        <?php echo e(date('M d, Y', strtotime((string)$row['created_at']))); ?>
-                                        <?php
-                                            $rowAgeLabel = suggestion_age_label((string)$row['created_at']);
-                                            $rowAgeHours = (int)floor((time() - strtotime((string)$row['created_at'])) / 3600);
-                                            $rowAgeClass = $rowAgeLabel === 'New' ? 'age-new' : ($rowAgeHours >= 24 ? 'age-overdue' : '');
-                                        ?>
-                                        <div class="age-badge <?php echo e($rowAgeClass); ?>"><?php echo e($rowAgeLabel); ?></div>
-                                    </td>
-                                    <td class="subject-cell">
+                                    <td class="subject-cell" data-label="Submitter">
                                         <div class="subject-text">
                                             <?php
                                                 $displayName = 'Anonymous Student';
@@ -1091,11 +1292,21 @@ td { position: relative; }
                                             ?>
                                         </div>
                                     </td>
-                                    <td class="cell-college"><?php echo e((string)$row['college_code']); ?></td>
-                                    <?php if ($tabKey === 'view_only'): ?><td class="cell-office"><?php echo e(trim((string)($row['office'] ?? '')) !== '' ? (string)$row['office'] : '—'); ?></td><?php endif; ?>
-                                    <td class="cell-category"><?php echo e((string)$row['category_name']); ?></td>
-                                    <td class="cell-status"><span class="status-badge <?php echo suggestion_status_badge((string)$row['status']); ?>"><?php echo e(suggestion_status_label((string)$row['status'])); ?></span></td>
-                                    <td class="cell-action" style="text-align:center;">
+                                    <td class="cell-college" data-label="College"><?php echo e((string)$row['college_code']); ?></td>
+                                    <?php if ($tabKey === 'view_only'): ?><td class="cell-office" data-label="Office"><?php echo e(trim((string)($row['office'] ?? '')) !== '' ? (string)$row['office'] : '—'); ?></td><?php endif; ?>
+                                    <td class="cell-category" data-label="Category"><?php echo e((string)$row['category_name']); ?></td>
+                                    <td data-label="Year"><?php echo e((int)($row['year_level'] ?? 0) > 0 ? (string)$row['year_level'] : 'N/A'); ?></td>
+                                    <td class="cell-date" data-label="Submitted">
+                                        <?php echo e(date('M d, Y', strtotime((string)$row['created_at']))); ?>
+                                        <?php
+                                            $rowAgeLabel = suggestion_age_label((string)$row['created_at']);
+                                            $rowAgeHours = (int)floor((time() - strtotime((string)$row['created_at'])) / 3600);
+                                            $rowAgeClass = $rowAgeLabel === 'New' ? 'age-new' : ($rowAgeHours >= 24 ? 'age-overdue' : '');
+                                        ?>
+                                        <div class="age-badge <?php echo e($rowAgeClass); ?>"><?php echo e($rowAgeLabel); ?></div>
+                                    </td>
+                                    <td class="cell-status" data-label="Status"><span class="status-badge <?php echo suggestion_status_badge((string)$row['status']); ?>"><?php echo e(suggestion_status_label((string)$row['status'])); ?></span></td>
+                                    <td class="cell-action td-action" style="text-align:center;">
                                         <?php if ($tabConfig['canManage']): ?>
                                             <button
                                                 type="button"

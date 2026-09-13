@@ -622,6 +622,11 @@ body { background: #f4f6fb; }
 .document-section:last-child { border-bottom: 0; }
 .document-section-title { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 14px; color: #111827; font-weight: 700; }
 .document-section-title .section-label { font-size: 15px; }
+/* Field label/value typography matched to admin_complaints_details.php /
+   student ticket_detail.php, so a ticket looks the same on every side. */
+.label { font-size: 12px; color: #6b7280; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.08em; }
+.detail-value { color: #111827; font-size: 15px; line-height: 1.8; font-weight: 500; }
+.detail-value--paragraph { white-space: pre-wrap; }
 .call-slip-history-card { padding: 18px; position: sticky; top: 80px; }
 .call-slip-history-card > div:first-child { font-size: 15px; }
 .call-slip-history-list { display: flex; flex-direction: column; gap: 10px; }
@@ -915,18 +920,18 @@ body { background: #f4f6fb; }
             <div class="section-label">Complainant & Incident Details</div>
         </div>
         <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;">
-            <div><div style="font-size:12px;color:#6b7280;">Complainant name</div><div style="margin-top:6px;font-weight:600;"><?php echo e((string)($ticket['complainant_name'] ?? '')); ?></div></div>
-            <div><div style="font-size:12px;color:#6b7280;">Contact details</div><div style="margin-top:6px;"><?php echo e((string)($ticket['complainant_contact_details'] ?? '')); ?></div></div>
-            <div><div style="font-size:12px;color:#6b7280;">Date / Time</div><div style="margin-top:6px;"><?php echo e((string)($ticket['date_of_incident'] ?? '')); ?> <?php echo e((string)($ticket['time_of_incident'] ?? '')); ?></div></div>
-            <div><div style="font-size:12px;color:#6b7280;">Place of Incident</div><div style="margin-top:6px;"><?php echo e((string)($ticket['place_of_incident'] ?? '')); ?></div></div>
-            <div class="full" style="grid-column:1 / -1;"><div style="font-size:12px;color:#6b7280;">Person complained of</div><div style="margin-top:6px;"><?php echo e((string)($ticket['person_complained_of'] ?? '')); ?></div></div>
-            <div class="full" style="grid-column:1 / -1;"><div style="font-size:12px;color:#6b7280;">Act complained of</div><div style="margin-top:6px;white-space:pre-wrap;"><?php echo nl2br(e((string)($ticket['act_complained_of'] ?? ''))); ?></div></div>
+            <div><div class="label">Complainant name</div><div class="detail-value"><?php echo e((string)($ticket['complainant_name'] ?? '')); ?></div></div>
+            <div><div class="label">Contact details</div><div class="detail-value"><?php echo e((string)($ticket['complainant_contact_details'] ?? '')); ?></div></div>
+            <div><div class="label">Date / Time of Incident</div><div class="detail-value"><?php echo e((string)($ticket['date_of_incident'] ?? '')); ?> <?php echo e((string)($ticket['time_of_incident'] ?? '')); ?></div></div>
+            <div><div class="label">Place of Incident</div><div class="detail-value"><?php echo e((string)($ticket['place_of_incident'] ?? '')); ?></div></div>
+            <div class="full" style="grid-column:1 / -1;"><div class="label">Person complained of</div><div class="detail-value"><?php echo e((string)($ticket['person_complained_of'] ?? '')); ?></div></div>
+            <div class="full" style="grid-column:1 / -1;"><div class="label">Act complained of</div><div class="detail-value detail-value--paragraph"><?php echo nl2br(e((string)($ticket['act_complained_of'] ?? ''))); ?></div></div>
         </div>
 
         <?php if (!empty($ticket['attachments'])): ?>
             <?php $att = (string)$ticket['attachments']; $attPath = '../' . ltrim($att, '/'); $ext = strtolower(pathinfo($att, PATHINFO_EXTENSION)); $isImage = in_array($ext, ['jpg','jpeg','png','gif'], true); ?>
             <div style="margin-top:12px;">
-                <div style="font-size:12px;color:#6b7280;margin-bottom:6px;">Proof / Attachment</div>
+                <div class="label" style="margin-bottom:6px;">Proof / Attachment</div>
                 <?php if ($isImage): ?>
                     <a href="<?php echo e($attPath); ?>" target="_blank"><img src="<?php echo e($attPath); ?>" alt="attachment" style="max-width:360px;border-radius:8px;border:1px solid #eef2ff;"></a>
                 <?php else: ?>
@@ -938,10 +943,22 @@ body { background: #f4f6fb; }
 
     <?php if (!empty($ticket['desired_outcome'])): ?>
         <div class="document-section">
-            <div class="document-section-title"><div class="section-label">Desired Outcome</div></div>
-            <div style="white-space:pre-wrap;"><?php echo nl2br(e((string)$ticket['desired_outcome'])); ?></div>
+            <div class="label">Expected Outcome</div>
+            <div class="detail-value detail-value--paragraph"><?php echo nl2br(e((string)$ticket['desired_outcome'])); ?></div>
         </div>
     <?php endif; ?>
+
+    <?php $termsAccepted = array_key_exists('terms_agreement_accepted', $ticket) ? (int)$ticket['terms_agreement_accepted'] : null; ?>
+    <div class="document-section">
+        <div class="label">Terms of Agreement</div>
+        <?php if ($termsAccepted === 1): ?>
+            <div class="detail-value detail-value--paragraph"><?php echo e(complaint_terms_agreement_statement()); ?> <?php echo e(complaint_terms_agreement_checkbox_label()); ?></div>
+        <?php elseif ($termsAccepted === 0): ?>
+            <div class="detail-value">Not agreed</div>
+        <?php else: ?>
+            <div class="detail-value">Unknown</div>
+        <?php endif; ?>
+    </div>
     </div>
 
     <div class="call-slip-history-card card">

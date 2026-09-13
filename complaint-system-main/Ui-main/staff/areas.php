@@ -37,7 +37,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         if ($action === 'add_area') {
             $name = trim((string)($_POST['name'] ?? ''));
-            $description = trim((string)($_POST['description'] ?? ''));
 
             if ($name === '') {
                 $error = 'Category name is required.';
@@ -59,14 +58,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $otherAreaId = ensure_other_suggestion_area($pdo);
 
                     $insert = $pdo->prepare(
-                        "INSERT INTO suggestion_categories (name, area_id, route_type, office, description, is_active)
-                         VALUES (:name, :area_id, 'office', :office, :description, 1)"
+                        "INSERT INTO suggestion_categories (name, area_id, route_type, office, is_active)
+                         VALUES (:name, :area_id, 'office', :office, 1)"
                     );
                     $insert->execute([
                         ':name' => $name,
                         ':area_id' => $otherAreaId > 0 ? $otherAreaId : null,
                         ':office' => $office,
-                        ':description' => $description !== '' ? $description : null,
                     ]);
 
                     $flash = 'Category added successfully.';
@@ -109,7 +107,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 $listStmt = $pdo->prepare(
-    'SELECT id, name, description, is_active, created_at
+    'SELECT id, name, is_active, created_at
      FROM suggestion_categories
      WHERE LOWER(TRIM(office)) = LOWER(TRIM(:office))
      ORDER BY name ASC'
@@ -191,14 +189,13 @@ tbody tr:hover { background: #fafafa; }
     <?php if ($error !== ''): ?><div class="notice error"><?= e($error) ?></div><?php endif; ?>
 
     <table>
-        <thead><tr><th>Category Name</th><th>Description</th><th>Status</th><th>Actions</th></tr></thead>
+        <thead><tr><th>Category Name</th><th>Status</th><th>Actions</th></tr></thead>
         <tbody>
         <?php if (!$areas): ?>
-            <tr><td colspan="4" class="empty">No categories have been added for your office yet.</td></tr>
+            <tr><td colspan="3" class="empty">No categories have been added for your office yet.</td></tr>
         <?php else: foreach ($areas as $area): ?>
             <tr>
                 <td><strong><?= e((string)$area['name']) ?></strong></td>
-                <td class="desc-cell"><?= e((string)($area['description'] ?: '—')) ?></td>
                 <td><span class="status <?= (int)$area['is_active'] === 1 ? 'status-active' : 'status-inactive' ?>"><?= (int)$area['is_active'] === 1 ? 'Active' : 'Inactive' ?></span></td>
                 <td>
                     <form method="post" style="display:inline;" onsubmit="return confirm('Are you sure you want to <?= (int)$area['is_active'] === 1 ? 'deactivate' : 'activate' ?> this category?');">
@@ -229,10 +226,6 @@ tbody tr:hover { background: #fafafa; }
             <div class="form-group">
                 <label for="areaName">Category Name</label>
                 <input id="areaName" name="name" placeholder="e.g. Book Availability" required>
-            </div>
-            <div class="form-group">
-                <label for="areaDescription">Description (Optional)</label>
-                <textarea id="areaDescription" name="description" placeholder="Briefly describe what this category covers..."></textarea>
             </div>
             <div class="form-group">
                 <label>Office</label>

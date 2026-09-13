@@ -187,7 +187,7 @@ body { background: #f9fafb; }
 .page-header { margin-bottom: 6px; }
 .page-header h2 { font-size: 24px; font-weight: 600; color: #333; }
 .page-subtitle { color: #6b7280; font-size: 14px; margin-bottom: 22px; }
-.card { background: #fff; padding: 20px; border-radius: 12px; border: 1px solid #e5e7eb; box-shadow: 0 2px 10px rgba(0,0,0,0.02); margin-bottom: 20px; }
+.card { background: #fff; padding: 20px; border-radius: 12px; border: 1px solid #e5e7eb; box-shadow: 0 2px 10px rgba(0,0,0,0.02); margin-bottom: 20px; overflow-x: auto; }
 .card h3 { font-size: 16px; font-weight: 600; color: #111827; margin-bottom: 14px; }
 .form-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
 .form-group label { display: block; font-size: 12.5px; font-weight: 500; color: #4b5563; margin-bottom: 6px; }
@@ -201,7 +201,7 @@ body { background: #f9fafb; }
 .flash { padding: 12px 16px; border-radius: 8px; margin-bottom: 18px; font-size: 13.5px; }
 .flash.success { background: #dcfce7; color: #166534; }
 .flash.error { background: #fee2e2; color: #b91c1c; }
-table { width: 100%; border-collapse: collapse; }
+table { width: 100%; border-collapse: collapse; min-width: 780px; }
 th { text-align: left; font-size: 11.5px; color: #9ca3af; padding: 12px 10px; border-bottom: 2px solid #f3f4f6; text-transform: uppercase; font-weight: 600; }
 td { padding: 12px 10px; font-size: 13.5px; color: #374151; border-bottom: 1px solid #f9fafb; vertical-align: middle; }
 .badge { display: inline-block; padding: 4px 10px; border-radius: 999px; font-size: 11.5px; font-weight: 600; }

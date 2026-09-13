@@ -321,7 +321,7 @@ body { margin: 0; background: #f4f6fb; color: #1f2937; }
 .quick-dates { display: flex; gap: 7px; flex-wrap: wrap; }
 .quick-date { border: 1px solid #ddd6fe; color: #6d28d9; background: #faf9ff; border-radius: 7px; padding: 7px 10px; font-size: 11px; font-weight: 600; cursor: pointer; }
 .quick-date:hover { background: #ede9fe; }
-.filter-actions { display: flex; gap: 7px; }
+.filter-actions { display: flex; gap: 7px; flex-wrap: wrap; }
 .apply-btn, .clear-btn { display: inline-flex; align-items: center; justify-content: center; height: 34px; padding: 0 13px; border-radius: 7px; font-size: 12px; font-weight: 600; text-decoration: none; cursor: pointer; }
 .apply-btn { border: 0; background: #6d28d9; color: #fff; }
 .clear-btn { border: 1px solid #d8dce5; background: #fff; color: #6b7280; }
@@ -382,8 +382,54 @@ tbody tr:hover { background: #fbfaff; }
 .empty { padding: 28px; color: #8b93a3; text-align: center; font-size: 12px; }
 .complaint-note { padding: 25px; color: #697386; font-size: 13px; line-height: 1.7; }
 @media (max-width: 1050px) { .filter-grid { grid-template-columns: repeat(3, minmax(150px, 1fr)); } .analytics-grid { grid-template-columns: 1fr; } }
-@media (max-width: 700px) { .main { margin-left: 0; padding: 16px; } .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .filter-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .search-row { flex-direction: column; } .primary-btn { width: 100%; } table.report-table { table-layout: auto; min-width: 900px; } }
-@media (max-width: 430px) { .filter-grid { grid-template-columns: 1fr; } .summary-grid { gap: 8px; } .metric { padding: 12px; } }
+@media (max-width: 700px) {
+    .main { margin-left: 0; padding: 16px; }
+    .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .filter-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .search-row { flex-direction: column; }
+    .primary-btn { width: 100%; }
+    .filter-footer { flex-direction: column; align-items: stretch; }
+    .quick-dates, .filter-actions { justify-content: center; }
+
+    /* A 9-10 column report table is unreadable even scrolled sideways - one
+       card per record, with every column labeled, is the only way this
+       stays actually usable on a phone. */
+    table.report-table { table-layout: auto; min-width: 0; }
+    .report-table thead { display: none; }
+    .report-table, .report-table tbody, .report-table tr, .report-table td { display: block; width: 100% !important; }
+    .report-table tbody tr {
+        border: 1px solid #eef0f3;
+        border-radius: 10px;
+        padding: 12px 14px;
+        margin-bottom: 12px;
+    }
+    .report-table tbody tr:last-child { margin-bottom: 0; }
+    .report-table td { padding: 4px 0; border-bottom: none; }
+    .report-table td[data-label]::before {
+        content: attr(data-label);
+        display: block;
+        font-size: 10px;
+        font-weight: 700;
+        color: #9ca3af;
+        text-transform: uppercase;
+        letter-spacing: .03em;
+        margin-bottom: 2px;
+    }
+    .report-table .subject { font-size: 13px; margin-bottom: 4px; }
+    .report-table .subject small { white-space: normal; }
+    .report-table td.td-action { padding-top: 8px; }
+    .report-table td.td-action .action-link {
+        display: inline-block;
+        width: 100%;
+        text-align: center;
+        padding: 8px 0;
+        border: 1px solid #ddd6fe;
+        border-radius: 7px;
+        background: #faf9ff;
+        box-sizing: border-box;
+    }
+}
+@media (max-width: 430px) { .filter-grid { grid-template-columns: 1fr; } .summary-grid { grid-template-columns: 1fr; gap: 8px; } .metric { padding: 12px; } }
 .back-to-top { position: fixed; right: 24px; bottom: 24px; width: 44px; height: 44px; border-radius: 50%; border: 0; background: #6d28d9; color: #fff; font-size: 20px; display: flex; align-items: center; justify-content: center; cursor: pointer; box-shadow: 0 6px 16px rgba(109,40,217,.35); z-index: 500; opacity: 0; visibility: hidden; transform: translateY(8px); transition: opacity .2s, transform .2s, visibility .2s; }
 .back-to-top.visible { opacity: 1; visibility: visible; transform: translateY(0); }
 .back-to-top:hover { background: #5b21b6; }
@@ -447,7 +493,7 @@ tbody tr:hover { background: #fbfaff; }
         <section class="card table-card">
             <h2>Complaint Reports</h2>
             <div class="table-scroll"><table class="report-table cols-9"><thead><tr><th>Date Submitted</th><th>Complaint</th><th>Category</th><th>College</th><th>Department</th><th>School Year</th><th>Semester</th><th>Status</th><th>Action</th></tr></thead><tbody>
-            <?php if (!$complaints): ?><tr><td class="empty" colspan="9">No complaints match the selected filters.</td></tr><?php else: foreach ($complaints as $complaint): ?><tr><td><?= e(date('M j, Y', strtotime((string)$complaint['created_at']))) ?></td><td class="subject"><?= e($complaint['act_complained_of'] ?: 'Complaint') ?><small><?= e($complaint['narrative_report']) ?></small></td><td><?= e($complaint['category_name']) ?></td><td><?= e($complaint['college_name']) ?></td><td><?= e($complaint['department_name']) ?></td><td><?= e($complaint['school_year'] ?: 'N/A') ?></td><td><?= e(report_semester_label($complaint['semester'])) ?></td><td><span class="status-pill <?= e($complaint['status']) ?>"><?= e(report_status_label($complaint['status'])) ?></span></td><td><a class="action-link" href="admin_complaints_details.php?id=<?= (int)$complaint['id'] ?>">View</a></td></tr><?php endforeach; endif; ?>
+            <?php if (!$complaints): ?><tr><td class="empty" colspan="9">No complaints match the selected filters.</td></tr><?php else: foreach ($complaints as $complaint): ?><tr><td data-label="Date Submitted"><?= e(date('M j, Y', strtotime((string)$complaint['created_at']))) ?></td><td class="subject"><?= e($complaint['act_complained_of'] ?: 'Complaint') ?><small><?= e($complaint['narrative_report']) ?></small></td><td data-label="Category"><?= e($complaint['category_name']) ?></td><td data-label="College"><?= e($complaint['college_name']) ?></td><td data-label="Department"><?= e($complaint['department_name']) ?></td><td data-label="School Year"><?= e($complaint['school_year'] ?: 'N/A') ?></td><td data-label="Semester"><?= e(report_semester_label($complaint['semester'])) ?></td><td data-label="Status"><span class="status-pill <?= e($complaint['status']) ?>"><?= e(report_status_label($complaint['status'])) ?></span></td><td class="td-action"><a class="action-link" href="admin_complaints_details.php?id=<?= (int)$complaint['id'] ?>">View</a></td></tr><?php endforeach; endif; ?>
             </tbody></table></div>
         </section>
     <?php else: ?>
@@ -465,7 +511,7 @@ tbody tr:hover { background: #fbfaff; }
         <section class="card chart-card" style="margin-bottom:14px"><h2>Suggestions Over Time</h2><div class="chart-wrap"><canvas id="trendChart"></canvas></div></section>
         <section class="card office-card"><h2>Top Offices Receiving Suggestions</h2><?php $maxOffice = max(1, (int)($officeCounts[0]['total'] ?? 1)); foreach ($officeCounts as $officeRow): ?><div class="office-item"><span><?= e($officeRow['label']) ?></span><div class="bar"><span style="width:<?= round((int)$officeRow['total'] / $maxOffice * 100) ?>%"></span></div><strong><?= (int)$officeRow['total'] ?></strong></div><?php endforeach; ?><?php if (!$officeCounts): ?><div class="empty">No office data for the selected filters.</div><?php endif; ?></section>
 
-        <section class="card table-card"><h2>Suggestions</h2><div class="table-scroll"><table class="report-table cols-10"><thead><tr><th>Date Submitted</th><th>Suggestion</th><th>Category</th><th>College</th><th>Department</th><th>Office</th><th>School Year</th><th>Semester</th><th>Status</th><th>Action</th></tr></thead><tbody><?php if (!$suggestions): ?><tr><td class="empty" colspan="10">No suggestions match the selected filters.</td></tr><?php else: foreach ($suggestions as $suggestion): ?><tr><td><?= e(date('M j, Y', strtotime((string)$suggestion['created_at']))) ?></td><td class="subject"><?= e($suggestion['subject']) ?><small><?= e($suggestion['description']) ?></small></td><td><?= e($suggestion['category_name']) ?></td><td><?= e($suggestion['college_name']) ?></td><td><?= e($suggestion['department_name']) ?></td><td><?= e($suggestion['office'] ?: 'Unassigned') ?></td><td><?= e($suggestion['school_year'] ?: 'N/A') ?></td><td><?= e(report_semester_label($suggestion['semester'])) ?></td><td><span class="status-pill <?= e($suggestion['status']) ?>"><?= e(report_status_label($suggestion['status'])) ?></span></td><td><a class="action-link" href="<?= $suggestion['college_id'] !== null ? 'admin_viewOnly_suggestions.php' : 'admin_suggestion_detail.php' ?>?id=<?= (int)$suggestion['id'] ?>">View</a></td></tr><?php endforeach; endif; ?></tbody></table></div></section>
+        <section class="card table-card"><h2>Suggestions</h2><div class="table-scroll"><table class="report-table cols-10"><thead><tr><th>Date Submitted</th><th>Suggestion</th><th>Category</th><th>College</th><th>Department</th><th>Office</th><th>School Year</th><th>Semester</th><th>Status</th><th>Action</th></tr></thead><tbody><?php if (!$suggestions): ?><tr><td class="empty" colspan="10">No suggestions match the selected filters.</td></tr><?php else: foreach ($suggestions as $suggestion): ?><tr><td data-label="Date Submitted"><?= e(date('M j, Y', strtotime((string)$suggestion['created_at']))) ?></td><td class="subject"><?= e($suggestion['subject']) ?><small><?= e($suggestion['description']) ?></small></td><td data-label="Category"><?= e($suggestion['category_name']) ?></td><td data-label="College"><?= e($suggestion['college_name']) ?></td><td data-label="Department"><?= e($suggestion['department_name']) ?></td><td data-label="Office"><?= e($suggestion['office'] ?: 'Unassigned') ?></td><td data-label="School Year"><?= e($suggestion['school_year'] ?: 'N/A') ?></td><td data-label="Semester"><?= e(report_semester_label($suggestion['semester'])) ?></td><td data-label="Status"><span class="status-pill <?= e($suggestion['status']) ?>"><?= e(report_status_label($suggestion['status'])) ?></span></td><td class="td-action"><a class="action-link" href="<?= $suggestion['college_id'] !== null ? 'admin_viewOnly_suggestions.php' : 'admin_suggestion_detail.php' ?>?id=<?= (int)$suggestion['id'] ?>">View</a></td></tr><?php endforeach; endif; ?></tbody></table></div></section>
     <?php endif; ?>
 </div></main>
 <button type="button" id="backToTopBtn" class="back-to-top" title="Back to top" aria-label="Back to top"><i class="bx bx-up-arrow-alt"></i></button>

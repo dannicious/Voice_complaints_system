@@ -176,13 +176,16 @@ try {
 
     // Defense in depth: filing is only allowed for the current school year
     // and semester, even if this is posted directly while a past period is selected.
+    if (!sy_calendar_configured_for_date($pdo, date('Y-m-d'))) {
+        back_with_message('error', 'Filing is temporarily unavailable - the academic calendar for the current period has not been set up yet. Please contact the SAS Office.');
+    }
     $schoolYearCurrent = sy_current($pdo);
     $schoolYearSelected = sy_get_selected($pdo, (int)$student['id']);
     if ($schoolYearSelected !== $schoolYearCurrent) {
         back_with_message('error', 'Switch to the current school year (' . $schoolYearCurrent . ') to send a new suggestion.');
     }
-    $semesterCurrent = semester_current();
-    $semesterSelected = semester_get_selected();
+    $semesterCurrent = semester_current($pdo);
+    $semesterSelected = semester_get_selected($pdo);
     if ($semesterSelected !== $semesterCurrent) {
         back_with_message('error', 'Switch to the current semester (' . semester_display_label($semesterCurrent) . ') to send a new suggestion.');
     }
@@ -264,6 +267,7 @@ try {
             subject,
             description,
             expected_outcome,
+            terms_agreement_accepted,
             attachment,
             status,
             school_year,
@@ -278,6 +282,7 @@ try {
             :subject,
             :description,
             :expected_outcome,
+            :terms_agreement_accepted,
             :attachment,
             :status,
             :school_year,
@@ -295,6 +300,7 @@ try {
         ':subject' => $subject,
         ':description' => $description,
         ':expected_outcome' => trim((string)($draft['expected_outcome'] ?? '')),
+        ':terms_agreement_accepted' => !empty($draft['terms_agreement_accepted']) ? 1 : 0,
         ':attachment' => $attachment,
         ':status' => 'under_review',
         ':school_year' => $schoolYearCurrent,

@@ -110,6 +110,7 @@ SELECT
     sp.id AS student_id,
     sp.first_name,
     sp.last_name,
+    sp.year_level,
     tf.id AS feedback_id,
     tf.satisfaction AS feedback_satisfaction,
     tf.comment AS feedback_comment,
@@ -546,6 +547,20 @@ body {
     }
 }
 
+@media (max-width: 600px) {
+    /* Three filter dropdowns crammed into one row leaves each barely wide
+       enough to show its own label on a phone - one full-width filter per
+       row is far easier to read and tap correctly. */
+    .controls-bottom,
+    .controls-bottom.without-department {
+        grid-template-columns: 1fr;
+    }
+
+    .controls-bottom .btn-reset {
+        width: 100%;
+    }
+}
+
 .btn-apply-filter {
     display: flex;
     align-items: center;
@@ -790,10 +805,11 @@ tbody tr:hover { background-color: #fcfcfc; }
     cursor: pointer;
 }
 
-/* Ensure action buttons are clickable above table rows or overlays */
+/* Keep action buttons in the normal table flow so they do not appear to float
+   while scrolling and overlapping neighboring rows. */
 .btn-icon, .btn-manage, .btn-view {
-    position: relative;
-    z-index: 2;
+    position: static;
+    z-index: auto;
     pointer-events: auto;
 }
 
@@ -876,12 +892,19 @@ tbody tr:hover { background-color: #fcfcfc; }
     color: #374151;
     border-bottom: 1px solid #f3f4f6;
 }
-#manageable table th:nth-child(1), #manageable table td:nth-child(1) { width: 116px; }
-#manageable table th:nth-child(2), #manageable table td:nth-child(2) { width: 31%; }
-#manageable table th:nth-child(3), #manageable table td:nth-child(3) { width: 120px; }
-#manageable table th:nth-child(4), #manageable table td:nth-child(4) { width: 18%; }
-#manageable table th:nth-child(5), #manageable table td:nth-child(5) { width: 150px; }
-#manageable table th:nth-child(6), #manageable table td:nth-child(6) { width: 112px; text-align: right; }
+#manageable table th:nth-child(1), #manageable table td:nth-child(1) { width: 25%; }
+#manageable table th:nth-child(2), #manageable table td:nth-child(2) { width: 14%; }
+#manageable table th:nth-child(3), #manageable table td:nth-child(3) { width: 20%; }
+#manageable table th:nth-child(4), #manageable table td:nth-child(4) { width: 15%; }
+#manageable table th:nth-child(5), #manageable table td:nth-child(5) { width: 16%; }
+#manageable table th:nth-child(6), #manageable table td:nth-child(6) { width: 10%; text-align: right; }
+#manageable table th:nth-child(1), #manageable table td:nth-child(1) { width: 23%; }
+#manageable table th:nth-child(2), #manageable table td:nth-child(2) { width: 13%; }
+#manageable table th:nth-child(3), #manageable table td:nth-child(3) { width: 18%; }
+#manageable table th:nth-child(4), #manageable table td:nth-child(4) { width: 10%; }
+#manageable table th:nth-child(5), #manageable table td:nth-child(5) { width: 14%; }
+#manageable table th:nth-child(6), #manageable table td:nth-child(6) { width: 12%; }
+#manageable table th:nth-child(7), #manageable table td:nth-child(7) { width: 10%; text-align: right; }
 
 #manageable .cell-ticket,
 #manageable .cell-date,
@@ -933,36 +956,56 @@ tbody tr:hover { background-color: #fcfcfc; }
     font-size: 10px;
     padding: 3px 8px;
 }
-#manageable .btn-manage {
-    padding: 8px 11px;
-    height: 38px;
-    border-radius: 8px;
-    min-width: 96px;
-    color: #fff;
+#manageable .btn-manage,
+#manageable .btn-icon.btn-view {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
     justify-content: center;
+    gap: 6px;
+    min-width: 0;
+    height: 34px;
+    padding: 0 14px;
+    border-radius: 8px;
+    font-size: 12px;
+    font-weight: 600;
+    white-space: nowrap;
     position: relative !important;
     z-index: 2 !important;
     pointer-events: auto !important;
     cursor: pointer !important;
-    isolation: isolate;
-    white-space: nowrap;
-    font-size: 12px;
-    font-weight: 600;
-    box-shadow: 0 5px 12px rgba(109, 40, 217, 0.14);
-    transition: transform .18s ease, background-color .18s ease, box-shadow .18s ease;
+    box-shadow: none;
+    transform: none;
+    transition: background-color .18s ease;
 }
-#manageable .btn-manage:hover {
+#manageable .btn-manage:hover,
+#manageable .btn-icon.btn-view:hover {
     background: #5d1fa0;
-    transform: translateY(-1px);
-    box-shadow: 0 7px 16px rgba(109, 40, 217, 0.2);
+    transform: none;
+    box-shadow: none;
 }
 
+/* Keep manageable and view-only complaint tables inside the content card. */
+.table-card { overflow-x: hidden; }
+.table-card table { width: 100%; max-width: 100%; min-width: 0; table-layout: fixed; }
+.table-card table thead th { padding-left: 8px; padding-right: 8px; }
+.table-card table td { padding-left: 8px; padding-right: 8px; }
+.table-card table .td-action { white-space: nowrap; }
+.table-card table .btn-icon.btn-view,
+.table-card table .btn-manage { min-width: 76px; padding-left: 8px; padding-right: 8px; }
+
 @media (max-width: 900px) {
-    #manageable .table-card { padding: 18px 14px 8px; }
-    #manageable table { min-width: 880px; }
+    #manageable .table-card {
+        padding: 18px 14px 8px;
+        width: 100%;
+        max-width: 100%;
+        box-sizing: border-box;
+        overflow-x: hidden;
+    }
+    #manageable table {
+        min-width: 0;
+        width: 100%;
+        max-width: 100%;
+    }
     #manageable table thead th,
     #manageable table td { padding-left: 12px; padding-right: 12px; }
 }
@@ -1077,6 +1120,11 @@ tbody tr:hover { background-color: #fcfcfc; }
     font-weight: 700;
 }
 
+/* Extra field only meant for the mobile card view (e.g. the Manageable tab's
+   "Management" badge, added purely for visual parity with View Only's card -
+   the desktop table has no such column). */
+.mobile-only-field { display: none; }
+
 .badge-admin {
     background: #ede9fe;
     color: #6d28d9;
@@ -1097,6 +1145,15 @@ tbody tr:hover { background-color: #fcfcfc; }
         margin-left: 0;
         padding: 14px;
         margin-top: 61px;
+        width: 100% !important;
+        max-width: 100% !important;
+        box-sizing: border-box;
+    }
+
+    .dashboard-container {
+        width: 100% !important;
+        max-width: 100% !important;
+        box-sizing: border-box;
     }
 
     .search-box {
@@ -1104,13 +1161,145 @@ tbody tr:hover { background-color: #fcfcfc; }
         max-width: 100%;
     }
 
-    table {
-        min-width: 700px;
-    }
-
     .nav-tabs {
         gap: 20px;
     }
+
+    .table-card {
+        width: 100% !important;
+        max-width: 100% !important;
+        box-sizing: border-box;
+        overflow-x: hidden !important;
+    }
+
+    /* Scrolling sideways through a 6-7 column table (with AI chips, status
+       badges, and a "Manage"/"View" button in the mix) is hard to make
+       sense of on a phone - one card per record instead, every column
+       labeled, keeps everything readable without any horizontal scrolling. */
+    .table-card table {
+        min-width: 0 !important;
+        width: 100% !important;
+        max-width: 100% !important;
+    }
+    .table-card table thead { display: none; }
+    .table-card table, .table-card table tbody, .table-card table tr { display: block; width: 100% !important; max-width: 100% !important; }
+    .table-card table td { display: block; width: 100% !important; max-width: 100% !important; box-sizing: border-box; }
+    /* flex (not plain block) so the Manageable tab's fields can be put in
+       the same visual order as View Only's card via the order property
+       below, without touching the desktop table's actual column order. */
+    .table-card table tbody tr {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        border: 1px solid #eef0f3;
+        border-radius: 10px;
+        padding: 12px 14px;
+        margin-bottom: 12px;
+        width: 100% !important;
+        max-width: 100% !important;
+        box-sizing: border-box;
+        min-width: 0;
+    }
+    .table-card table tbody tr:last-child { margin-bottom: 0; }
+    .table-card table td {
+        padding: 4px 0 !important;
+        border-bottom: none;
+        width: 100% !important;
+        max-width: 100% !important;
+        text-align: left !important;
+        box-sizing: border-box;
+    }
+    .table-card table td[data-label="Management"],
+    .table-card table td.mobile-only-field {
+        display: block !important;
+        width: 100% !important;
+        text-align: left !important;
+    }
+    .table-card table td[data-label="Management"] .badge-inline,
+    .table-card table td.mobile-only-field .badge-inline {
+        margin-left: 0 !important;
+        display: inline-flex !important;
+        justify-content: flex-start !important;
+        text-align: left !important;
+    }
+    .table-card table td[data-label]::before {
+        content: attr(data-label);
+        display: block;
+        font-size: 11px;
+        font-weight: 700;
+        color: #9ca3af;
+        text-transform: uppercase;
+        letter-spacing: .03em;
+        margin-bottom: 2px;
+    }
+    .table-card table td.td-action {
+        padding-top: 8px !important;
+        text-align: left;
+        align-self: flex-start;
+        display: block !important;
+        width: 100% !important;
+        justify-content: flex-start;
+    }
+    .table-card .mobile-only-field { display: block; padding-top: 8px !important; }
+
+    /* Match View Only's card field order: Student, College, Category,
+       Submitted, Status, Management, then the action button. */
+    #manageable .subject-cell { order: 1; }
+    #manageable .cell-college { order: 2; }
+    #manageable .cell-category { order: 3; }
+    #manageable .cell-date { order: 4; }
+    #manageable .cell-status { order: 5; }
+    #manageable .mobile-only-field { order: 6; }
+    #manageable .td-action { order: 7; display: block !important; text-align: left; }
+
+    /* The complaint subject line isn't part of View Only's card design -
+       show just the submitter's name under the "Student" label, matching
+       it exactly. The full complaint text is still one tap away. */
+    #manageable .subject-cell .subject-text { display: none; }
+    #manageable .subject-cell .small-text {
+        color: #111827;
+        font-size: 15px;
+        font-weight: 500;
+    }
+
+    /* #manageable's "Manage" button is a bigger, chunkier button by design
+       (unlike View Only's compact icon-link style) - stretched full width
+       it turned into an oversized purple bar. Keep it at its normal,
+       compact size instead, same as View Only's button already is. */
+    .table-card table td.td-action .btn-manage,
+    .table-card table td.td-action .btn-view {
+        width: auto;
+        height: 34px !important;
+        min-width: 0 !important;
+        padding: 0 14px !important;
+        font-size: 12px !important;
+        margin-left: 0 !important;
+        display: inline-flex !important;
+        align-self: flex-start !important;
+        text-align: left !important;
+    }
+
+    /* #manageable's desktop styling truncates long text with an ellipsis
+       to keep everything on one table row - once a row becomes a card
+       there's no need to cut anything off, so let it wrap and read in
+       full, same as the already-clean View Only tab. */
+    #manageable .cell-ticket,
+    #manageable .cell-date,
+    #manageable .cell-college,
+    #manageable .cell-category,
+    #manageable .cell-status,
+    #manageable .cell-action,
+    #manageable .subject-cell,
+    #manageable .subject-text,
+    #manageable .small-text {
+        white-space: normal !important;
+        overflow: visible !important;
+        text-overflow: clip !important;
+    }
+
+    /* Cards with wrapped, multi-line text are taller than a single table
+       row - don't let the card's height get clipped. */
+    #manageable .table-card { overflow-y: visible !important; }
 }
 .scroll-top-btn { position: fixed; right: 24px; bottom: 24px; width: 44px; height: 44px; border-radius: 999px; background: #6b46c1; color: #fff; border: none; display: none; align-items: center; justify-content: center; cursor: pointer; box-shadow: 0 10px 24px rgba(107, 70, 193, 0.35); z-index: 500; transition: background .15s ease, transform .15s ease, opacity .2s ease; opacity: 0; transform: translateY(8px); }
 .scroll-top-btn.visible { display: flex; opacity: 1; transform: translateY(0); }
@@ -1250,28 +1439,19 @@ tbody tr:hover { background-color: #fcfcfc; }
                     <table>
                         <thead>
                             <tr>
-                                <?php if ($tabKey === 'manageable'): ?>
-                                    <th>Date Filed</th>
-                                    <th>Subject & Submitter</th>
-                                    <th>College</th>
-                                    <th>Category</th>
-                                    <th>Status</th>
-                                    <th>Action</th>
-                                <?php else: ?>
-                                    <th>Student</th>
-                                    <th>College</th>
-                                    <th>Category</th>
-                                    <th>Submitted</th>
-                                    <th>Status</th>
-                                    <th>Management</th>
-                                    <th>Actions</th>
-                                <?php endif; ?>
+                                <th>Student</th>
+                                <th>College</th>
+                                <th>Category</th>
+                                <th>Year</th>
+                                <th>Submitted</th>
+                                <th>Status</th>
+                                <th>Actions</th>
                             </tr>
                         </thead>
                         <tbody>
                             <?php if (!$tabConfig['rows']): ?>
                                 <tr>
-                                    <td colspan="<?php echo $tabKey === 'manageable' ? 6 : 7; ?>" class="no-data">
+                                    <td colspan="7" class="no-data">
                                         No <?php echo $tabKey === 'manageable' ? 'manageable' : 'view-only'; ?> complaints found for the selected filters.
                                     </td>
                                 </tr>
@@ -1279,33 +1459,31 @@ tbody tr:hover { background-color: #fcfcfc; }
                                 <?php foreach ($tabConfig['rows'] as $row): ?>
                                     <tr>
                                         <?php if ($tabKey === 'manageable'): ?>
-                                            <td class="cell-date"><?php echo e(date('M d, Y', strtotime((string)$row['created_at']))); ?></td>
-                                            <td class="subject-cell">
-                                                <div class="subject-text" title="<?php echo e((string)$row['act_complained_of']); ?>"><?php echo e((string)$row['act_complained_of']); ?></div>
-                                                <div class="small-text">
-                                                    <?php
-                                                        $submitter = 'Anonymous Student';
-                                                        if ((int)$row['is_anonymous'] !== 1) {
-                                                            $submitter = trim((string)$row['first_name'] . ' ' . (string)$row['last_name']);
-                                                            if ($submitter === '') {
-                                                                $submitter = 'Student';
-                                                            }
+                                            <td class="subject-cell" data-label="Student">
+                                                <?php
+                                                    $submitter = 'Anonymous Student';
+                                                    if ((int)$row['is_anonymous'] !== 1) {
+                                                        $submitter = trim((string)$row['first_name'] . ' ' . (string)$row['last_name']);
+                                                        if ($submitter === '') {
+                                                            $submitter = 'Student';
                                                         }
-                                                        echo e($submitter);
-                                                    ?>
-                                                </div>
+                                                    }
+                                                ?>
+                                                <div class="subject-text" title="<?php echo e($submitter); ?>"><?php echo e($submitter); ?></div>
                                             </td>
-                                            <td class="cell-college"><?php echo e((string)$row['college_code']); ?></td>
-                                            <td class="cell-category"><?php echo e((string)$row['category_name']); ?><?php echo groq_language_chip($row['ai_detected_language'] ?? null); ?></td>
+                                            <td class="cell-college" data-label="College"><?php echo e((string)$row['college_code']); ?></td>
+                                            <td class="cell-category" data-label="Category"><?php echo e((string)$row['category_name']); ?><?php echo groq_language_chip($row['ai_detected_language'] ?? null); ?></td>
+                                            <td data-label="Year"><?php echo e((int)($row['year_level'] ?? 0) > 0 ? (string)$row['year_level'] : 'N/A'); ?></td>
+                                            <td class="cell-date" data-label="Submitted"><?php echo e(date('M d, Y', strtotime((string)$row['created_at']))); ?></td>
                                             <?php
                                                 $rowCreatedAt = (string)$row['created_at'];
                                                 $rowStatus = (string)$row['status'];
                                                 $rowStatusBadgeClass = complaint_new_status_badge_class($rowCreatedAt, $rowStatus) ?? complaint_status_badge($rowStatus);
                                                 $rowStatusLabel = complaint_new_status_label($rowCreatedAt, $rowStatus) ?? ucfirst(str_replace('_', ' ', $rowStatus));
                                             ?>
-                                            <td class="cell-status"><span class="status-badge <?php echo e($rowStatusBadgeClass); ?>"><?php echo e($rowStatusLabel); ?></span><div><?php echo complaint_age_badge($rowCreatedAt, $rowStatus); ?><?php echo ai_urgency_chip($row['urgency_level'] ?? null); ?></div></td>
-                                            <td class="cell-action">
-                                                <button class="btn-manage btn-view" type="button"
+                                            <td class="cell-status" data-label="Status"><span class="status-badge <?php echo e($rowStatusBadgeClass); ?>"><?php echo e($rowStatusLabel); ?></span><div><?php echo complaint_age_badge($rowCreatedAt, $rowStatus); ?><?php echo ai_urgency_chip($row['urgency_level'] ?? null); ?></div></td>
+                                            <td class="cell-action td-action">
+                                                <button class="btn-icon btn-view" type="button"
                                                     data-id="<?php echo (int)$row['id']; ?>"
                                                     data-ticket="<?php echo e((string)$row['ticket_no']); ?>"
                                                     data-act-complained="<?php echo e((string)$row['act_complained_of']); ?>"
@@ -1335,7 +1513,7 @@ tbody tr:hover { background-color: #fcfcfc; }
                                                 </button>
                                             </td>
                                         <?php else: ?>
-                                            <td>
+                                            <td data-label="Student" class="subject-cell">
                                                 <?php
                                                     $displayName = 'Anonymous Student';
                                                     if ((int)$row['is_anonymous'] !== 1) {
@@ -1347,28 +1525,23 @@ tbody tr:hover { background-color: #fcfcfc; }
                                                     echo e($displayName);
                                                 ?>
                                             </td>
-                                            <td><?php echo e((string)$row['college_code']); ?></td>
-                                            <td><?php echo e((string)$row['category_name']); ?><?php echo groq_language_chip($row['ai_detected_language'] ?? null); ?></td>
-                                            <td><?php echo e(date('M d, Y', strtotime((string)$row['created_at']))); ?></td>
+                                            <td data-label="College"><?php echo e((string)$row['college_code']); ?></td>
+                                            <td data-label="Category"><?php echo e((string)$row['category_name']); ?><?php echo groq_language_chip($row['ai_detected_language'] ?? null); ?></td>
+                                            <td data-label="Year"><?php echo e((int)($row['year_level'] ?? 0) > 0 ? (string)$row['year_level'] : 'N/A'); ?></td>
+                                            <td data-label="Submitted"><?php echo e(date('M d, Y', strtotime((string)$row['created_at']))); ?></td>
                                             <?php
                                                 $rowCreatedAt = (string)$row['created_at'];
                                                 $rowStatus = (string)$row['status'];
                                                 $rowStatusBadgeClass = complaint_new_status_badge_class($rowCreatedAt, $rowStatus) ?? complaint_status_badge($rowStatus);
                                                 $rowStatusLabel = complaint_new_status_label($rowCreatedAt, $rowStatus) ?? ucfirst(str_replace('_', ' ', $rowStatus));
                                             ?>
-                                            <td>
+                                            <td data-label="Status">
                                                 <span class="status-badge <?php echo e($rowStatusBadgeClass); ?>">
                                                     <?php echo e($rowStatusLabel); ?>
                                                 </span>
                                                 <div><?php echo complaint_age_badge($rowCreatedAt, $rowStatus); ?><?php echo ai_urgency_chip($row['urgency_level'] ?? null); ?></div>
                                             </td>
-                                            <td>
-                                                <span class="badge-inline badge-dean">
-                                                    <i class='bx bx-shield-quarter'></i>
-                                                    Dean Managed
-                                                </span>
-                                            </td>
-                                            <td>
+                                            <td class="td-action">
                                                 <div class="action-btns">
                                                     <button class="btn-icon btn-view" type="button"
                                                         data-id="<?php echo (int)$row['id']; ?>"
@@ -1418,559 +1591,26 @@ tbody tr:hover { background-color: #fcfcfc; }
     </div>
 </div>
 
-<!-- View Complaint Modal -->
-<div id="viewModal" class="modal">
-    <div class="modal-card" style="max-width: 700px; max-height: 90vh; overflow-y: auto;">
-        <div class="modal-header">
-            <div class="modal-title" id="viewModalTitle">Complaint Details</div>
-            <button class="modal-close" onclick="closeModal('viewModal')">✕</button>
-        </div>
-        <div class="modal-body">
-            <!-- COMPLAINANT INFORMATION -->
-            <fieldset style="border: 1px solid #e5e7eb; border-radius: 8px; padding: 15px; margin-bottom: 20px;">
-                <legend style="font-weight: 600; color: #333; padding: 0 10px; font-size: 14px;">Complainant Information</legend>
-                <div class="form-group">
-                    <label style="font-size: 12px; color: #666; font-weight: 500;">Name</label>
-                    <p id="viewComplainant" style="font-size: 14px; margin: 5px 0; padding: 8px 0;">N/A</p>
-                </div>
-                <div class="form-group">
-                    <label style="font-size: 12px; color: #666; font-weight: 500;">Address</label>
-                    <p id="viewComplainantAddress" style="font-size: 14px; margin: 5px 0; padding: 8px 0;">N/A</p>
-                </div>
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
-                    <div class="form-group">
-                        <label style="font-size: 12px; color: #666; font-weight: 500;">Sex</label>
-                        <p id="viewComplainantSex" style="font-size: 14px; margin: 5px 0; padding: 8px 0;">N/A</p>
-                    </div>
-                    <div class="form-group">
-                        <label style="font-size: 12px; color: #666; font-weight: 500;">Age</label>
-                        <p id="viewComplainantAge" style="font-size: 14px; margin: 5px 0; padding: 8px 0;">N/A</p>
-                    </div>
-                </div>
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
-                    <div class="form-group">
-                        <label style="font-size: 12px; color: #666; font-weight: 500;">Civil Status</label>
-                        <p id="viewComplainantCivilStatus" style="font-size: 14px; margin: 5px 0; padding: 8px 0;">N/A</p>
-                    </div>
-                    <div class="form-group">
-                        <label style="font-size: 12px; color: #666; font-weight: 500;">Contact Details</label>
-                        <p id="viewComplainantContact" style="font-size: 14px; margin: 5px 0; padding: 8px 0;">N/A</p>
-                    </div>
-                </div>
-            </fieldset>
-
-            <!-- PERSON COMPLAINED OF -->
-            <fieldset style="border: 1px solid #e5e7eb; border-radius: 8px; padding: 15px; margin-bottom: 20px;">
-                <legend style="font-weight: 600; color: #333; padding: 0 10px; font-size: 14px;">Person/Office Complained Of</legend>
-                <div class="form-group">
-                    <label style="font-size: 12px; color: #666; font-weight: 500;">Name</label>
-                    <p id="viewPersonComplained" style="font-size: 14px; margin: 5px 0; padding: 8px 0;">N/A</p>
-                </div>
-            </fieldset>
-
-            <!-- INCIDENT DETAILS -->
-            <fieldset style="border: 1px solid #e5e7eb; border-radius: 8px; padding: 15px; margin-bottom: 20px;">
-                <legend style="font-weight: 600; color: #333; padding: 0 10px; font-size: 14px;">Incident Details</legend>
-                <div class="form-group">
-                    <label style="font-size: 12px; color: #666; font-weight: 500;">Complaint ID</label>
-                    <p id="viewTicketNo" style="font-size: 14px; margin: 5px 0; padding: 8px 0; font-weight: 600; color: #4F8CFF;">N/A</p>
-                </div>
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
-                    <div class="form-group">
-                        <label style="font-size: 12px; color: #666; font-weight: 500;">Date of Incident</label>
-                        <p id="viewDateIncident" style="font-size: 14px; margin: 5px 0; padding: 8px 0;">N/A</p>
-                    </div>
-                    <div class="form-group">
-                        <label style="font-size: 12px; color: #666; font-weight: 500;">Time of Incident</label>
-                        <p id="viewTimeIncident" style="font-size: 14px; margin: 5px 0; padding: 8px 0;">N/A</p>
-                    </div>
-                </div>
-                <div class="form-group">
-                    <label style="font-size: 12px; color: #666; font-weight: 500;">Place of Incident</label>
-                    <p id="viewPlaceIncident" style="font-size: 14px; margin: 5px 0; padding: 8px 0;">N/A</p>
-                </div>
-                <div class="form-group">
-                    <label style="font-size: 12px; color: #666; font-weight: 500;">Category</label>
-                    <p id="viewCategory" style="font-size: 14px; margin: 5px 0; padding: 8px 0;">N/A</p>
-                </div>
-                <div class="form-group">
-                    <label style="font-size: 12px; color: #666; font-weight: 500;">Act/s Complained Of</label>
-                    <p id="viewActComplained" style="font-size: 14px; margin: 5px 0; padding: 8px 0;">N/A</p>
-                </div>
-                <div class="form-group">
-                    <label style="font-size: 12px; color: #666; font-weight: 500;">Narrative Report</label>
-                    <div id="viewNarrative" style="font-size: 14px; margin: 5px 0; padding: 10px; background: #f9fafb; border-radius: 6px; min-height: 60px;">N/A</div>
-                </div>
-            </fieldset>
-
-            <!-- PROOF OF COMPLAINT -->
-            <fieldset style="border: 1px solid #e5e7eb; border-radius: 8px; padding: 15px; margin-bottom: 20px;">
-                <legend style="font-weight: 600; color: #333; padding: 0 10px; font-size: 14px;">Proof of Complaint</legend>
-                <div class="form-group" id="attachmentGroup" style="display:none;">
-                    <label style="font-size: 12px; color: #666; font-weight: 500;">Attachment</label>
-                    <img id="attachmentImage" src="" alt="Attachment" style="max-width: 100%; max-height: 300px; border-radius: 8px; cursor: pointer; margin-top: 10px; display: none;" onclick="window.open(this.src, '_blank')">
-                    <a id="attachmentLink" target="_blank" style="
-                        display: inline-flex;
-                        align-items: center;
-                        gap: 8px;
-                        background: #4F8CFF;
-                        color: white;
-                        padding: 10px 20px;
-                        border-radius: 6px;
-                        text-decoration: none;
-                        font-weight: 500;
-                        margin-top: 10px;
-                        transition: background 0.2s;
-                    " onmouseover="this.style.background='#3b6fd1'" onmouseout="this.style.background='#4F8CFF'">
-                        <i class='bx bx-download'></i>
-                        <span>Download Attachment</span>
-                    </a>
-                </div>
-                <p id="noAttachmentMsg" style="font-size: 13px; color: #9ca3af; font-style: italic; padding: 10px; background: #f9fafb; border-radius: 6px;">
-                    <i class='bx bx-paperclip' style="margin-right: 5px;"></i>No attachment uploaded
-                </p>
-            </fieldset>
-        </div>
-        
-        <!-- Admin Actions Section - Response only -->
-        <div id="adminActionsSection" class="modal-body" style="border-top: 1px solid #e5e7eb; display: none;">
-            <h4 id="adminActionsTitle" style="margin-bottom: 15px; color: #333;">Admin Response</h4>
-            <p id="adminActionNote" style="font-size: 12px; color: #6b7280; margin-bottom: 14px; line-height: 1.5;">
-                Add a reply or update the status for manageable complaints.
-            </p>
-            <form method="POST" id="adminActionForm">
-                <input type="hidden" name="csrf_token" value="<?php echo e((string)$_SESSION['csrf_token']); ?>">
-                <input type="hidden" name="complaint_id" id="actionComplaintId">
-                <input type="hidden" name="action" value="update_complaint_status">
-                
-                <div class="form-group">
-                    <label>Response to Student <span style="color: #ef4444;">*</span></label>
-                    <textarea class="form-input textarea" name="remarks" placeholder="Type the response or next steps for the student..." required></textarea>
-                </div>
-                
-                <div class="form-group">
-                    <label>Status <span style="color: #ef4444;">*</span></label>
-                    <select name="status" class="form-input" required>
-
-                </div>
-                
-                <div class="form-group">
-                    <button type="submit" class="btn-submit" style="background: #4F8CFF; width: 100%;">
-                        <i class='bx bx-send'></i> Save Response
-                    </button>
-                </div>
-            </form>
-
-            <fieldset id="viewFeedbackSection" style="border: 1px solid #e5e7eb; border-radius: 8px; padding: 15px; margin-top: 20px; display: none;">
-                <legend style="font-weight: 600; color: #333; padding: 0 10px; font-size: 14px;">Student Feedback</legend>
-                <div style="display:flex; gap:12px; align-items:center; margin-bottom:8px;">
-                    <div id="viewFeedbackBadge" style="padding:6px 10px; border-radius:12px; font-weight:700; font-size:13px;"></div>
-                    <div id="viewFeedbackTime" style="font-size:12px; color:#6b7280;"></div>
-                </div>
-                <div id="viewFeedbackComment" style="background:#f9fafb; padding:12px; border-radius:12px; color:#374151; white-space:pre-wrap;">-</div>
-                <div id="feedbackRepliesContainer" style="display:none; margin-top:12px; padding:12px; border-radius:12px; background:#eef2ff;"></div>
-                <button type="button" id="feedbackReplyToggle" style="display:none; margin-top:12px; padding:10px 16px; border:1px solid #c7d2fe; background:#eff6ff; color:#1d4ed8; border-radius:8px; cursor:pointer; font-weight:600;">
-                    <i class='bx bx-reply'></i> Reply
-                </button>
-                <div id="feedbackReplyFormWrapper" style="display:none; margin-top:12px; padding:12px; border:1px solid #e5e7eb; border-radius:12px; background:#ffffff;">
-                    <form id="feedbackReplyForm" method="POST" style="display:flex; flex-direction:column; gap:12px;">
-                        <input type="hidden" name="csrf_token" value="<?php echo e((string)$_SESSION['csrf_token']); ?>">
-                        <input type="hidden" name="ticket_type" id="feedbackReplyTicketType" value="complaint">
-                        <input type="hidden" name="ticket_id" id="feedbackReplyTicketId" value="">
-                        <input type="hidden" name="student_id" id="feedbackReplyStudentId" value="">
-                        <input type="hidden" name="feedback_history_id" id="feedbackReplyHistoryId" value="">
-                        <textarea name="message" rows="4" required placeholder="Reply to the student about their feedback..." style="width: 100%; padding: 10px; border: 1px solid #d1d5db; border-radius: 10px; resize: vertical;"></textarea>
-                        <button type="submit" class="btn-submit" style="background: #4F8CFF; margin-top: 8px; padding: 10px 16px; color: #fff; border: none; border-radius: 8px; cursor: pointer;"><i class='bx bx-send'></i> Send Reply</button>
-                        <div id="feedbackReplyStatus" style="margin-top: 8px; font-size: 13px;"></div>
-                    </form>
-                </div>
-            </fieldset>
-        </div>
-    </div>
-</div>
-
-<script>
-function openComplaintModal(id, ticketNo, actComplained, narrativeReport, attachment, complainant, complainantAddress, complainantSex, complainantAge, complainantCivilStatus, complainantContact, personComplained, dateIncident, timeIncident, placeIncident, category, canManage, actionMode, defaultStatus, feedbackSatisfaction, feedbackComment, feedbackCreatedAt, feedbackId, studentId) {
-    document.getElementById('viewModalTitle').innerText = 'Complaint #' + ticketNo;
-    
-    // Complainant Information
-    document.getElementById('viewComplainant').innerText = complainant || 'N/A';
-    document.getElementById('viewComplainantAddress').innerText = complainantAddress || 'N/A';
-    document.getElementById('viewComplainantSex').innerText = complainantSex || 'N/A';
-    document.getElementById('viewComplainantAge').innerText = complainantAge || 'N/A';
-    document.getElementById('viewComplainantCivilStatus').innerText = complainantCivilStatus || 'N/A';
-    document.getElementById('viewComplainantContact').innerText = complainantContact || 'N/A';
-    
-    // Person Complained Of
-    document.getElementById('viewPersonComplained').innerText = personComplained || 'N/A';
-    
-    // Incident Details
-    document.getElementById('viewTicketNo').innerText = ticketNo;
-    document.getElementById('viewDateIncident').innerText = dateIncident || 'N/A';
-    document.getElementById('viewTimeIncident').innerText = timeIncident || 'N/A';
-    document.getElementById('viewPlaceIncident').innerText = placeIncident || 'N/A';
-    document.getElementById('viewCategory').innerText = category || 'N/A';
-    document.getElementById('viewActComplained').innerText = actComplained || 'N/A';
-    document.getElementById('viewNarrative').innerText = narrativeReport || 'N/A';
-    
-    // Attachment
-    const imgEl = document.getElementById('attachmentImage');
-    const linkEl = document.getElementById('attachmentLink');
-    if (attachment && attachment !== '') {
-        document.getElementById('attachmentGroup').style.display = 'block';
-        document.getElementById('noAttachmentMsg').style.display = 'none';
-        // Check if image
-        const ext = attachment.split('.').pop().toLowerCase();
-        const isImage = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp'].includes(ext);
-        if (isImage) {
-            imgEl.src = attachment;
-            imgEl.style.display = 'block';
-            linkEl.style.display = 'none';
-        } else {
-            imgEl.style.display = 'none';
-            linkEl.style.display = 'inline-flex';
-            linkEl.href = attachment;
-        }
-    } else {
-        document.getElementById('attachmentGroup').style.display = 'none';
-        document.getElementById('noAttachmentMsg').style.display = 'block';
-    }
-
-    const feedbackRepliesContainer = document.getElementById('feedbackRepliesContainer');
-    const feedbackReplyToggle = document.getElementById('feedbackReplyToggle');
-    const feedbackReplyFormWrapper = document.getElementById('feedbackReplyFormWrapper');
-    const feedbackReplyTicketId = document.getElementById('feedbackReplyTicketId');
-    const feedbackReplyStudentId = document.getElementById('feedbackReplyStudentId');
-    const feedbackReplyHistoryId = document.getElementById('feedbackReplyHistoryId');
-    const feedbackReplyStatus = document.getElementById('feedbackReplyStatus');
-    const adminActionsSection = document.getElementById('adminActionsSection');
-    const adminActionsTitle = document.getElementById('adminActionsTitle');
-    const adminActionNote = document.getElementById('adminActionNote');
-    const adminActionButton = document.querySelector('#adminActionForm .btn-submit');
-    const statusSelect = document.querySelector('#adminActionForm select[name="status"]');
-
-    document.getElementById('actionComplaintId').value = id;
-
-    if (canManage) {
-        adminActionsSection.style.display = 'block';
-        document.getElementById('adminActionForm').style.display = 'block';
-
-        if (statusSelect) {
-            statusSelect.value = defaultStatus || 'under_review';
-        }
-
-        if (actionMode === 'reply') {
-            adminActionsTitle.innerText = 'Reply to Complaint';
-            adminActionNote.innerText = 'Send a response and set the complaint status if needed.';
-            if (adminActionButton) {
-                adminActionButton.innerHTML = '<i class="bx bx-send"></i> Send Reply';
-            }
-        } else if (actionMode === 'resolve') {
-            adminActionsTitle.innerText = 'Resolve Complaint';
-            adminActionNote.innerText = 'Mark this complaint as resolved and optionally add a closing note.';
-            if (adminActionButton) {
-                adminActionButton.innerHTML = '<i class="bx bx-check-circle"></i> Mark Resolved';
-            }
-            if (statusSelect) {
-                statusSelect.value = 'resolved';
-            }
-        } else {
-            adminActionsTitle.innerText = 'Update Complaint Status';
-            adminActionNote.innerText = 'Update the status and optionally add a reply for the student.';
-            if (adminActionButton) {
-                adminActionButton.innerHTML = '<i class="bx bx-transfer-alt"></i> Save Status';
-            }
-        }
-    } else {
-        adminActionsSection.style.display = 'none';
-        document.getElementById('adminActionForm').style.display = 'block';
-        if (adminActionButton) {
-            adminActionButton.innerHTML = '<i class="bx bx-send"></i> Save Response';
-        }
-    }
-
-    document.getElementById('viewModal').classList.add('show');
-
-    // Student feedback
-    const feedbackSection = document.getElementById('viewFeedbackSection');
-    const feedbackBadge = document.getElementById('viewFeedbackBadge');
-    const feedbackTime = document.getElementById('viewFeedbackTime');
-    const feedbackCommentEl = document.getElementById('viewFeedbackComment');
-    const sat = (feedbackSatisfaction || '').toLowerCase();
-    const fcomment = feedbackComment || '';
-    const fcreated = feedbackCreatedAt || '';
-
-    if (sat && sat !== '') {
-        feedbackSection.style.display = 'block';
-        feedbackRepliesContainer.innerHTML = '';
-        feedbackRepliesContainer.style.display = 'none';
-        feedbackReplyToggle.style.display = 'inline-flex';
-        feedbackReplyFormWrapper.style.display = 'none';
-        feedbackReplyTicketId.value = id;
-        feedbackReplyStudentId.value = studentId || '';
-        feedbackReplyHistoryId.value = feedbackId || '';
-        feedbackReplyStatus.innerHTML = '';
-
-        if (sat === 'satisfied') {
-            feedbackBadge.style.background = '#d1fae5'; feedbackBadge.style.color = '#059669';
-            feedbackBadge.textContent = 'Satisfied';
-        } else if (sat === 'neutral') {
-            feedbackBadge.style.background = '#f3f4f6'; feedbackBadge.style.color = '#374151';
-            feedbackBadge.textContent = 'Neutral';
-        } else if (sat === 'not_satisfied' || sat === 'not satisfied') {
-            feedbackBadge.style.background = '#fee2e2'; feedbackBadge.style.color = '#b91c1c';
-            feedbackBadge.textContent = 'Not Satisfied';
-        } else {
-            feedbackBadge.style.background = '#f3f4f6'; feedbackBadge.style.color = '#374151';
-            feedbackBadge.textContent = sat;
-        }
-
-        feedbackTime.textContent = fcreated ? ('Submitted: ' + fcreated) : '';
-        feedbackCommentEl.textContent = fcomment ? fcomment : '-';
-
-        feedbackReplyToggle.onclick = function () {
-            feedbackReplyFormWrapper.style.display = feedbackReplyFormWrapper.style.display === 'none' ? 'block' : 'none';
-        };
-
-        loadFeedbackReplies('complaint', id, studentId || '', feedbackId || '');
-    } else {
-        feedbackSection.style.display = 'none';
-        feedbackRepliesContainer.style.display = 'none';
-        feedbackReplyToggle.style.display = 'none';
-        feedbackReplyFormWrapper.style.display = 'none';
-        feedbackReplyTicketId.value = '';
-        feedbackReplyStudentId.value = '';
-        feedbackReplyHistoryId.value = '';
-        feedbackReplyStatus.innerHTML = '';
-    }
-}
-
-function escapeHtml(value) {
-    return String(value)
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#39;');
-}
-
-function renderFeedbackReplies(replies) {
-    const container = document.getElementById('feedbackRepliesContainer');
-    container.innerHTML = '';
-    if (!Array.isArray(replies) || replies.length === 0) {
-        container.style.display = 'none';
-        return;
-    }
-    container.style.display = 'block';
-    replies.forEach((reply) => {
-        const item = document.createElement('div');
-        item.style.marginBottom = '12px';
-        item.innerHTML = `
-            <div style="font-size:12px; color:#6b7280; margin-bottom:6px;">${escapeHtml(reply.replier_name || reply.replier_role || 'Admin').toUpperCase()} • ${escapeHtml(reply.created_at)}</div>
-            <div style="background:#f8fafc; border:1px solid #e5e7eb; border-radius:12px; padding:14px; color:#111827; white-space:pre-wrap;">${escapeHtml(reply.message)}</div>
-        `;
-        container.appendChild(item);
-    });
-}
-
-function loadFeedbackReplies(ticketType, ticketId, studentId, feedbackHistoryId) {
-    const container = document.getElementById('feedbackRepliesContainer');
-    if (!ticketType || !ticketId || !studentId) {
-        container.style.display = 'none';
-        return;
-    }
-
-    let url = `../process_feedback_reply.php?action=list_replies&ticket_type=${encodeURIComponent(ticketType)}&ticket_id=${encodeURIComponent(ticketId)}&student_id=${encodeURIComponent(studentId)}`;
-    if (feedbackHistoryId) {
-        url += `&feedback_history_id=${encodeURIComponent(feedbackHistoryId)}`;
-    }
-
-    fetch(url)
-        .then((response) => response.ok ? response.json() : Promise.reject())
-        .then((data) => {
-            if (data.replies && Array.isArray(data.replies) && data.replies.length > 0) {
-                renderFeedbackReplies(data.replies);
-            } else {
-                container.style.display = 'none';
-            }
-        })
-        .catch(() => {
-            container.style.display = 'none';
-        });
-}
-
-function appendFeedbackReply(reply) {
-    const container = document.getElementById('feedbackRepliesContainer');
-    if (!container) return;
-    if (container.style.display === 'none') {
-        container.style.display = 'block';
-        container.innerHTML = '';
-    }
-    const item = document.createElement('div');
-    item.style.marginBottom = '12px';
-    item.innerHTML = `
-        <div style="font-size:12px; color:#6b7280; margin-bottom:6px;">${escapeHtml(reply.replier_name || reply.replier_role || 'Admin').toUpperCase()} • ${escapeHtml(reply.created_at)}</div>
-        <div style="background:#f8fafc; border:1px solid #e5e7eb; border-radius:12px; padding:14px; color:#111827; white-space:pre-wrap;">${escapeHtml(reply.message)}</div>
-    `;
-    container.appendChild(item);
-}
-
-const adminComplaintFeedbackForm = document.getElementById('feedbackReplyForm');
-if (adminComplaintFeedbackForm) {
-    adminComplaintFeedbackForm.addEventListener('submit', function (event) {
-        event.preventDefault();
-        const form = event.currentTarget;
-        const statusEl = document.getElementById('feedbackReplyStatus');
-        const formData = new window.FormData(form);
-
-        statusEl.textContent = 'Sending reply...';
-        statusEl.style.color = '#374151';
-
-        fetch('../process_feedback_reply.php', {
-            method: 'POST',
-            body: formData,
-        }).then((response) => response.ok ? response.json() : Promise.reject())
-          .then((data) => {
-              if (data.status === 'ok') {
-                  statusEl.textContent = 'Reply sent successfully.';
-                  statusEl.style.color = '#059669';
-                  form.querySelector('[name="message"]').value = '';
-                  if (data.reply) {
-                      appendFeedbackReply(data.reply);
-                  }
-              } else {
-                  statusEl.textContent = 'Failed to send reply. Please try again.';
-                  statusEl.style.color = '#b91c1c';
-              }
-          }).catch(() => {
-              statusEl.textContent = 'Failed to send reply. Please try again.';
-              statusEl.style.color = '#b91c1c';
-          });
-    });
-}
-
-function confirmDeleteComplaint(id, ticketNo) {
-    if (!window.confirm('Delete complaint #' + ticketNo + '? This action cannot be undone.')) {
-        return;
-    }
-
-    const deleteForm = document.getElementById('deleteComplaintForm');
-    const deleteId = document.getElementById('deleteComplaintId');
-    if (!deleteForm || !deleteId) {
-        return;
-    }
-
-    deleteId.value = id;
-    deleteForm.submit();
-}
-
-function switchTab(evt, tabId) {
-    const panels = document.querySelectorAll('.tab-panel');
-    const buttons = document.querySelectorAll('.tab-btn');
-    const input = document.getElementById('activeTabInput');
-
-    panels.forEach(panel => panel.classList.remove('active'));
-    buttons.forEach(button => button.classList.remove('active'));
-
-    const targetPanel = document.getElementById(tabId);
-    if (targetPanel) {
-        targetPanel.classList.add('active');
-    }
-
-    if (evt && evt.currentTarget) {
-        evt.currentTarget.classList.add('active');
-    }
-
-    if (input) {
-        input.value = tabId;
-    }
-
-    const current = window.location.href.split('?')[0];
-    const rawQuery = window.location.search.replace(/^\?/, '');
-    const pairs = rawQuery ? rawQuery.split('&').filter(Boolean) : [];
-    const filteredPairs = pairs.filter(function(pair) {
-        return pair.split('=')[0] !== 'tab';
-    });
-    filteredPairs.push('tab=' + encodeURIComponent(tabId));
-    const queryString = filteredPairs.length > 0 ? '?' + filteredPairs.join('&') : '';
-    window.history.replaceState({}, '', current + queryString);
-}
-
-function closeModal(modalId) {
-    document.getElementById(modalId).classList.remove('show');
-}
-
-const complaintFiltersForm = document.getElementById('complaintFiltersForm');
-if (complaintFiltersForm) {
-    const searchInput = complaintFiltersForm.querySelector('input[name="q"]');
-    const searchFocusKey = 'adminComplaintsSearchFocus';
-    let searchTimer;
-
-    if (searchInput) {
-        if (window.sessionStorage.getItem(searchFocusKey) === '1') {
-            searchInput.focus();
-            searchInput.setSelectionRange(searchInput.value.length, searchInput.value.length);
-        }
-
-        searchInput.addEventListener('input', () => {
-            window.sessionStorage.setItem(searchFocusKey, '1');
-            window.clearTimeout(searchTimer);
-            searchTimer = window.setTimeout(() => complaintFiltersForm.submit(), 350);
-        });
-    }
-
-    complaintFiltersForm.querySelectorAll('input[name="date_from"], input[name="date_to"], select[name="college"], select[name="department"], select[name="status"], select[name="sort"]').forEach((filter) => {
-        filter.addEventListener('change', () => {
-            window.sessionStorage.removeItem(searchFocusKey);
-            complaintFiltersForm.submit();
-        });
-    });
-}
-
-document.querySelectorAll('.modal').forEach(modal => {
-    modal.addEventListener('click', (e) => {
-        if (e.target === modal) {
-            modal.classList.remove('show');
-        }
-    });
-});
-
-document.querySelectorAll('.btn-icon.btn-view[data-can-manage="1"], .btn-icon.btn-view[data-can-manage="true"]').forEach((btn) => {
-    btn.addEventListener('click', (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        openComplaintModal(
-            btn.dataset.id,
-            btn.dataset.ticket,
-            btn.dataset.actComplained,
-            btn.dataset.narrative,
-            btn.dataset.attachment,
-            btn.dataset.complainant,
-            btn.dataset.complainantAddress,
-            btn.dataset.complainantSex,
-            btn.dataset.complainantAge,
-            btn.dataset.complainantCivilStatus,
-            btn.dataset.complainantContact,
-            btn.dataset.personComplained,
-            btn.dataset.dateIncident,
-            btn.dataset.timeIncident,
-            btn.dataset.placeIncident,
-            btn.dataset.category,
-            btn.dataset.canManage === '1' || btn.dataset.canManage === 'true',
-            btn.dataset.actionMode || 'status',
-            btn.dataset.defaultStatus || btn.dataset.status || 'under_review',
-            btn.dataset.feedbackSatisfaction || '',
-            btn.dataset.feedbackComment || '',
-            btn.dataset.feedbackCreatedAt || ''
-        );
-    });
-});
-</script>
 
 <button type="button" id="scrollTopBtn" class="scroll-top-btn" aria-label="Scroll to top" title="Back to top">
     <i class='bx bx-up-arrow-alt'></i>
 </button>
 <script>
+function switchTab(event, tab) {
+    if (event) {
+        event.preventDefault();
+    }
+
+    var tabInput = document.getElementById('activeTabInput');
+    var filtersForm = document.getElementById('complaintFiltersForm');
+    if (!tabInput || !filtersForm) {
+        return;
+    }
+
+    tabInput.value = tab;
+    filtersForm.submit();
+}
+
 document.addEventListener('DOMContentLoaded', function () {
     var scrollTopBtn = document.getElementById('scrollTopBtn');
     if (!scrollTopBtn) return;
